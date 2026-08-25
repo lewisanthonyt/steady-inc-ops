@@ -98,7 +98,17 @@ function defaultData(){
     budgets:{},
     geocodeCache:{},
     counters:{job:0, quote:0, invoice:0, variation:0, sfQuote:0, sfInvoice:0},
-    activityLog:[]
+    activityLog:[],
+    paintPipeline:[],
+    paintPipelineSettings:{
+      weeklyProfitTarget: 2500,
+      marketingSpendWeekly: 300,
+      marginLaneLow: 20,
+      marginLaneHigh: 35,
+      defaultDepositPct: 25,
+      reinvestmentPct: 10,
+      fabSplitPct: 50
+    }
   };
 }
 function logActivity(action, detail){
@@ -157,10 +167,49 @@ function save(){
 /* ---------- CLOUD SYNC (whole-app state, so it's not stuck on one browser) ---------- */
 const CLOUD_STATE_BUSINESS = 'steadyworks_full_state';
 let cloudSyncTimer = null;
+
+// Array fields that get merged-by-id on every push, rather than blindly
+// overwritten. This is what stops a stale background tab from wiping out
+// records that were added elsewhere (another tab, another device, or a
+// direct fix) since this tab last loaded its data.
+const ARRAY_MERGE_KEYS = ['jobs','leads','quotes','invoices','customers','employees','subcontractors','expenses','compliance','events','followUps','sfClients','sfQuotes','sfInvoices','sfActivity','sfExpenses','sfCompliance','activityLog','paintPipeline'];
+
+function mergeArraysById(cloudArr, localArr){
+  if(!Array.isArray(cloudArr)) cloudArr = [];
+  if(!Array.isArray(localArr)) localArr = [];
+  const map = new Map();
+  cloudArr.forEach(item=>{ if(item && item.id!=null) map.set(item.id, item); });
+  localArr.forEach(item=>{ if(item && item.id!=null) map.set(item.id, item); }); // local wins on conflicting ids
+  const seen = new Set();
+  const ordered = [];
+  cloudArr.forEach(item=>{ if(item && item.id!=null && !seen.has(item.id)){ ordered.push(map.get(item.id)); seen.add(item.id); } });
+  localArr.forEach(item=>{ if(item && item.id!=null && !seen.has(item.id)){ ordered.push(map.get(item.id)); seen.add(item.id); } });
+  return ordered;
+}
+
+// Builds what should actually be pushed to the cloud: local's non-list
+// fields (settings, counters, templates, etc.) plus every list field
+// merged with whatever is currently in the cloud, so this push can only
+// ever add/update records — never silently delete something that exists
+// in the cloud but isn't in this tab's (possibly stale) memory.
+function mergeDbForPush(cloudData, localDb){
+  const merged = Object.assign({}, localDb);
+  if(cloudData && typeof cloudData === 'object'){
+    ARRAY_MERGE_KEYS.forEach(key=>{
+      merged[key] = mergeArraysById(cloudData[key], localDb[key]);
+    });
+  }
+  return merged;
+}
+
 function pushCloudState(){
   clearTimeout(cloudSyncTimer);
   cloudSyncTimer = setTimeout(async ()=>{
     try{
+      const { data: existing } = await sb.from('app_settings').select('data').eq('business', CLOUD_STATE_BUSINESS).maybeSingle();
+      const merged = mergeDbForPush(existing && existing.data, DB);
+      DB = merged;
+      localStorage.setItem(STORE_KEY, JSON.stringify(DB));
       await sb.from('app_settings').upsert(
         {business: CLOUD_STATE_BUSINESS, data: DB, updated_at: new Date().toISOString()},
         {onConflict:'business'}
@@ -199,8 +248,8 @@ async function syncLeadsFromSupabase(showToast){
         phone: r.phone || '',
         email: r.email || '',
         source: r.source || 'Website',
-        value: 0,
-        notes: [r.service ? ('Service: '+r.service) : '', r.message||''].filter(Boolean).join('\n\n'),
+        value: Number(r.value)||0,
+        notes: [r.service ? ('Service: '+r.service) : '', r.message||'', r.notes||''].filter(Boolean).join('\n\n'),
         createdAt: (r.created_at||'').slice(0,10) || new Date().toISOString().slice(0,10),
         supabaseId: r.id
       });
@@ -472,26 +521,29 @@ const ROUTES = [
   {id:'team', label:'Team', section:'steadyflow'},
   {id:'sf-expenses', label:'Expenses', section:'steadyflow'},
   {id:'sf-compliance', label:'Compliance', section:'steadyflow'},
+  {id:'pipeline', label:'Quote-to-Job Pipeline', section:'collaborations'},
   {id:'activity', label:'Activity Log', section:'system'},
+  {id:'bugs', label:'Bugs', section:'system'},
   {id:'settings', label:'Settings', section:'system'}
 ];
 const SECTION_LABELS = {
   overview: 'STEADY INC',
   steadyworks: 'STEADYWORKS · PLUMBING',
   steadyflow: 'STEADYFLOW · MARKETING',
+  collaborations: 'COLLABORATIONS',
   system: 'SYSTEM'
 };
-const SECTION_ACCENT = { overview:'var(--gold-light)', steadyworks:'var(--gold-light)', steadyflow:'var(--teal)', system:'#999' };
+const SECTION_ACCENT = { overview:'var(--gold-light)', steadyworks:'var(--gold-light)', steadyflow:'var(--teal)', collaborations:'#A78BFA', system:'#999' };
 const ICONS = {
   dashboard:'🏠', tasks:'✅', goals:'🎯', budget:'🧮', 'sw-dashboard':'📊', 'sf-dashboard':'📊', 'sf-clients':'💻', 'sf-quotes':'📝', 'sf-invoices':'🧾', 'sf-expenses':'💷', 'sf-compliance':'🛡️', leads:'📥', followups:'📞', jobs:'🛠️', 'job-sources':'📍', quotes:'📝', invoices:'🧾', calendar:'📅',
-  customers:'👥', team:'👷', subcontractors:'🦺', expenses:'💷', compliance:'🛡️', reports:'📈', activity:'🕐', settings:'⚙️'
+  customers:'👥', team:'👷', subcontractors:'🦺', expenses:'💷', compliance:'🛡️', reports:'📈', activity:'🕐', bugs:'🐞', settings:'⚙️', pipeline:'🎨'
 };
 
 let currentRoute = 'dashboard';
 let currentParam = null;
 
 function navigate(route, param){
-  currentRoute = route;
+  currentRoute = isRouteAllowed(route) ? route : 'pipeline';
   currentParam = param || null;
   renderNav();
   renderPage();
@@ -514,7 +566,8 @@ function toggleNavSection(section){
 function renderNav(){
   const nav = document.getElementById('nav');
   let lastSection = null;
-  nav.innerHTML = ROUTES.map(r=>{
+  const visibleRoutes = ROUTES.filter(r=>isRouteAllowed(r.id));
+  nav.innerHTML = visibleRoutes.map(r=>{
     let sectionHeader = '';
     if(r.section !== lastSection){
       lastSection = r.section;
@@ -557,7 +610,12 @@ function renderNav(){
       const exp = (DB.sfCompliance||[]).filter(c=>{const dd=daysUntil(c.expiryDate); return dd!==null && dd<30;}).length;
       if(exp) badge = `<span class="nav-badge">${exp}</span>`;
     }
-    return `${sectionHeader}<div class="nav-item ${currentRoute===r.id?'active':''} ${r.section==='steadyflow'?'nav-item-teal':''}" onclick="navigate('${r.id}')">
+    if(r.id==='bugs' && BUGS_CACHE){
+      const open = BUGS_CACHE.filter(b=>b.status!=='fixed').length;
+      if(open) badge = `<span class="nav-badge">${open}</span>`;
+    }
+    const sectionClass = r.section==='steadyflow' ? 'nav-item-teal' : r.section==='collaborations' ? 'nav-item-purple' : '';
+    return `${sectionHeader}<div class="nav-item ${currentRoute===r.id?'active':''} ${sectionClass}" onclick="navigate('${r.id}')">
       <span class="nav-icon">${ICONS[r.id]}</span>${r.label}${badge}
     </div>`;
   }).join('');
@@ -584,6 +642,7 @@ const PAGE_META = {
   followups:['Follow Ups','Missed calls and client follow-up'],
   jobs:['Jobs','All active and historic job records'],
   'job-sources':['Job Sources','Where your leads and jobs are actually coming from'],
+  pipeline:['Quote-to-Job Pipeline','SteadyWorks × Fabs — one board from first quote to paid job'],
   quotes:['Quotes','Build, send and track quotations'],
   invoices:['Invoices','Billing, payments and outstanding balances'],
   calendar:['Calendar','Shared across all companies — job schedule plus merged Google Calendars'],
@@ -594,6 +653,7 @@ const PAGE_META = {
   compliance:['Compliance','Certificates, insurance and renewals'],
   reports:['Reports','Business performance reporting'],
   activity:['Activity Log','A record of what was created, changed and deleted, and when'],
+  bugs:['Bugs','Known issues and updates needed — logged now, fixed later'],
   settings:['Settings','Company details, rates and preferences']
 };
 
@@ -603,7 +663,7 @@ function renderPage(){
   document.getElementById('page-sub').textContent = meta[1];
   const content = document.getElementById('content');
   const actions = document.getElementById('topbar-actions');
-  actions.innerHTML = '<button class="btn btn-ghost" aria-label="Search everything" title="Search (Cmd+K)" onclick="openGlobalSearch()">🔍 Search <span class="small muted search-shortcut-hint" style="margin-left:4px;">⌘K</span></button>';
+  actions.innerHTML = CURRENT_PROFILE.role==='partner' ? '' : '<button class="btn btn-ghost" aria-label="Search everything" title="Search (Cmd+K)" onclick="openGlobalSearch()">🔍 Search <span class="small muted search-shortcut-hint" style="margin-left:4px;">⌘K</span></button>';
   try{
     const fn = window['view_' + currentRoute.replace('-','_')];
     if(typeof fn === 'function'){ content.innerHTML = fn(); afterRender(currentRoute); }
@@ -622,7 +682,8 @@ function afterRender(route){
     leads: afterRender_leads,
     calendar: afterRender_calendar,
     reports: afterRender_reports,
-    'sf-dashboard': afterRender_sf_dashboard
+    'sf-dashboard': afterRender_sf_dashboard,
+    pipeline: afterRender_pipeline
   };
   if(hooks[route]) hooks[route]();
   // topbar action buttons
@@ -640,13 +701,15 @@ function afterRender(route){
     'sf-invoices': `<button class="btn btn-gold" onclick="openSfInvoiceModal()">+ New Invoice</button>`,
     'sf-expenses': `<button class="btn btn-gold" onclick="openSfExpenseModal()">+ New Expense</button>`,
     'sf-compliance': `<button class="btn btn-gold" onclick="openSfComplianceModal()">+ Add Document</button>`,
-    customers: `<button class="btn btn-gold" onclick="openCustomerModal()">+ New Customer</button>`,
+    customers: `<button class="btn btn-ghost" onclick="openImportContactsModal('customer')">📇 Import Contacts</button> <button class="btn btn-gold" onclick="openCustomerModal()">+ New Customer</button>`,
     team: `<button class="btn btn-gold" onclick="openEmployeeModal()">+ Add Team Member</button>`,
-    subcontractors: `<button class="btn btn-gold" onclick="openSubcontractorModal()">+ Add Subcontractor</button>`,
+    subcontractors: `<button class="btn btn-ghost" onclick="openImportContactsModal('subcontractor')">📇 Import Contacts</button> <button class="btn btn-gold" onclick="openSubcontractorModal()">+ Add Subcontractor</button>`,
     expenses: `<button class="btn btn-gold" onclick="openExpenseModal()">+ New Expense</button>`,
     compliance: `<button class="btn btn-gold" onclick="openComplianceModal()">+ Add Document</button>`,
     calendar: `<button class="btn btn-gold" onclick="openEventModal()">+ New Event</button>`,
     'sf-clients': `<button class="btn btn-gold" onclick="openSfClientModal()">+ New Client / Lead</button>`,
+    bugs: `<button class="btn btn-gold" onclick="openBugModal()">+ Log Bug</button>`,
+    pipeline: `<button class="btn btn-ghost" onclick="openPipelineSettingsModal()">⚙️ Settings</button> <button class="btn btn-gold" onclick="openPipelineQuickAdd()">+ New Quote</button>`,
   };
   if(map[route]) actions.innerHTML += map[route];
 }
@@ -671,6 +734,116 @@ async function loadGoals(){
   return GOALS_CACHE;
 }
 function refreshIfCurrent(route){ if(currentRoute===route) renderPage(); }
+
+/* ---------- BUGS (Supabase-backed, shared across SteadyWorks + SteadyFlow) ---------- */
+let BUGS_CACHE = null;
+async function loadBugs(){
+  try{
+    const { data, error } = await sb.from('bugs').select('*').order('created_at', {ascending:false});
+    if(error){ window._bugsLoadError = error.message || 'Unknown error'; BUGS_CACHE = []; }
+    else { BUGS_CACHE = data || []; window._bugsLoadError = null; }
+  }catch(e){ window._bugsLoadError = (e && e.message) || 'Network error'; BUGS_CACHE = []; }
+  renderNav();
+  return BUGS_CACHE;
+}
+const BUG_SEVERITIES = ['low','medium','high'];
+const BUG_STATUSES = ['open','in_progress','fixed'];
+function bugExampleCard(){
+  return `<div class="card mb-10" style="border:1px dashed #C9A227;background:rgba(201,162,39,.06);">
+    <div class="flex-between">
+      <strong>Invoice PDF cuts off long client names <span class="pill" style="background:rgba(201,162,39,.18);color:#E8C468;">Example</span></strong>
+      <span class="pill priority-med">Medium</span>
+    </div>
+    <p class="small muted mt-10">SteadyFlow · Reported by Lewis · Not real — this is what a logged bug looks like.</p>
+  </div>`;
+}
+function view_bugs(){
+  if(BUGS_CACHE===null){
+    if(!window._bugsLoading){
+      window._bugsLoading = true;
+      loadBugs().then(()=>{ window._bugsLoading = false; refreshIfCurrent('bugs'); });
+    }
+    return `${bugExampleCard()}<div class="empty-state">Loading bugs…</div>`;
+  }
+  if(window._bugsLoadError){
+    return `${bugExampleCard()}<div class="empty-state">Couldn't load bugs: ${esc(window._bugsLoadError)}<br><button class="btn btn-ghost mt-10" onclick="BUGS_CACHE=null; window._bugsLoadError=null; renderPage();">Try again</button></div>`;
+  }
+  const open = BUGS_CACHE.filter(b=>b.status!=='fixed').sort((a,b)=>{
+    const sevRank = {high:0, medium:1, low:2};
+    return (sevRank[a.severity]??1) - (sevRank[b.severity]??1);
+  });
+  const fixed = BUGS_CACHE.filter(b=>b.status==='fixed');
+
+  const sevPillClass = (s)=> s==='high' ? 'priority-high' : s==='low' ? 'st-completed' : 'priority-med';
+  const rowHtml = (b)=>`
+    <div class="flex-between" style="padding:10px 4px;border-bottom:1px solid var(--border);gap:10px;">
+      <div style="flex:1;min-width:0;">
+        <div style="font-weight:600;font-size:13.5px;${b.status==='fixed'?'text-decoration:line-through;color:#999;':''}">${esc(b.title)}</div>
+        <div class="small muted mt-10">${esc(b.description||'')}</div>
+        <div class="small muted" style="margin-top:4px;">${BIZ_LABEL[b.business]||b.business||'Both'} · ${fmtDate(b.created_at)}</div>
+      </div>
+      <span class="pill ${sevPillClass(b.severity)}">${(b.severity||'medium').toUpperCase()}</span>
+      <select onchange="updateBugStatus('${b.id}', this.value)" style="width:auto;padding:6px 8px;font-size:12px;">
+        ${BUG_STATUSES.map(s=>`<option value="${s}" ${b.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('')}
+      </select>
+      <button class="icon-btn" aria-label="Edit bug" onclick="openBugModal('${b.id}')">✎</button>
+      <button class="icon-btn" aria-label="Delete bug" onclick="deleteBug('${b.id}')">✕</button>
+    </div>`;
+
+  return `
+  ${bugExampleCard()}
+  <div class="grid grid-2">
+    <div class="card"><div class="card-title">Open / In Progress <span class="small muted">${open.length}</span></div>${open.map(rowHtml).join('')||'<div class="empty-state small">Nothing outstanding — nice.</div>'}</div>
+    <div class="card"><div class="card-title">Fixed <span class="small muted">${fixed.length}</span></div>${fixed.map(rowHtml).join('')||'<div class="empty-state small">Nothing fixed yet.</div>'}</div>
+  </div>`;
+}
+function openBugModal(id){
+  const b = id ? BUGS_CACHE.find(x=>x.id===id) : null;
+  openModal(`
+    <div class="modal-head"><h2>${b?'Edit Bug':'Log a Bug'}</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <div class="form-group"><label>Title</label><input id="f-bugTitle" type="text" value="${b?esc(b.title):''}" placeholder="What's broken or needs updating?"></div>
+      <div class="form-row">
+        <div class="form-group"><label>Business</label><select id="f-bugBusiness">
+          <option value="both" ${!b||b.business==='both'?'selected':''}>Both</option>
+          <option value="steadyworks" ${b&&b.business==='steadyworks'?'selected':''}>SteadyWorks</option>
+          <option value="steadyflow" ${b&&b.business==='steadyflow'?'selected':''}>SteadyFlow</option>
+        </select></div>
+        <div class="form-group"><label>Severity</label><select id="f-bugSeverity">${BUG_SEVERITIES.map(s=>`<option value="${s}" ${b&&b.severity===s?'selected':(!b&&s==='medium'?'selected':'')}>${s.charAt(0).toUpperCase()+s.slice(1)}</option>`).join('')}</select></div>
+      </div>
+      <div class="form-group"><label>Status</label><select id="f-bugStatus">${BUG_STATUSES.map(s=>`<option value="${s}" ${b&&b.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('')}</select></div>
+      <div class="form-group"><label>Description</label><textarea id="f-bugDescription">${b?esc(b.description||''):''}</textarea></div>
+    </div>
+    <div class="modal-foot">
+      ${b?`<button class="btn btn-danger" onclick="deleteBug('${b.id}')">Delete</button>`:''}
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-gold" onclick="saveBug('${b?b.id:''}')">${b?'Save Changes':'Log Bug'}</button>
+    </div>`);
+}
+async function saveBug(id){
+  const title = document.getElementById('f-bugTitle').value.trim();
+  if(!title){ toast('A title is required', '⚠️'); return; }
+  const data = {
+    title,
+    business: document.getElementById('f-bugBusiness').value,
+    severity: document.getElementById('f-bugSeverity').value,
+    status: document.getElementById('f-bugStatus').value,
+    description: document.getElementById('f-bugDescription').value.trim()||null
+  };
+  closeModal();
+  if(id){ await sb.from('bugs').update(data).eq('id',id); toast('Bug updated'); }
+  else{ await sb.from('bugs').insert(data); toast('Bug logged'); }
+  BUGS_CACHE = null; renderPage();
+}
+async function updateBugStatus(id, status){
+  await sb.from('bugs').update({status}).eq('id',id);
+  BUGS_CACHE = null; renderPage();
+}
+function deleteBug(id){
+  confirmDelete('Delete this bug?', "This can't be undone.", async ()=>{
+    closeModal(); await sb.from('bugs').delete().eq('id',id); BUGS_CACHE = null; renderPage(); toast('Bug deleted','🗑️');
+  });
+}
 
 const BIZ_LABEL = {steadyworks:'SteadyWorks', steadyflow:'SteadyFlow', cookbook:'Cookbook', animation:'Animation', ugc:'UGC', both:'Both'};
 const BIZ_COLOR = {steadyworks:'st-won', steadyflow:'st-quoted', cookbook:'st-scheduled', animation:'priority-med', ugc:'st-new', both:'st-active'};
@@ -1651,17 +1824,51 @@ function showApp(session){
   document.getElementById('app-root').style.display = 'block';
   const emailEl = document.getElementById('session-email');
   if(emailEl) emailEl.textContent = session.user.email;
-  bootApp();
+  bootApp(session);
+}
+
+/* ---------- ROLE / ACCESS SCOPE ----------
+   Most logins are full "owner" staff access (unchanged, everything visible).
+   A "partner" profile (e.g. Fabs, once created) only ever sees the pages
+   listed in its scope — enforced both in the nav and in navigate() itself,
+   not just by hiding a menu item. Real data isolation for partner rows
+   still lives in Postgres RLS on the paint_pipeline_* tables, this is the
+   UI-side half of it. No partner accounts exist yet — every login today
+   resolves to 'owner' unless a profiles row says otherwise.
+   */
+let CURRENT_PROFILE = {role:'owner', scope:null};
+let CURRENT_USER_ID = null;
+let CURRENT_USER_EMAIL = null;
+const PARTNER_ALLOWED_ROUTES = {pipeline:true}; // scope for a 'partner' role — pipeline only, for now
+async function loadUserProfile(userId){
+  try{
+    const {data} = await sb.from('profiles').select('*').eq('id', userId).maybeSingle();
+    if(data) return {role: data.role||'owner', scope: data.scope||null};
+  }catch(e){ console.warn('Profile lookup failed, defaulting to full access:', e); }
+  return {role:'owner', scope:null};
+}
+function isRouteAllowed(route){
+  if(CURRENT_PROFILE.role!=='partner') return true;
+  return !!PARTNER_ALLOWED_ROUTES[route];
 }
 
 /* ---------- INIT ---------- */
 let appBooted = false;
-async function bootApp(){
+async function bootApp(session){
   if(appBooted) return;
   appBooted = true;
   document.getElementById('content').innerHTML = '<div class="empty-state">Loading your data…</div>';
-  const gotCloudCopy = await pullCloudState();
-  if(!gotCloudCopy) pushCloudState(); // first run on this account — seed the cloud from whatever's local
+  CURRENT_USER_ID = session && session.user ? session.user.id : null;
+  CURRENT_USER_EMAIL = session && session.user ? session.user.email : null;
+  CURRENT_PROFILE = session && session.user ? await loadUserProfile(session.user.id) : {role:'owner', scope:null};
+  await loadPaintPipelineData();
+  subscribePaintPipelineRealtime();
+  if(CURRENT_PROFILE.role==='partner'){
+    currentRoute = 'pipeline';
+  } else {
+    const gotCloudCopy = await pullCloudState();
+    if(!gotCloudCopy) pushCloudState(); // first run on this account — seed the cloud from whatever's local
+  }
   renderNav();
   renderPage();
   document.getElementById('sidebar-toggle').onclick = ()=>{
@@ -1669,11 +1876,14 @@ async function bootApp(){
     document.getElementById('sidebar-backdrop').style.display = document.getElementById('sidebar').classList.contains('open') ? 'block' : 'none';
   };
   document.addEventListener('keydown', (e)=>{
+    if(CURRENT_PROFILE.role==='partner') return;
     if((e.metaKey||e.ctrlKey) && e.key.toLowerCase()==='k'){ e.preventDefault(); openGlobalSearch(); }
   });
-  syncLeadsFromSupabase(false);
-  syncCallsFromSupabase(false);
-  setInterval(()=>{ syncLeadsFromSupabase(false); syncCallsFromSupabase(false); }, 60000);
+  if(CURRENT_PROFILE.role!=='partner'){
+    syncLeadsFromSupabase(false);
+    syncCallsFromSupabase(false);
+    setInterval(()=>{ syncLeadsFromSupabase(false); syncCallsFromSupabase(false); }, 60000);
+  }
 }
 
 function startApp(){
@@ -1869,7 +2079,17 @@ function view_sw_dashboard(){
     const d = new Date(e.date); return d.getMonth()===thisMonth && d.getFullYear()===thisYear;
   }).reduce((s,e)=>s+Number(e.amount),0);
 
-  const profit = monthRevenue - totalExpenses;
+  // Painting & decorating jobs from the Quote-to-Job Pipeline (SteadyWorks × Fabs)
+  // are subcontracted out, so their contribution to profit here is only
+  // SteadyWorks's share — after the reinvestment reserve comes off the top
+  // and what's left is split with Fabs (paintSplit() handles both steps).
+  const paintThisMonth = paintRecords().filter(r=>{
+    const d = new Date(r.dateAccepted); return !isNaN(d) && d.getMonth()===thisMonth && d.getFullYear()===thisYear;
+  });
+  const paintSwShareThisMonth = paintThisMonth.reduce((s,r)=>s+paintSplit(r).swShare,0);
+  const paintReinvestThisMonth = paintThisMonth.reduce((s,r)=>s+paintSplit(r).reinvestment,0);
+
+  const profit = monthRevenue - totalExpenses + paintSwShareThisMonth;
 
   const quotesSent = DB.quotes.filter(q=>['sent','approved','declined','expired'].includes(q.status)).length;
   const quotesWon = DB.quotes.filter(q=>q.status==='approved').length;
@@ -1890,7 +2110,8 @@ function view_sw_dashboard(){
     {label:'Quote Conversion', value:conversionRate+'%', delta: quotesWon+' of '+quotesSent+' won', up: conversionRate>=40, icon:'✅', bg:'#ECFDF5'},
     {label:'Average Job Value', value:fmt(avgJobValue), delta:'Across all jobs', up:true, icon:'🛠️', bg:'#FFFBEB'},
     {label:'Jobs This Month', value:jobsThisMonth, delta: completedJobs+' completed total', up:true, icon:'📦', bg:'#EFF6FF'},
-    {label:'New Leads (30d)', value:newLeads, delta:'Pipeline activity', up:true, icon:'🎯', bg:'#FDF2F8'}
+    {label:'New Leads (30d)', value:newLeads, delta:'Pipeline activity', up:true, icon:'🎯', bg:'#FDF2F8'},
+    {label:'Painting × Fabs — Your Share', value:fmt(paintSwShareThisMonth), delta: fmt(paintReinvestThisMonth)+' held in reserve', up:true, icon:'🎨', bg:'#F5F3FF'}
   ];
 
   const kpiHtml = kpis.map(k=>`
@@ -2137,6 +2358,7 @@ function view_leads(){
         <div class="kanban-card" draggable="true" ondragstart="dragLead(event,'${l.id}')" onclick="openLeadModal('${l.id}')">
           <div class="kc-name">${esc(l.name)}</div>
           <div class="kc-meta">${esc(l.source)} · ${l.value?fmt(l.value):'No value set'}</div>
+          ${l.depositStatus?`<div class="kc-meta">Deposit: ${esc(l.depositStatus)}</div>`:''}
         </div>`).join('') || '<div class="muted small" style="padding:8px 4px;">No leads</div>'}
     </div>`;
   }).join('');
@@ -2166,10 +2388,19 @@ function openLeadModal(id){
         <div class="form-group"><label>Email</label><input id="f-email" type="email" value="${lead?esc(lead.email):''}"></div>
       </div>
       <div class="form-row">
-        <div class="form-group"><label>Lead Source</label><select id="f-source">${['Website','Google','Facebook','Referral','Tender','Repeat Customer','Other'].map(s=>`<option ${lead&&lead.source===s?'selected':''}>${s}</option>`).join('')}</select></div>
-        <div class="form-group"><label>Estimated Value (£)</label><input id="f-value" type="number" value="${lead?lead.value:''}"></div>
+        <div class="form-group"><label>Lead Source</label><select id="f-source">${['Website','Google','Facebook','Referral','Tender','Repeat Customer','SMS','Email & WhatsApp','Other'].map(s=>`<option ${lead&&lead.source===s?'selected':''}>${s}</option>`).join('')}</select></div>
+        <div class="form-group"><label>Quote Value (£)</label><input id="f-value" type="number" value="${lead?lead.value:''}"></div>
       </div>
-      <div class="form-group"><label>Notes</label><textarea id="f-notes">${lead?esc(lead.notes):''}</textarea></div>
+      <div class="form-row">
+        <div class="form-group"><label>Quote Ref</label><input id="f-quoteref" type="text" placeholder="e.g. SW-20260823-001" value="${lead&&lead.quoteRef?esc(lead.quoteRef):''}"></div>
+        <div class="form-group"><label>Job Type</label><select id="f-jobtype">${['Labour only','Labour & materials'].map(s=>`<option ${lead&&lead.jobType===s?'selected':''}>${s}</option>`).join('')}</select></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Deposit %</label><input id="f-depositpct" type="number" value="${lead&&lead.depositPct!=null?lead.depositPct:''}" placeholder="e.g. 40"></div>
+        <div class="form-group"><label>Deposit Status</label><select id="f-depositstatus">${['Not taken','Awaiting','Taken','Paid'].map(s=>`<option ${lead&&lead.depositStatus===s?'selected':''}>${s}</option>`).join('')}</select></div>
+      </div>
+      <div class="form-group"><label>Scheduled Date</label><input id="f-scheduled" type="date" value="${lead&&lead.scheduledDate?lead.scheduledDate:''}"></div>
+      <div class="form-group"><label>Notes <span class="small muted">(address, contact method, anything else from the original quote)</span></label><textarea id="f-notes">${lead?esc(lead.notes):''}</textarea></div>
     </div>
     <div class="modal-foot">
       ${lead?`<button class="btn btn-danger" onclick="deleteLead('${lead.id}')">Delete</button>`:''}
@@ -2187,6 +2418,11 @@ function saveLead(id){
     email: document.getElementById('f-email').value,
     source: document.getElementById('f-source').value,
     value: Number(document.getElementById('f-value').value)||0,
+    quoteRef: document.getElementById('f-quoteref').value.trim(),
+    jobType: document.getElementById('f-jobtype').value,
+    depositPct: document.getElementById('f-depositpct').value ? Number(document.getElementById('f-depositpct').value) : null,
+    depositStatus: document.getElementById('f-depositstatus').value,
+    scheduledDate: document.getElementById('f-scheduled').value,
     notes: document.getElementById('f-notes').value
   };
   if(id){ Object.assign(DB.leads.find(l=>l.id===id), data); toast('Lead updated'); }
@@ -3580,14 +3816,92 @@ function printDoc(kind, id){
 
 /* ===================== CALENDAR ===================== */
 let calCursor = new Date();
-let calMode = 'internal';
+let calMode = 'due';
+
+/* ---------- Due/upcoming aggregator — pulls real dates from every module ---------- */
+function gcalUrl(title, dateStr, details, location){
+  if(!dateStr) return '#';
+  const start = dateStr.replace(/-/g,'');
+  const endDate = new Date(dateStr); endDate.setDate(endDate.getDate()+1);
+  const end = endDate.toISOString().slice(0,10).replace(/-/g,'');
+  const params = new URLSearchParams({
+    action:'TEMPLATE', text:title, dates:`${start}/${end}`, details: details||'', location: location||''
+  });
+  return `https://calendar.google.com/calendar/render?${params.toString()}`;
+}
+function buildDueItems(){
+  const items = [];
+  (DB.jobs||[]).forEach(j=>{
+    if(!j.startDate || ['completed','cancelled','invoiced'].includes(j.status)) return;
+    items.push({date:j.startDate, type:'Job', title:(j.jobNumber||'Job')+' — '+j.customerName, details:'Job start. Status: '+j.status, location:j.address||'', goRoute:'jobs', goId:j.id});
+  });
+  (DB.invoices||[]).forEach(i=>{
+    if(!i.dueDate || i.status==='paid') return;
+    const total = calcInvoiceTotal(i).total;
+    items.push({date:i.dueDate, type:'Invoice Due', title:(i.invoiceNumber||'Invoice')+' — '+i.customerName+' ('+fmt(total)+')', details:'Invoice due. Status: '+i.status, location:'', goRoute:'invoices', goId:i.id});
+  });
+  (DB.quotes||[]).forEach(q=>{
+    if(!q.validUntil || !['draft','sent'].includes(q.status)) return;
+    items.push({date:q.validUntil, type:'Quote Expiry', title:(q.quoteNumber||'Quote')+' — '+q.customerName+' expires', details:'Quote valid until this date.', location:'', goRoute:'quotes', goId:q.id});
+  });
+  (paintRecords()||[]).forEach(r=>{
+    if(!r.scheduledStart || ['lost','paid'].includes(r.stage)) return;
+    items.push({date:r.scheduledStart, type:'Pipeline Job', title:'Pipeline — '+(r.clientName||'Unnamed'), details:'Painting/decorating job start ('+(r.jobType==='personal'?'Personal':'Joint w/ Fabs')+').', location:'', goRoute:'pipeline', goId:r.id});
+  });
+  (DB.leads||[]).forEach(l=>{
+    if(!l.scheduledDate) return;
+    items.push({date:l.scheduledDate, type:'Lead Scheduled', title:l.name+' — scheduled', details:'Lead/quote scheduled date.'+(l.notes?('\n\n'+l.notes):''), location:'', goRoute:'leads', goId:l.id});
+  });
+  items.sort((a,b)=>new Date(a.date)-new Date(b.date));
+  return items;
+}
+function view_dueItems(){
+  const items = buildDueItems();
+  const today = new Date(); today.setHours(0,0,0,0);
+  const in7 = new Date(today); in7.setDate(in7.getDate()+7);
+  const in30 = new Date(today); in30.setDate(in30.getDate()+30);
+  const buckets = {overdue:[], week:[], month:[], later:[]};
+  items.forEach(it=>{
+    const d = new Date(it.date);
+    if(isNaN(d)) return;
+    if(d<today) buckets.overdue.push(it);
+    else if(d<=in7) buckets.week.push(it);
+    else if(d<=in30) buckets.month.push(it);
+    else buckets.later.push(it);
+  });
+  function row(it){
+    const canDeepLink = it.goRoute==='jobs';
+    return `<tr class="row-link" onclick="${it.goRoute?`navigate('${it.goRoute}'${canDeepLink&&it.goId?`,'${it.goId}'`:''})`:''}">
+      <td>${fmtDate(it.date)}</td>
+      <td><span class="tag-chip" style="background:${eventColor(it.type)}22;color:${eventColor(it.type)};">${esc(it.type)}</span></td>
+      <td>${esc(it.title)}</td>
+      <td><a class="btn btn-ghost btn-sm" href="${gcalUrl(it.title, it.date, it.details, it.location)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">+ Google Calendar</a></td>
+    </tr>`;
+  }
+  function section(label, list, emptyMsg){
+    return `<div class="card mt-10">
+      <div class="card-title">${label} <span class="small muted">(${list.length})</span></div>
+      <table><tbody>${list.length ? list.map(row).join('') : `<tr><td colspan="4" class="muted" style="text-align:center;padding:14px;">${emptyMsg}</td></tr>`}</tbody></table>
+    </div>`;
+  }
+  return `
+  ${section('⚠️ Overdue', buckets.overdue, 'Nothing overdue')}
+  ${section('This Week', buckets.week, 'Nothing due in the next 7 days')}
+  ${section('Next 30 Days', buckets.month, 'Nothing else due in the next 30 days')}
+  ${buckets.later.length ? section('Later', buckets.later, '') : ''}
+  `;
+}
 function setCalMode(m){ calMode = m; renderPage(); }
 const CAL_TABS = `<div class="flex gap-8 mb-10">
+  <button class="btn ${calMode==='due'?'btn-gold':'btn-ghost'} btn-sm" onclick="setCalMode('due')">⏰ Due &amp; Upcoming</button>
   <button class="btn ${calMode==='internal'?'btn-gold':'btn-ghost'} btn-sm" onclick="setCalMode('internal')">📋 Job Calendar</button>
   <button class="btn ${calMode==='google'?'btn-gold':'btn-ghost'} btn-sm" onclick="setCalMode('google')">📆 Google Calendar</button>
 </div>`;
 const GOOGLE_CAL_IDS = ['l.thomas@steadyflowmarketing.agency'];
 function view_calendar(){
+  if(calMode==='due'){
+    return `${CAL_TABS}${view_dueItems()}`;
+  }
   if(calMode==='google'){
     const src = GOOGLE_CAL_IDS.map(id=>`src=${encodeURIComponent(id)}`).join('&');
     return `${CAL_TABS}
@@ -3602,7 +3916,10 @@ function view_calendar(){
   const daysInMonth = new Date(y,m+1,0).getDate();
   const today = new Date();
 
-  const allEvents = DB.events.concat(DB.jobs.map(j=>({id:'job-'+j.id, title:j.jobNumber+' — '+j.customerName, date:j.startDate, type:'Job', assignedTo:j.assignedTo, jobId:j.id})));
+  const allEvents = DB.events.concat(
+    DB.jobs.map(j=>({id:'job-'+j.id, title:j.jobNumber+' — '+j.customerName, date:j.startDate, type:'Job', assignedTo:j.assignedTo, jobId:j.id})),
+    buildDueItems().filter(it=>it.type!=='Job').map(it=>({id:it.type+'-'+it.title, title:it.title, date:it.date, type:it.type}))
+  );
 
   let cells = '';
   for(let i=0;i<startOffset;i++){
@@ -3615,7 +3932,7 @@ function view_calendar(){
     const evs = allEvents.filter(e=>e.date===dateStr);
     cells += `<div class="cal-cell ${isToday?'today':''}">
       <div class="cal-daynum">${day}</div>
-      ${evs.slice(0,3).map(e=>`<div class="cal-event" style="background:${eventColor(e.type)}33;color:${eventColor(e.type)};" onclick="${e.jobId?`navigate('jobs','${e.jobId}')`:`openEventModal('${e.id}')`}" title="${esc(e.title)}">${esc(e.title)}</div>`).join('')}
+      ${evs.slice(0,3).map(e=>`<div class="cal-event" style="background:${eventColor(e.type)}33;color:${eventColor(e.type)};" onclick="${e.jobId?`navigate('jobs','${e.jobId}')`:(DB.events.find(x=>x.id===e.id)?`openEventModal('${e.id}')`:`setCalMode('due')`)}" title="${esc(e.title)}">${esc(e.title)}</div>`).join('')}
       ${evs.length>3?`<div class="small muted">+${evs.length-3} more</div>`:''}
     </div>`;
   }
@@ -3634,11 +3951,13 @@ function view_calendar(){
       <button class="btn btn-ghost btn-sm" onclick="calNav(1)">Next →</button>
     </div>
     <h2 style="font-size:18px;font-weight:800;">${firstDay.toLocaleDateString('en-GB',{month:'long',year:'numeric'})}</h2>
-    <div class="flex gap-8 small">
+    <div class="flex gap-8 small" style="flex-wrap:wrap;">
       <span class="tag-chip" style="background:${eventColor('Job')}22;color:${eventColor('Job')};">● Job</span>
       <span class="tag-chip" style="background:${eventColor('Site Visit')}22;color:${eventColor('Site Visit')};">● Site Visit</span>
-      <span class="tag-chip" style="background:${eventColor('Quote')}22;color:${eventColor('Quote')};">● Quote</span>
-      <span class="tag-chip" style="background:${eventColor('Inspection')}22;color:${eventColor('Inspection')};">● Inspection</span>
+      <span class="tag-chip" style="background:${eventColor('Invoice Due')}22;color:${eventColor('Invoice Due')};">● Invoice Due</span>
+      <span class="tag-chip" style="background:${eventColor('Quote Expiry')}22;color:${eventColor('Quote Expiry')};">● Quote Expiry</span>
+      <span class="tag-chip" style="background:${eventColor('Pipeline Job')}22;color:${eventColor('Pipeline Job')};">● Pipeline Job</span>
+      <span class="tag-chip" style="background:${eventColor('Lead Scheduled')}22;color:${eventColor('Lead Scheduled')};">● Lead Scheduled</span>
     </div>
   </div>
   <div class="cal-grid">
@@ -3647,7 +3966,7 @@ function view_calendar(){
   </div>`;
 }
 function eventColor(type){
-  return {Job:'#E11D2A','Site Visit':'#0EA5E9',Quote:'#7C3AED',Inspection:'#EF4444'}[type] || '#1A1A1A';
+  return {Job:'#E11D2A','Site Visit':'#0EA5E9',Quote:'#7C3AED',Inspection:'#EF4444','Invoice Due':'#F59E0B','Quote Expiry':'#7C3AED','Pipeline Job':'#A78BFA','Lead Scheduled':'#22C55E'}[type] || '#1A1A1A';
 }
 function calNav(dir){
   if(dir===0) calCursor = new Date();
@@ -3906,6 +4225,97 @@ function deleteSubcontractor(id){
   confirmDelete('Remove '+(s0?s0.name:'this subcontractor')+'?', "This can't be undone.", ()=>{
     DB.subcontractors = DB.subcontractors.filter(s=>s.id!==id); save(); closeModal(); renderPage(); renderNav(); toast('Removed','🗑️');
   });
+}
+
+/* ===================== CONTACT IMPORT ===================== */
+let IMPORT_ROWS = [];
+function parseVCardFile(text){
+  const blocks = text.split(/BEGIN:VCARD/i).slice(1);
+  return blocks.map(block=>{
+    const fnMatch = block.match(/^FN:(.*)$/im);
+    const telMatch = block.match(/^TEL[^:]*:(.*)$/im);
+    const noteMatch = block.match(/^NOTE:(.*)$/im);
+    return {
+      name: fnMatch ? fnMatch[1].trim() : '',
+      phone: telMatch ? telMatch[1].trim() : '',
+      note: noteMatch ? noteMatch[1].trim() : ''
+    };
+  }).filter(r=>r.name || r.phone);
+}
+function openImportContactsModal(defaultType){
+  IMPORT_ROWS = [];
+  openModal(`
+    <div class="modal-head"><h2>Import Contacts</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <p class="small muted mb-10">Upload a .vcf file exported from your phone's contacts. Anything with "Client" in the name is auto-tagged as a Customer — review and adjust before importing.</p>
+      <input id="import-file-input" type="file" accept=".vcf,text/vcard" onchange="handleImportFile(this,'${defaultType||'customer'}')">
+      <div id="import-review" style="margin-top:16px;"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button id="import-run-btn" class="btn btn-gold" style="display:none;" onclick="runImportContacts()">Import Selected</button>
+    </div>`, true);
+}
+function handleImportFile(input, defaultType){
+  const file = input.files && input.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = (e)=>{
+    IMPORT_ROWS = parseVCardFile(e.target.result).map(r=>{
+      const isClient = /client/i.test(r.name);
+      return Object.assign(r, {selected: isClient, type: isClient ? 'customer' : (defaultType==='subcontractor'?'subcontractor':'skip')});
+    });
+    renderImportReview();
+  };
+  reader.readAsText(file);
+}
+function renderImportReview(){
+  const box = document.getElementById('import-review');
+  const btn = document.getElementById('import-run-btn');
+  if(!box) return;
+  if(!IMPORT_ROWS.length){ box.innerHTML = '<p class="small muted">No contacts found in that file.</p>'; if(btn) btn.style.display='none'; return; }
+  const selectedCount = IMPORT_ROWS.filter(r=>r.selected && r.type!=='skip').length;
+  box.innerHTML = `
+    <p class="small muted mb-10">${IMPORT_ROWS.length} contacts found — ${selectedCount} selected to import.</p>
+    <div style="max-height:340px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;">
+      <table style="width:100%;">
+        <thead><tr><th style="width:36px;"></th><th>Name</th><th>Phone</th><th>Import as</th></tr></thead>
+        <tbody>
+          ${IMPORT_ROWS.map((r,i)=>`
+            <tr>
+              <td><input type="checkbox" ${r.selected?'checked':''} onchange="IMPORT_ROWS[${i}].selected=this.checked; renderImportReview();"></td>
+              <td><input type="text" value="${esc(r.name)}" style="width:100%;" onchange="IMPORT_ROWS[${i}].name=this.value;"></td>
+              <td><input type="text" value="${esc(r.phone)}" style="width:100%;" onchange="IMPORT_ROWS[${i}].phone=this.value;"></td>
+              <td>
+                <select onchange="IMPORT_ROWS[${i}].type=this.value; renderImportReview();">
+                  <option value="customer" ${r.type==='customer'?'selected':''}>Customer</option>
+                  <option value="subcontractor" ${r.type==='subcontractor'?'selected':''}>Subcontractor</option>
+                  <option value="skip" ${r.type==='skip'?'selected':''}>Skip</option>
+                </select>
+              </td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
+  if(btn) btn.style.display = 'inline-block';
+}
+function runImportContacts(){
+  const rows = IMPORT_ROWS.filter(r=>r.selected && r.type!=='skip');
+  if(!rows.length){ toast('Nothing selected to import','⚠️'); return; }
+  let custCount = 0, subCount = 0;
+  rows.forEach(r=>{
+    const importNote = (r.note?r.note+' — ':'')+'Imported from phone contacts';
+    if(r.type==='customer'){
+      DB.customers.push({id:uid(), name:r.name||'Unnamed', phone:r.phone, email:'', address:'', propertyType:'Residential', leadSource:'Other', notes:importNote});
+      custCount++;
+    } else if(r.type==='subcontractor'){
+      DB.subcontractors.push({id:uid(), name:r.name||'Unnamed', trade:'', phone:r.phone, email:'', dayRate:0, insuranceExpiry:null, notes:importNote});
+      subCount++;
+    }
+  });
+  logActivity('Contacts imported', `${custCount} customer(s), ${subCount} subcontractor(s)`);
+  save(); closeModal(); renderPage(); renderNav();
+  toast(`Imported ${custCount} customer${custCount===1?'':'s'}${subCount?`, ${subCount} subcontractor${subCount===1?'':'s'}`:''}`);
 }
 
 /* ===================== EXPENSES ===================== */
@@ -4396,4 +4806,821 @@ function saveSettings(){
   DB.settings.monthlyTargets = Array(12).fill(DB.settings.annualTarget/12);
   save();
   toast('Settings saved');
+}
+
+/* ===================== PAINT PIPELINE (SteadyWorks × Fabs) ===================== */
+const PAINT_QUOTE_STAGES = [
+  {id:'draft', label:'Draft'},
+  {id:'sent', label:'Sent'},
+  {id:'followup', label:'Follow-up'},
+  {id:'accepted', label:'Accepted'}
+];
+const PAINT_JOB_STAGES = [
+  {id:'scheduled', label:'Scheduled'},
+  {id:'inprogress', label:'In Progress'},
+  {id:'completed', label:'Completed'},
+  {id:'paid', label:'Paid'}
+];
+const PAINT_LOST_STAGE = {id:'lost', label:'Lost / Declined'};
+const PAINT_STAGE_MAP = {};
+PAINT_QUOTE_STAGES.concat(PAINT_JOB_STAGES, [PAINT_LOST_STAGE]).forEach(st=>{ PAINT_STAGE_MAP[st.id] = st.label; });
+const PAINT_TRADES = ['Painter','Plasterer','Electrician','Plumber','Tiler','Carpenter','Roofer','Labourer','Other'];
+const PAINT_LEAD_SOURCES = ['Referral','Instagram','Google','Repeat client','Other'];
+const PAINT_DEPOSIT_STATUSES = [
+  {id:'not_taken', label:'Not taken'},
+  {id:'taken', label:'Deposit taken'},
+  {id:'balance_paid', label:'Balance paid'}
+];
+
+/* ---------- PAINT PIPELINE — its own Supabase tables, not the shared DB blob ----------
+   This is deliberate: it's the one part of Steady Inc a non-staff outside
+   collaborator (Fabs) may eventually get their own restricted login to,
+   with real database-level access control (RLS), not just a hidden nav
+   item. Living in its own tables also means it can never be wiped by the
+   whole-DB-blob overwrite bug the rest of the app had to work around. */
+const PAINT_PIPELINE_OWNER_ID = 'ba2f4f82-30a4-4e7a-acab-533a336d2cb4'; // l.thomas@steadyflowmarketing.agency — fixed so both owner and partner logins write rows visible to each other under RLS
+let PAINT_JOBS_CACHE = [];
+let PAINT_SETTINGS_CACHE = {weeklyProfitTarget:2500, marketingSpendWeekly:300, marginLaneLow:20, marginLaneHigh:35, defaultDepositPct:25, reinvestmentPct:10, fabSplitPct:50, ownerId:PAINT_PIPELINE_OWNER_ID, partnerId:null};
+let PAINT_NOTES_CACHE = [];
+let PAINT_SPEND_CACHE = [];
+let PAINT_DATA_LOADED = false;
+
+function paintSettings(){ return PAINT_SETTINGS_CACHE; }
+function paintRecords(){ return PAINT_JOBS_CACHE; }
+function paintNotes(){ return PAINT_NOTES_CACHE; }
+function paintSpend(){ return PAINT_SPEND_CACHE; }
+function paintStageLabel(id){ return PAINT_STAGE_MAP[id] || id; }
+function paintSpendInWeek(weekStart){
+  return paintSpend().filter(s=>paintInWeek(s.spend_date, weekStart)).reduce((sum,s)=>sum+(Number(s.amount)||0),0);
+}
+function paintSpendTotal(){
+  return paintSpend().reduce((sum,s)=>sum+(Number(s.amount)||0),0);
+}
+function paintSpendBySource(){
+  const totals = {};
+  paintSpend().forEach(s=>{ const src = s.source||'Other'; totals[src] = (totals[src]||0) + (Number(s.amount)||0); });
+  return totals;
+}
+
+function paintJobRowToRecord(row){
+  return {
+    id: row.id,
+    clientName: row.client_name || 'Unnamed',
+    quoteValue: Number(row.quote_value)||0,
+    materialsCost: Number(row.materials_cost)||0,
+    tradeCosts: row.trade_costs || [],
+    depositPct: Number(row.deposit_pct)||0,
+    depositStatus: row.deposit_status || 'not_taken',
+    leadSource: row.lead_source || '',
+    dateQuoted: row.date_quoted || '',
+    dateAccepted: row.date_accepted || '',
+    scheduledStart: row.scheduled_start || '',
+    completedDate: row.completed_date || '',
+    notes: row.notes || '',
+    stage: row.stage || 'draft',
+    jobType: row.job_type || 'joint'
+  };
+}
+function paintSettingsRowToObject(row){
+  return {
+    weeklyProfitTarget: Number(row.weekly_profit_target)||0,
+    marketingSpendWeekly: Number(row.marketing_spend_weekly)||0,
+    marginLaneLow: Number(row.margin_lane_low)||0,
+    marginLaneHigh: Number(row.margin_lane_high)||0,
+    defaultDepositPct: Number(row.default_deposit_pct)||0,
+    reinvestmentPct: Number(row.reinvestment_pct)||0,
+    fabSplitPct: Number(row.fab_split_pct)!=null ? Number(row.fab_split_pct) : 50,
+    ownerId: row.owner_id,
+    partnerId: row.partner_id
+  };
+}
+async function loadPaintPipelineData(){
+  try{
+    const [{data: jobRows, error: jobsErr}, {data: settingsRow, error: settingsErr}, {data: noteRows, error: notesErr}, {data: spendRows, error: spendErr}] = await Promise.all([
+      sb.from('paint_pipeline_jobs').select('*').order('created_at', {ascending:true}),
+      sb.from('paint_pipeline_settings').select('*').eq('id',1).maybeSingle(),
+      sb.from('paint_pipeline_notes').select('*').order('created_at', {ascending:false}),
+      sb.from('paint_pipeline_marketing_spend').select('*').order('spend_date', {ascending:false})
+    ]);
+    if(!jobsErr && jobRows) PAINT_JOBS_CACHE = jobRows.map(paintJobRowToRecord);
+    if(!settingsErr && settingsRow) PAINT_SETTINGS_CACHE = paintSettingsRowToObject(settingsRow);
+    if(!notesErr && noteRows) PAINT_NOTES_CACHE = noteRows;
+    if(!spendErr && spendRows) PAINT_SPEND_CACHE = spendRows;
+    PAINT_DATA_LOADED = true;
+  }catch(e){ console.warn('Paint pipeline load failed:', e); }
+}
+let _paintRealtimeChannel = null;
+function subscribePaintPipelineRealtime(){
+  if(_paintRealtimeChannel) return;
+  _paintRealtimeChannel = sb.channel('paint-pipeline-changes')
+    .on('postgres_changes', {event:'*', schema:'public', table:'paint_pipeline_jobs'}, payload=>{
+      if(payload.eventType==='DELETE'){
+        PAINT_JOBS_CACHE = PAINT_JOBS_CACHE.filter(r=>r.id!==payload.old.id);
+      } else {
+        const rec = paintJobRowToRecord(payload.new);
+        const idx = PAINT_JOBS_CACHE.findIndex(r=>r.id===rec.id);
+        if(idx>-1) PAINT_JOBS_CACHE[idx] = rec; else PAINT_JOBS_CACHE.push(rec);
+      }
+      if(currentRoute==='pipeline' || currentRoute==='sw-dashboard' || currentRoute==='dashboard') renderPage();
+    })
+    .on('postgres_changes', {event:'*', schema:'public', table:'paint_pipeline_settings'}, payload=>{
+      if(payload.new) PAINT_SETTINGS_CACHE = paintSettingsRowToObject(payload.new);
+      if(currentRoute==='pipeline') renderPage();
+    })
+    .on('postgres_changes', {event:'*', schema:'public', table:'paint_pipeline_notes'}, payload=>{
+      if(payload.eventType==='DELETE'){
+        PAINT_NOTES_CACHE = PAINT_NOTES_CACHE.filter(n=>n.id!==payload.old.id);
+      } else if(!PAINT_NOTES_CACHE.find(n=>n.id===payload.new.id)){
+        PAINT_NOTES_CACHE.unshift(payload.new);
+      }
+      if(currentRoute==='pipeline') renderPage();
+    })
+    .on('postgres_changes', {event:'*', schema:'public', table:'paint_pipeline_marketing_spend'}, payload=>{
+      if(payload.eventType==='DELETE'){
+        PAINT_SPEND_CACHE = PAINT_SPEND_CACHE.filter(s=>s.id!==payload.old.id);
+      } else if(!PAINT_SPEND_CACHE.find(s=>s.id===payload.new.id)){
+        PAINT_SPEND_CACHE.unshift(payload.new);
+      }
+      if(currentRoute==='pipeline' || currentRoute==='sw-dashboard') renderPage();
+    })
+    .subscribe();
+}
+async function addPaintSpend(){
+  const dateEl = document.getElementById('ms-date'), amtEl = document.getElementById('ms-amount'), srcEl = document.getElementById('ms-source'), noteEl = document.getElementById('ms-notes');
+  const amount = Number(amtEl.value)||0;
+  if(amount<=0){ toast('Enter an amount first'); return; }
+  const row = {
+    owner_id: PAINT_PIPELINE_OWNER_ID,
+    spend_date: dateEl.value || new Date().toISOString().slice(0,10),
+    amount,
+    source: srcEl.value,
+    notes: noteEl.value.trim()
+  };
+  const {data, error} = await sb.from('paint_pipeline_marketing_spend').insert(row).select().single();
+  if(error){ toast('Could not log that spend — check your connection'); return; }
+  if(!PAINT_SPEND_CACHE.find(s=>s.id===data.id)) PAINT_SPEND_CACHE.unshift(data);
+  amtEl.value = ''; noteEl.value = '';
+  renderPage();
+  toast('Marketing spend logged');
+}
+function deletePaintSpend(id){
+  confirmDelete('Delete this spend entry?', "This can't be undone.", async ()=>{
+    PAINT_SPEND_CACHE = PAINT_SPEND_CACHE.filter(s=>s.id!==id);
+    closeModal(); renderPage();
+    const {error} = await sb.from('paint_pipeline_marketing_spend').delete().eq('id', id);
+    if(error) toast('Delete failed to sync — check your connection');
+  });
+}
+async function postPaintNote(){
+  const box = document.getElementById('paint-note-input');
+  if(!box) return;
+  const body = box.value.trim();
+  if(!body) return;
+  box.disabled = true;
+  const row = {
+    author_id: CURRENT_USER_ID,
+    author_email: CURRENT_USER_EMAIL,
+    author_role: CURRENT_PROFILE.role,
+    body
+  };
+  const {data, error} = await sb.from('paint_pipeline_notes').insert(row).select().single();
+  box.disabled = false;
+  if(error){ toast('Could not post that note — check your connection'); return; }
+  if(!PAINT_NOTES_CACHE.find(n=>n.id===data.id)) PAINT_NOTES_CACHE.unshift(data);
+  box.value = '';
+  renderPage();
+}
+async function deletePaintNote(id){
+  confirmDelete('Delete this note?', "This can't be undone.", async ()=>{
+    PAINT_NOTES_CACHE = PAINT_NOTES_CACHE.filter(n=>n.id!==id);
+    closeModal(); renderPage();
+    const {error} = await sb.from('paint_pipeline_notes').delete().eq('id', id);
+    if(error) toast('Delete failed to sync — check your connection');
+  });
+}
+
+function paintLabourTotal(rec){
+  return (rec.tradeCosts||[]).reduce((s,t)=> s + (Number(t.days)||0)*(Number(t.dayRate)||0), 0);
+}
+function paintDaysTotal(rec){
+  return (rec.tradeCosts||[]).reduce((s,t)=> s + (Number(t.days)||0), 0);
+}
+function paintCalc(rec){
+  const labour = paintLabourTotal(rec);
+  const materials = Number(rec.materialsCost)||0;
+  const value = Number(rec.quoteValue)||0;
+  const margin = value - materials - labour;
+  const pct = value>0 ? (margin/value*100) : 0;
+  return {labour, materials, value, margin, pct, days: paintDaysTotal(rec)};
+}
+// Joint jobs are subcontracted out with Fabs — margin isn't take-home, it's what's left
+// to (a) top up a reinvestment reserve for lead-gen/equipment/marketing,
+// then (b) split between SteadyWorks and Fabs on the joint venture.
+// Personal jobs are SteadyWorks-only — no reserve taken automatically, no Fabs share.
+function paintSplit(rec){
+  const c = paintCalc(rec);
+  const s = paintSettings();
+  if((rec.jobType||'joint')==='personal'){
+    return Object.assign({}, c, {reinvestment:0, splittable:c.margin, swShare:c.margin, fabsShare:0});
+  }
+  const reinvestPct = Number(s.reinvestmentPct)||0;
+  const swPct = Number(s.fabSplitPct)!=null ? Number(s.fabSplitPct) : 50;
+  const reinvestment = c.margin * reinvestPct/100;
+  const splittable = c.margin - reinvestment;
+  const swShare = splittable * swPct/100;
+  const fabsShare = splittable - swShare;
+  return Object.assign({}, c, {reinvestment, splittable, swShare, fabsShare});
+}
+const PAINT_JOB_TYPES = [{id:'joint', label:'Joint (with Fabs)'}, {id:'personal', label:'Personal (SteadyWorks only)'}];
+let PAINT_TYPE_FILTER = 'joint';
+function paintFilteredRecords(){
+  const recs = paintRecords();
+  if(PAINT_TYPE_FILTER==='all') return recs;
+  return recs.filter(r=>(r.jobType||'joint')===PAINT_TYPE_FILTER);
+}
+function setPaintTypeFilter(type){ PAINT_TYPE_FILTER = type; renderPage(); }
+
+/* ---------- week helpers (Mon-start, last 8 weeks incl. current) ---------- */
+function paintStartOfWeek(d){
+  const x = new Date(d); const day = (x.getDay()+6)%7;
+  x.setHours(0,0,0,0); x.setDate(x.getDate()-day);
+  return x;
+}
+function paintLast8WeekStarts(){
+  const weeks = [];
+  const thisWeekStart = paintStartOfWeek(new Date());
+  for(let i=7;i>=0;i--){ const d = new Date(thisWeekStart); d.setDate(d.getDate()-7*i); weeks.push(d); }
+  return weeks;
+}
+function paintWeekLabel(d){ return d.toLocaleDateString('en-GB',{day:'2-digit',month:'short'}); }
+function paintInWeek(dateStr, weekStart){
+  if(!dateStr) return false;
+  const d = new Date(dateStr);
+  if(isNaN(d)) return false;
+  const end = new Date(weekStart); end.setDate(end.getDate()+7);
+  return d>=weekStart && d<end;
+}
+
+/* ---------- PAGE ---------- */
+let PAINT_SHOW_LOST = true;
+
+function view_pipeline(){
+  const recs = paintFilteredRecords();
+  const s = paintSettings();
+  const profitLabel = PAINT_TYPE_FILTER==='personal' ? 'Profit (this wk)' : PAINT_TYPE_FILTER==='all' ? 'Total Profit (this wk)' : 'Joint Profit (this wk)';
+
+  const pipelineValue = recs.filter(r=>!['lost','paid'].includes(r.stage)).reduce((sum,r)=>sum+(Number(r.quoteValue)||0),0);
+  const marginable = recs.filter(r=>['accepted','scheduled','inprogress','completed','paid'].includes(r.stage) && Number(r.quoteValue)>0);
+  const avgMarginPct = marginable.length ? marginable.reduce((s2,r)=>s2+paintCalc(r).pct,0)/marginable.length : 0;
+  const decided = recs.filter(r=>['accepted','scheduled','inprogress','completed','paid','lost'].includes(r.stage));
+  const won = decided.filter(r=>r.stage!=='lost').length;
+  const conversionRate = decided.length ? (won/decided.length*100) : 0;
+
+  const weeks = paintLast8WeekStarts();
+  const thisWeekStart = weeks[weeks.length-1];
+  const thisWeekAccepted = recs.filter(r=>paintInWeek(r.dateAccepted, thisWeekStart));
+  const thisWeekRevenue = thisWeekAccepted.reduce((s2,r)=>s2+(Number(r.quoteValue)||0),0);
+  const thisWeekCosts = thisWeekAccepted.reduce((s2,r)=>{const c=paintCalc(r); return s2+c.materials+c.labour;},0);
+  const thisWeekMarketingSpend = paintSpendInWeek(thisWeekStart);
+  const thisWeekProfit = thisWeekRevenue - thisWeekCosts - thisWeekMarketingSpend;
+  const thisWeekReinvestment = thisWeekAccepted.reduce((s2,r)=>s2+paintSplit(r).reinvestment,0);
+  const thisWeekSwShare = thisWeekAccepted.reduce((s2,r)=>s2+paintSplit(r).swShare,0);
+  const thisWeekFabsShare = thisWeekAccepted.reduce((s2,r)=>s2+paintSplit(r).fabsShare,0);
+
+  const laneMarkerPct = Math.max(0, Math.min(100, avgMarginPct));
+
+  const collected = recs.filter(r=>paintInWeek(r.dateAccepted, thisWeekStart) && r.depositStatus==='taken').reduce((s2,r)=>s2+((Number(r.quoteValue)||0)*(Number(r.depositPct)||0)/100),0)
+    + recs.filter(r=>r.depositStatus==='balance_paid' && paintInWeek(r.completedDate||r.dateAccepted, thisWeekStart)).reduce((s2,r)=>s2+(Number(r.quoteValue)||0),0);
+  const owed = recs.filter(r=>['scheduled','inprogress','completed'].includes(r.stage)).reduce((s2,r)=>s2+paintCalc(r).labour,0);
+  const marketing = thisWeekMarketingSpend;
+  const cfMax = Math.max(collected, owed, marketing, thisWeekReinvestment, 1);
+  const spendBySource = paintSpendBySource();
+  const totalSpendAllTime = paintSpendTotal();
+
+  function kanbanCol(stage, muted, divider){
+    const items = recs.filter(r=>r.stage===stage.id);
+    const total = items.reduce((s2,r)=>s2+(Number(r.quoteValue)||0),0);
+    return `<div class="kanban-col ${muted?'lost-col':''} ${divider?'job-divider':''}" data-stage="${stage.id}" ondragover="event.preventDefault();this.classList.add('drag-over')" ondragleave="this.classList.remove('drag-over')" ondrop="dropPaint(event,'${stage.id}')">
+      <div class="kanban-col-head"><span>${esc(stage.label)} (${items.length})</span><span>${fmt(total)}</span></div>
+      ${items.map(r=>{
+        const c = paintCalc(r);
+        return `<div class="kanban-card" draggable="true" ondragstart="dragPaint(event,'${r.id}')" onclick="openPaintRecordModal('${r.id}')" title="${esc(r.clientName||'Unnamed')}">
+          <div class="kc-name">${esc(r.clientName||'Unnamed')}${PAINT_TYPE_FILTER==='all'?` <span class="small muted">${(r.jobType||'joint')==='personal'?'· Personal':'· Joint'}</span>`:''}</div>
+          <div class="kc-meta">${fmt(c.value)} · ${c.pct.toFixed(0)}%</div>
+          ${r.leadSource?`<div class="kc-meta">${esc(r.leadSource)}</div>`:''}
+        </div>`;
+      }).join('') || '<div class="muted small" style="padding:8px 4px;">Empty</div>'}
+    </div>`;
+  }
+
+  const quoteCols = PAINT_QUOTE_STAGES.map(st=>kanbanCol(st,false)).join('');
+  const jobCols = PAINT_JOB_STAGES.map((st,i)=>kanbanCol(st,false,i===0)).join('');
+  const lostCol = PAINT_SHOW_LOST ? kanbanCol(PAINT_LOST_STAGE, true) : '';
+  const totalCols = PAINT_QUOTE_STAGES.length + PAINT_JOB_STAGES.length + (PAINT_SHOW_LOST?1:0);
+
+  const notes = paintNotes();
+  const notesHtml = notes.length ? notes.map(n=>{
+    const isOwner = n.author_role==='owner';
+    const who = n.author_email===CURRENT_USER_EMAIL ? 'You' : (isOwner ? 'SteadyWorks' : 'Fabs');
+    return `<div class="paint-note">
+      <div class="paint-note-head">
+        <span class="pill ${isOwner?'st-won':'st-scheduled'}">${esc(who)}</span>
+        <span class="small muted">${esc(n.author_email||'')} · ${fmtDate(n.created_at)}</span>
+        <button class="icon-btn" style="margin-left:auto;" onclick="deletePaintNote('${n.id}')" title="Delete note">✕</button>
+      </div>
+      <div class="paint-note-body">${esc(n.body)}</div>
+    </div>`;
+  }).join('') : '<div class="muted small" style="padding:10px 4px;">No notes yet — leave one below for whoever\'s on the other side of this job.</div>';
+
+  return `
+  ${motdBanner()}
+  <div class="card paint-masthead">
+    <img src="assets/logo.png" onerror="this.style.display='none'" alt="SteadyWorks">
+    <span class="pm-x">×</span>
+    <img src="assets/fab-logo.png" onerror="this.style.display='none'" alt="Fully Active Building Services">
+  </div>
+
+  <div class="card mt-10 flex-between" style="flex-wrap:wrap;gap:8px;">
+    <div class="small muted">Viewing: <strong>${PAINT_TYPE_FILTER==='joint'?'Joint jobs (with Fabs)':PAINT_TYPE_FILTER==='personal'?'Personal jobs (SteadyWorks only)':'All jobs'}</strong></div>
+    <div class="seg-toggle">
+      <button class="seg-btn ${PAINT_TYPE_FILTER==='joint'?'active':''}" onclick="setPaintTypeFilter('joint')">Joint</button>
+      <button class="seg-btn ${PAINT_TYPE_FILTER==='personal'?'active':''}" onclick="setPaintTypeFilter('personal')">Personal</button>
+      <button class="seg-btn ${PAINT_TYPE_FILTER==='all'?'active':''}" onclick="setPaintTypeFilter('all')">All</button>
+    </div>
+  </div>
+
+  <div class="card mt-10">
+    <div class="card-title">Average Margin — Active &amp; Recent Jobs<span class="small muted">${avgMarginPct.toFixed(1)}%</span></div>
+    <div class="margin-lane" style="--lane-low:${s.marginLaneLow}%;--lane-high:${s.marginLaneHigh}%;">
+      <div class="margin-lane-marker" style="left:${laneMarkerPct}%;"></div>
+    </div>
+    <div class="flex-between small muted mt-10"><span>Thin lane (&lt;${s.marginLaneLow}%)</span><span>Healthy lane (&gt;${s.marginLaneHigh}%)</span></div>
+  </div>
+
+  <div class="grid grid-4 mt-10">
+    <div class="card kpi-card"><div class="kpi-label">Pipeline Value</div><div class="kpi-value">${fmt(pipelineValue)}</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Avg Margin</div><div class="kpi-value">${avgMarginPct.toFixed(1)}%</div></div>
+    <div class="card kpi-card"><div class="kpi-label">${profitLabel}</div><div class="kpi-value">${fmt(thisWeekProfit)}</div><div class="kpi-delta ${thisWeekProfit>=s.weeklyProfitTarget?'up':'down'}">Target ${fmt(s.weeklyProfitTarget)}</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Conversion Rate</div><div class="kpi-value">${conversionRate.toFixed(0)}%</div></div>
+  </div>
+
+  <div class="grid grid-3 mt-10">
+    <div class="card kpi-card"><div class="kpi-label">Reinvestment Reserve (this wk)</div><div class="kpi-value" style="color:#A78BFA;">${fmt(thisWeekReinvestment)}</div><div class="kpi-delta up">${s.reinvestmentPct||0}% off every job</div></div>
+    <div class="card kpi-card"><div class="kpi-label">SteadyWorks Share (this wk)</div><div class="kpi-value" style="color:#22C55E;">${fmt(thisWeekSwShare)}</div><div class="kpi-delta up">${s.fabSplitPct!=null?s.fabSplitPct:50}% of remainder</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Fabs Share (this wk)</div><div class="kpi-value" style="color:#7DD3FC;">${fmt(thisWeekFabsShare)}</div><div class="kpi-delta up">${100-(s.fabSplitPct!=null?s.fabSplitPct:50)}% of remainder</div></div>
+  </div>
+
+  <div class="grid grid-2 mt-10">
+    <div class="card"><div class="card-title">Pipeline Value Funnel</div><div style="height:280px;"><canvas id="chartPaintFunnel"></canvas></div></div>
+    <div class="card"><div class="card-title">Revenue vs Profit — Last 8 Weeks</div><div style="height:280px;"><canvas id="chartPaintRevenueProfit"></canvas></div></div>
+    <div class="card"><div class="card-title">Margin % Trend</div><div style="height:240px;"><canvas id="chartPaintMarginTrend"></canvas></div></div>
+    <div class="card"><div class="card-title">Trade Cost Breakdown — Active Jobs</div><div style="height:240px;"><canvas id="chartPaintTradeBreakdown"></canvas></div></div>
+    <div class="card"><div class="card-title">Lead Source Performance</div><div style="height:240px;"><canvas id="chartPaintLeadSource"></canvas></div></div>
+    <div class="card">
+      <div class="card-title">Conversion — Quotes Sent vs Accepted</div>
+      <div style="height:150px;"><canvas id="chartPaintConversion"></canvas></div>
+      <div style="height:110px;margin-top:8px;"><canvas id="chartPaintConversionTrend"></canvas></div>
+    </div>
+  </div>
+
+  <div class="card mt-10">
+    <div class="card-title">Cash Flow Snapshot — This Week</div>
+    <div class="cashflow-row"><div class="cf-label">Collected</div><div class="cf-track"><div class="cf-fill" style="width:${(collected/cfMax*100).toFixed(0)}%;background:#22C55E;"></div></div><div class="cf-value">${fmt(collected)}</div></div>
+    <div class="cashflow-row"><div class="cf-label">Trade Costs Owed</div><div class="cf-track"><div class="cf-fill" style="width:${(owed/cfMax*100).toFixed(0)}%;background:${owed>collected?'#EF4444':'#F59E0B'};"></div></div><div class="cf-value">${fmt(owed)}</div></div>
+    <div class="cashflow-row"><div class="cf-label">Marketing Spend</div><div class="cf-track"><div class="cf-fill" style="width:${(marketing/cfMax*100).toFixed(0)}%;background:var(--teal);"></div></div><div class="cf-value">${fmt(marketing)}</div></div>
+    <div class="cashflow-row"><div class="cf-label">Reinvestment Reserve</div><div class="cf-track"><div class="cf-fill" style="width:${(thisWeekReinvestment/cfMax*100).toFixed(0)}%;background:#7C3AED;"></div></div><div class="cf-value">${fmt(thisWeekReinvestment)}</div></div>
+    ${owed>collected?`<div class="cashflow-warning">⚠️ Trade costs owed this week (${fmt(owed)}) exceed collected revenue (${fmt(collected)}) — cash is exposed.</div>`:''}
+  </div>
+
+  <div class="card mt-10">
+    <div class="flex-between mb-10">
+      <div class="card-title" style="margin-bottom:0;">Marketing Spend Log</div>
+      <span class="small muted">This week ${fmt(thisWeekMarketingSpend)} · target ${fmt(s.marketingSpendWeekly)}/wk · ${fmt(totalSpendAllTime)} logged all-time</span>
+    </div>
+    <div class="paint-note-form mb-10">
+      <input id="ms-date" type="date" value="${new Date().toISOString().slice(0,10)}" style="max-width:150px;">
+      <input id="ms-amount" type="number" placeholder="Amount £" style="max-width:110px;">
+      <select id="ms-source" style="max-width:150px;">${PAINT_LEAD_SOURCES.map(x=>`<option>${x}</option>`).join('')}</select>
+      <input id="ms-notes" type="text" placeholder="What was this for? (optional)" style="flex:1;">
+      <button class="btn btn-gold btn-sm" onclick="addPaintSpend()">Add Entry</button>
+    </div>
+    ${Object.keys(spendBySource).length ? `<div class="flex" style="gap:8px;flex-wrap:wrap;margin-bottom:12px;">${Object.entries(spendBySource).map(([src,amt])=>`<span class="tag-chip">${esc(src)}: ${fmt(amt)}</span>`).join('')}</div>` : ''}
+    <table>
+      <thead><tr><th>Date</th><th>Amount</th><th>Source</th><th>Notes</th><th></th></tr></thead>
+      <tbody>${paintSpend().length ? paintSpend().map(sp=>`
+        <tr>
+          <td>${fmtDate(sp.spend_date)}</td>
+          <td>${fmt(sp.amount)}</td>
+          <td>${esc(sp.source||'Other')}</td>
+          <td class="small muted">${esc(sp.notes||'—')}</td>
+          <td><button class="icon-btn" onclick="deletePaintSpend('${sp.id}')" title="Delete">✕</button></td>
+        </tr>`).join('') : `<tr><td colspan="5" class="muted" style="text-align:center;padding:16px;">No spend logged yet</td></tr>`}</tbody>
+    </table>
+  </div>
+
+  <div class="card mt-10">
+    <div class="flex-between mb-10">
+      <div class="card-title" style="margin-bottom:0;">Pipeline Board</div>
+      <label class="small muted" style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" ${PAINT_SHOW_LOST?'checked':''} onchange="togglePaintLost(this.checked)"> Show Lost/Declined</label>
+    </div>
+    <div class="paint-kanban" style="grid-template-columns:repeat(${totalCols},minmax(0,1fr));">
+      ${quoteCols}
+      ${jobCols}
+      ${lostCol}
+    </div>
+  </div>
+
+  <div class="card mt-10">
+    <div class="card-title">Collaboration Notes</div>
+    <div class="paint-notes-list">${notesHtml}</div>
+    <div class="paint-note-form">
+      <textarea id="paint-note-input" placeholder="Leave a note for whoever's on the other side of this — visible to both SteadyWorks and Fabs."></textarea>
+      <button class="btn btn-gold btn-sm" onclick="postPaintNote()">Post Note</button>
+    </div>
+  </div>`;
+}
+
+function afterRender_pipeline(){
+  const recs = paintFilteredRecords();
+  const s = paintSettings();
+
+  const funnelStages = PAINT_QUOTE_STAGES.concat(PAINT_JOB_STAGES);
+  chartSafe('chartPaintFunnel','bar',{
+    labels: funnelStages.map(st=>st.label),
+    datasets:[{label:'Value', data: funnelStages.map(st=>recs.filter(r=>r.stage===st.id).reduce((s2,r)=>s2+(Number(r.quoteValue)||0),0)), backgroundColor:'#E11D2A', borderRadius:6}]
+  },{ indexAxis:'y', plugins:{legend:{display:false}}, scales:{x:{ticks:{callback:v=>'£'+v}}} });
+
+  const weeks = paintLast8WeekStarts();
+  const weekLabels = weeks.map(paintWeekLabel);
+  const weeklyRevenue = [], weeklyProfit = [], weeklyMargin = [], weeklySwShare = [], weeklyFabsShare = [];
+  weeks.forEach(w=>{
+    const inWeek = recs.filter(r=>paintInWeek(r.dateAccepted, w));
+    const revenue = inWeek.reduce((s2,r)=>s2+(Number(r.quoteValue)||0),0);
+    const costs = inWeek.reduce((s2,r)=>{const c=paintCalc(r); return s2+c.materials+c.labour;},0);
+    weeklyRevenue.push(revenue);
+    weeklyProfit.push(revenue - costs - paintSpendInWeek(w));
+    weeklySwShare.push(inWeek.reduce((s2,r)=>s2+paintSplit(r).swShare,0));
+    weeklyFabsShare.push(inWeek.reduce((s2,r)=>s2+paintSplit(r).fabsShare,0));
+    const withValue = inWeek.filter(r=>Number(r.quoteValue)>0);
+    weeklyMargin.push(withValue.length ? withValue.reduce((s2,r)=>s2+paintCalc(r).pct,0)/withValue.length : null);
+  });
+  chartSafe('chartPaintRevenueProfit','bar',{
+    labels: weekLabels,
+    datasets:[
+      {type:'bar', label:'Revenue', data:weeklyRevenue, backgroundColor:'rgba(225,29,42,0.35)', borderRadius:6},
+      {type:'line', label:'Joint Profit', data:weeklyProfit, borderColor:'#F59E0B', backgroundColor:'rgba(245,158,11,0.15)', tension:.3, fill:false},
+      {type:'line', label:'SteadyWorks Share', data:weeklySwShare, borderColor:'#22C55E', backgroundColor:'rgba(34,197,94,0.15)', tension:.3, fill:false},
+      {type:'line', label:'Fabs Share', data:weeklyFabsShare, borderColor:'#7DD3FC', backgroundColor:'rgba(125,211,252,0.15)', tension:.3, fill:false}
+    ]
+  },{ plugins:{legend:{position:'bottom',labels:{boxWidth:10,font:{size:11}}}}, scales:{y:{ticks:{callback:v=>'£'+v}}} });
+
+  chartSafe('chartPaintMarginTrend','line',{
+    labels: weekLabels,
+    datasets:[{label:'Avg Margin %', data:weeklyMargin, borderColor:'#00E5CC', backgroundColor:'rgba(0,229,204,0.15)', fill:true, tension:.35, spanGaps:true}]
+  },{ plugins:{legend:{display:false}}, scales:{y:{ticks:{callback:v=>v+'%'}}} });
+
+  const activeJobs = recs.filter(r=>['scheduled','inprogress','completed'].includes(r.stage));
+  const tradeTotals = {};
+  activeJobs.forEach(r=>(r.tradeCosts||[]).forEach(t=>{ tradeTotals[t.trade] = (tradeTotals[t.trade]||0) + (Number(t.days)||0)*(Number(t.dayRate)||0); }));
+  chartSafe('chartPaintTradeBreakdown','doughnut',{
+    labels: Object.keys(tradeTotals),
+    datasets:[{data:Object.values(tradeTotals), backgroundColor:['#E11D2A','#00E5CC','#F59E0B','#7C3AED','#0EA5E9','#22C55E','#EC4899','#84CC16','#94A3B8']}]
+  },{ plugins:{legend:{position:'bottom',labels:{boxWidth:10,font:{size:10}}}} });
+
+  const sourceValue = {}, sourceWon = {}, sourceDecided = {};
+  recs.forEach(r=>{
+    const src = r.leadSource || 'Other';
+    sourceValue[src] = (sourceValue[src]||0) + (Number(r.quoteValue)||0);
+    if(['accepted','scheduled','inprogress','completed','paid','lost'].includes(r.stage)){
+      sourceDecided[src] = (sourceDecided[src]||0)+1;
+      if(r.stage!=='lost') sourceWon[src] = (sourceWon[src]||0)+1;
+    }
+  });
+  const sourceSpend = paintSpendBySource();
+  const sources = Array.from(new Set(Object.keys(sourceValue).concat(Object.keys(sourceSpend))));
+  chartSafe('chartPaintLeadSource','bar',{
+    labels: sources,
+    datasets:[
+      {type:'bar', label:'Quote Value Won', data: sources.map(src=>sourceValue[src]||0), backgroundColor:'#E11D2A', borderRadius:6, yAxisID:'y'},
+      {type:'bar', label:'Spend', data: sources.map(src=>sourceSpend[src]||0), backgroundColor:'#7C3AED', borderRadius:6, yAxisID:'y'},
+      {type:'line', label:'Win Rate %', data: sources.map(src=> sourceDecided[src] ? ((sourceWon[src]||0)/sourceDecided[src]*100) : 0), borderColor:'#00E5CC', backgroundColor:'#00E5CC', yAxisID:'y1', tension:.3}
+    ]
+  },{
+    plugins:{legend:{position:'bottom',labels:{boxWidth:10,font:{size:10}}}},
+    scales:{
+      y:{position:'left', ticks:{callback:v=>'£'+v}},
+      y1:{position:'right', grid:{drawOnChartArea:false}, ticks:{callback:v=>v+'%'}, min:0, max:100}
+    }
+  });
+
+  const decidedAll = recs.filter(r=>['accepted','scheduled','inprogress','completed','paid','lost'].includes(r.stage));
+  const wonAll = decidedAll.filter(r=>r.stage!=='lost').length;
+  const lostAll = decidedAll.length - wonAll;
+  chartSafe('chartPaintConversion','doughnut',{
+    labels:['Won','Lost'],
+    datasets:[{data:[wonAll,lostAll], backgroundColor:['#22C55E','#EF4444']}]
+  },{ plugins:{legend:{position:'bottom',labels:{boxWidth:10,font:{size:10}}}} });
+
+  const weeklyConversion = weeks.map(w=>{
+    const decidedInWeek = recs.filter(r=>{
+      if(!['accepted','scheduled','inprogress','completed','paid','lost'].includes(r.stage)) return false;
+      const decidedDate = r.stage==='lost' ? r.dateQuoted : r.dateAccepted;
+      return paintInWeek(decidedDate, w);
+    });
+    if(!decidedInWeek.length) return null;
+    const wonInWeek = decidedInWeek.filter(r=>r.stage!=='lost').length;
+    return (wonInWeek/decidedInWeek.length*100);
+  });
+  chartSafe('chartPaintConversionTrend','line',{
+    labels: weekLabels,
+    datasets:[{label:'Conversion %', data: weeklyConversion, borderColor:'#F59E0B', backgroundColor:'rgba(245,158,11,0.15)', fill:true, tension:.35, spanGaps:true, pointRadius:2}]
+  },{ plugins:{legend:{display:false}}, scales:{y:{min:0,max:100,ticks:{callback:v=>v+'%'}}, x:{ticks:{display:false}}} });
+}
+
+let _dragPaintId = null;
+function dragPaint(ev,id){ _dragPaintId = id; ev.target.classList.add('dragging'); }
+async function dropPaint(ev, stageId){
+  ev.currentTarget.classList.remove('drag-over');
+  const rec = paintRecords().find(r=>r.id===_dragPaintId);
+  if(!rec) return;
+  const before = {dateAccepted:rec.dateAccepted, completedDate:rec.completedDate, depositStatus:rec.depositStatus};
+  applyPaintStageTransition(rec, stageId);
+  renderPage(); // optimistic — reflect the move immediately, don't wait on the network
+  toast('Moved to '+paintStageLabel(stageId));
+  const patch = {stage: rec.stage};
+  if(rec.dateAccepted!==before.dateAccepted) patch.date_accepted = rec.dateAccepted || null;
+  if(rec.completedDate!==before.completedDate) patch.completed_date = rec.completedDate || null;
+  if(rec.depositStatus!==before.depositStatus) patch.deposit_status = rec.depositStatus;
+  const {error} = await sb.from('paint_pipeline_jobs').update(patch).eq('id', rec.id);
+  if(error){ toast('Could not save that move — check your connection'); }
+}
+function applyPaintStageTransition(rec, stageId){
+  const today = new Date().toISOString().slice(0,10);
+  if(stageId==='accepted' && !rec.dateAccepted) rec.dateAccepted = today;
+  if(stageId==='scheduled' && !rec.dateAccepted) rec.dateAccepted = today;
+  if(stageId==='completed' && !rec.completedDate) rec.completedDate = today;
+  if(stageId==='paid' && rec.depositStatus!=='balance_paid') rec.depositStatus = 'balance_paid';
+  rec.stage = stageId;
+}
+function togglePaintLost(checked){ PAINT_SHOW_LOST = checked; renderPage(); }
+
+function openPipelineQuickAdd(){
+  openModal(`
+    <div class="modal-head"><h2>New Quote</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <div class="form-group"><label>Client / Job Name</label><input id="qa-name" type="text" placeholder="e.g. Mrs Patel — 3 bed repaint"></div>
+      <div class="form-row">
+        <div class="form-group"><label>Quote Value (£)</label><input id="qa-value" type="number" value="0"></div>
+        <div class="form-group"><label>Lead Source</label><select id="qa-source">${PAINT_LEAD_SOURCES.map(x=>`<option>${x}</option>`).join('')}</select></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Date Quoted</label><input id="qa-date" type="date" value="${new Date().toISOString().slice(0,10)}"></div>
+        <div class="form-group"><label>Job Type</label><select id="qa-jobtype">${PAINT_JOB_TYPES.map(t=>`<option value="${t.id}" ${(PAINT_TYPE_FILTER==='personal'?'personal':'joint')===t.id?'selected':''}>${t.label}</option>`).join('')}</select></div>
+      </div>
+      <p class="small muted">Add trade costs, materials, deposit and notes after creating — this just gets it on the board fast.</p>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-gold" onclick="savePaintQuickAdd()">Add to Draft</button>
+    </div>
+  `);
+}
+async function savePaintQuickAdd(){
+  const row = {
+    owner_id: PAINT_PIPELINE_OWNER_ID,
+    client_name: document.getElementById('qa-name').value.trim() || 'Unnamed',
+    quote_value: Number(document.getElementById('qa-value').value)||0,
+    materials_cost: 0,
+    trade_costs: [],
+    deposit_pct: paintSettings().defaultDepositPct,
+    deposit_status: 'not_taken',
+    lead_source: document.getElementById('qa-source').value,
+    date_quoted: document.getElementById('qa-date').value || new Date().toISOString().slice(0,10),
+    notes: '',
+    stage: 'draft',
+    job_type: document.getElementById('qa-jobtype').value || 'joint'
+  };
+  const {data, error} = await sb.from('paint_pipeline_jobs').insert(row).select().single();
+  if(error){ toast('Could not create that quote — check your connection'); return; }
+  const rec = paintJobRowToRecord(data);
+  if(!paintRecords().find(r=>r.id===rec.id)) paintRecords().push(rec);
+  closeModal(); renderPage();
+  toast('Quote added to Draft');
+  openPaintRecordModal(rec.id);
+}
+
+let _paintTC = [];
+function openPaintRecordModal(id){
+  const rec = paintRecords().find(r=>r.id===id);
+  if(!rec) return;
+  _paintTC = (rec.tradeCosts||[]).map(t=>Object.assign({},t));
+  openModal(`
+    <div class="modal-head"><h2>${esc(rec.clientName||'Unnamed')}</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group"><label>Client / Job Name</label><input id="pf-name" type="text" value="${esc(rec.clientName||'')}"></div>
+        <div class="form-group"><label>Stage</label><select id="pf-stage">
+          <optgroup label="Quote">${PAINT_QUOTE_STAGES.map(st=>`<option value="${st.id}" ${rec.stage===st.id?'selected':''}>${st.label}</option>`).join('')}</optgroup>
+          <optgroup label="Job">${PAINT_JOB_STAGES.map(st=>`<option value="${st.id}" ${rec.stage===st.id?'selected':''}>${st.label}</option>`).join('')}</optgroup>
+          <option value="lost" ${rec.stage==='lost'?'selected':''}>Lost / Declined</option>
+        </select></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Quote Value (£)</label><input id="pf-quoteValue" type="number" value="${rec.quoteValue||0}" oninput="refreshPaintCalcSummary()"></div>
+        <div class="form-group"><label>Materials Cost (£)</label><input id="pf-materialsCost" type="number" value="${rec.materialsCost||0}" oninput="refreshPaintCalcSummary()"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Job Type</label><select id="pf-jobtype" onchange="refreshPaintCalcSummary()">${PAINT_JOB_TYPES.map(t=>`<option value="${t.id}" ${(rec.jobType||'joint')===t.id?'selected':''}>${t.label}</option>`).join('')}</select></div>
+        <div class="form-group"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Lead Source</label><select id="pf-source">${PAINT_LEAD_SOURCES.map(x=>`<option ${rec.leadSource===x?'selected':''}>${x}</option>`).join('')}</select></div>
+        <div class="form-group"><label>Deposit %</label><input id="pf-depositPct" type="number" value="${rec.depositPct!=null?rec.depositPct:paintSettings().defaultDepositPct}"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Deposit Status</label><select id="pf-depositStatus">${PAINT_DEPOSIT_STATUSES.map(d=>`<option value="${d.id}" ${rec.depositStatus===d.id?'selected':''}>${d.label}</option>`).join('')}</select></div>
+        <div class="form-group"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Date Quoted</label><input id="pf-dateQuoted" type="date" value="${rec.dateQuoted||''}"></div>
+        <div class="form-group"><label>Date Accepted</label><input id="pf-dateAccepted" type="date" value="${rec.dateAccepted||''}"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Scheduled Start</label><input id="pf-scheduledStart" type="date" value="${rec.scheduledStart||''}"></div>
+        <div class="form-group"><label>Completed Date</label><input id="pf-completedDate" type="date" value="${rec.completedDate||''}"></div>
+      </div>
+
+      <div class="divider"></div>
+      <div class="flex-between mb-10"><label style="margin-bottom:0;">Trade Cost Lines</label><button class="btn btn-ghost btn-sm" onclick="addPaintTCRow()">+ Add Trade</button></div>
+      <div class="tc-row" style="margin-bottom:2px;">
+        <label style="margin-bottom:0;">Trade</label><label style="margin-bottom:0;">Days</label><label style="margin-bottom:0;">Day Rate £</label><label style="margin-bottom:0;">Total</label><span></span>
+      </div>
+      <div id="paint-tc-rows"></div>
+
+      <div id="paint-calc-summary" class="paint-calc-summary"></div>
+
+      <div class="form-group mt-10"><label>Notes</label><textarea id="pf-notes">${esc(rec.notes||'')}</textarea></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-danger" onclick="deletePaintRecord('${rec.id}')">Delete</button>
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-gold" onclick="savePaintRecord('${rec.id}')">Save Changes</button>
+    </div>
+  `, true);
+  renderPaintTCRows();
+}
+function renderPaintTCRows(){
+  const el = document.getElementById('paint-tc-rows');
+  if(!el) return;
+  el.innerHTML = _paintTC.map((t,i)=>`
+    <div class="tc-row">
+      <select onchange="updatePaintTC(${i},'trade',this.value)">${PAINT_TRADES.map(tr=>`<option ${t.trade===tr?'selected':''}>${tr}</option>`).join('')}</select>
+      <input type="number" placeholder="Days" value="${t.days||0}" oninput="updatePaintTC(${i},'days',this.value)">
+      <input type="number" placeholder="Day Rate £" value="${t.dayRate||0}" oninput="updatePaintTC(${i},'dayRate',this.value)">
+      <div class="small muted" style="text-align:right;">${fmt((Number(t.days)||0)*(Number(t.dayRate)||0))}</div>
+      <button class="icon-btn" onclick="removePaintTCRow(${i})" title="Remove trade">✕</button>
+    </div>`).join('') || '<div class="muted small" style="padding:6px 0;">No trade costs added yet</div>';
+  refreshPaintCalcSummary();
+}
+function addPaintTCRow(){ _paintTC.push({id:uid(), trade:'Painter', days:1, dayRate:180}); renderPaintTCRows(); }
+function removePaintTCRow(i){ _paintTC.splice(i,1); renderPaintTCRows(); }
+function updatePaintTC(i, field, value){
+  _paintTC[i][field] = (field==='trade') ? value : (Number(value)||0);
+  const rows = document.getElementById('paint-tc-rows');
+  if(rows && rows.children[i]){
+    const totalEl = rows.children[i].querySelector('.small.muted');
+    if(totalEl) totalEl.textContent = fmt((Number(_paintTC[i].days)||0)*(Number(_paintTC[i].dayRate)||0));
+  }
+  refreshPaintCalcSummary();
+}
+function refreshPaintCalcSummary(){
+  const el = document.getElementById('paint-calc-summary');
+  if(!el) return;
+  const qvEl = document.getElementById('pf-quoteValue'), mcEl = document.getElementById('pf-materialsCost');
+  const quoteValue = Number(qvEl ? qvEl.value : 0)||0;
+  const materials = Number(mcEl ? mcEl.value : 0)||0;
+  const labour = _paintTC.reduce((s,t)=>s+(Number(t.days)||0)*(Number(t.dayRate)||0),0);
+  const days = _paintTC.reduce((s,t)=>s+(Number(t.days)||0),0);
+  const margin = quoteValue - materials - labour;
+  const pct = quoteValue>0 ? (margin/quoteValue*100) : 0;
+  const ps = paintSettings();
+  const jobTypeEl = document.getElementById('pf-jobtype');
+  const isPersonal = jobTypeEl ? jobTypeEl.value==='personal' : false;
+  const swPct = Number(ps.fabSplitPct)!=null ? Number(ps.fabSplitPct) : 50;
+  const reinvestment = isPersonal ? 0 : margin * (Number(ps.reinvestmentPct)||0)/100;
+  const splittable = margin - reinvestment;
+  const swShare = isPersonal ? margin : splittable * swPct/100;
+  const fabsShare = isPersonal ? 0 : splittable - swShare;
+  el.innerHTML = `
+    <div><div class="pcs-label">Labour Total</div><div class="pcs-value">${fmt(labour)}</div></div>
+    <div><div class="pcs-label">Days On Site</div><div class="pcs-value">${days}</div></div>
+    <div><div class="pcs-label">Margin</div><div class="pcs-value" style="color:${margin>=0?'var(--text)':'#EF4444'};">${fmt(margin)}</div></div>
+    <div><div class="pcs-label">Margin %</div><div class="pcs-value" style="color:${pct>=ps.marginLaneHigh?'#22C55E':pct<ps.marginLaneLow?'#EF4444':'#F59E0B'};">${pct.toFixed(1)}%</div></div>
+    ${isPersonal ? `<div><div class="pcs-label">Reinvestment</div><div class="pcs-value">— (personal job)</div></div>` : `<div><div class="pcs-label">Reinvestment (${ps.reinvestmentPct||0}%)</div><div class="pcs-value">${fmt(reinvestment)}</div></div>`}
+    <div><div class="pcs-label">SteadyWorks Share</div><div class="pcs-value" style="color:#22C55E;">${fmt(swShare)}</div></div>
+    <div><div class="pcs-label">Fabs Share</div><div class="pcs-value">${isPersonal ? '— (personal job)' : fmt(fabsShare)}</div></div>
+    <div><div class="pcs-label">Split</div><div class="pcs-value">${isPersonal ? '100% / 0%' : swPct+'% / '+(100-swPct)+'%'}</div></div>
+  `;
+}
+async function savePaintRecord(id){
+  const rec = paintRecords().find(r=>r.id===id);
+  if(!rec) return;
+  const newStage = document.getElementById('pf-stage').value;
+  Object.assign(rec, {
+    clientName: document.getElementById('pf-name').value.trim() || 'Unnamed',
+    quoteValue: Number(document.getElementById('pf-quoteValue').value)||0,
+    materialsCost: Number(document.getElementById('pf-materialsCost').value)||0,
+    tradeCosts: _paintTC.slice(),
+    leadSource: document.getElementById('pf-source').value,
+    depositPct: Number(document.getElementById('pf-depositPct').value)||0,
+    depositStatus: document.getElementById('pf-depositStatus').value,
+    dateQuoted: document.getElementById('pf-dateQuoted').value,
+    dateAccepted: document.getElementById('pf-dateAccepted').value,
+    scheduledStart: document.getElementById('pf-scheduledStart').value,
+    completedDate: document.getElementById('pf-completedDate').value,
+    notes: document.getElementById('pf-notes').value,
+    jobType: document.getElementById('pf-jobtype').value || 'joint'
+  });
+  if(newStage !== rec.stage) applyPaintStageTransition(rec, newStage); else rec.stage = newStage;
+  closeModal(); renderPage();
+  toast('Saved');
+  const {error} = await sb.from('paint_pipeline_jobs').update({
+    client_name: rec.clientName,
+    quote_value: rec.quoteValue,
+    materials_cost: rec.materialsCost,
+    trade_costs: rec.tradeCosts,
+    lead_source: rec.leadSource,
+    deposit_pct: rec.depositPct,
+    deposit_status: rec.depositStatus,
+    date_quoted: rec.dateQuoted || null,
+    date_accepted: rec.dateAccepted || null,
+    scheduled_start: rec.scheduledStart || null,
+    completed_date: rec.completedDate || null,
+    notes: rec.notes,
+    stage: rec.stage,
+    job_type: rec.jobType || 'joint'
+  }).eq('id', id);
+  if(error) toast('Saved locally, but the cloud sync failed — check your connection');
+}
+function deletePaintRecord(id){
+  const rec = paintRecords().find(r=>r.id===id);
+  confirmDelete('Delete '+(rec?rec.clientName:'this record')+'?', "This can't be undone.", async ()=>{
+    PAINT_JOBS_CACHE = paintRecords().filter(r=>r.id!==id);
+    closeModal(); renderPage(); toast('Deleted','🗑️');
+    const {error} = await sb.from('paint_pipeline_jobs').delete().eq('id', id);
+    if(error) toast('Delete failed to sync — check your connection');
+  });
+}
+
+function openPipelineSettingsModal(){
+  const s = paintSettings();
+  openModal(`
+    <div class="modal-head"><h2>Pipeline Settings</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group"><label>Weekly Profit Target (£)</label><input id="ps-profitTarget" type="number" value="${s.weeklyProfitTarget}"></div>
+        <div class="form-group"><label>Marketing Budget Target / Week (£)</label><input id="ps-marketing" type="number" value="${s.marketingSpendWeekly}"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Margin Lane — Thin Below (%)</label><input id="ps-laneLow" type="number" value="${s.marginLaneLow}"></div>
+        <div class="form-group"><label>Margin Lane — Healthy Above (%)</label><input id="ps-laneHigh" type="number" value="${s.marginLaneHigh}"></div>
+      </div>
+      <div class="form-group"><label>Default Deposit %</label><input id="ps-depositPct" type="number" value="${s.defaultDepositPct}"></div>
+      <div class="divider"></div>
+      <div class="form-row">
+        <div class="form-group"><label>Reinvestment Reserve — off every job (%)</label><input id="ps-reinvest" type="number" value="${s.reinvestmentPct!=null?s.reinvestmentPct:10}"></div>
+        <div class="form-group"><label>SteadyWorks Share of Remainder (%)</label><input id="ps-fabSplit" type="number" value="${s.fabSplitPct!=null?s.fabSplitPct:50}"></div>
+      </div>
+      <p class="small muted">Every job is subcontracted out, so margin isn't take-home. This reserve comes off the top of each job's margin first (funds more lead sourcing, tools, marketing), then what's left is split with Fabs — 50% is an even joint-venture split.</p>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-gold" onclick="savePipelineSettings()">Save Settings</button>
+    </div>
+  `);
+}
+async function savePipelineSettings(){
+  Object.assign(paintSettings(), {
+    weeklyProfitTarget: Number(document.getElementById('ps-profitTarget').value)||0,
+    marketingSpendWeekly: Number(document.getElementById('ps-marketing').value)||0,
+    marginLaneLow: Number(document.getElementById('ps-laneLow').value)||0,
+    marginLaneHigh: Number(document.getElementById('ps-laneHigh').value)||0,
+    defaultDepositPct: Number(document.getElementById('ps-depositPct').value)||0,
+    reinvestmentPct: Number(document.getElementById('ps-reinvest').value)||0,
+    fabSplitPct: Number(document.getElementById('ps-fabSplit').value)||0
+  });
+  closeModal(); renderPage();
+  toast('Pipeline settings saved');
+  const s = paintSettings();
+  const {error} = await sb.from('paint_pipeline_settings').update({
+    weekly_profit_target: s.weeklyProfitTarget,
+    marketing_spend_weekly: s.marketingSpendWeekly,
+    margin_lane_low: s.marginLaneLow,
+    margin_lane_high: s.marginLaneHigh,
+    default_deposit_pct: s.defaultDepositPct,
+    reinvestment_pct: s.reinvestmentPct,
+    fab_split_pct: s.fabSplitPct,
+    updated_at: new Date().toISOString()
+  }).eq('id', 1);
+  if(error) toast('Saved locally, but the cloud sync failed — check your connection');
 }
