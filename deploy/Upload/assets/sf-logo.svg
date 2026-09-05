@@ -1,0 +1,298 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 560" width="560" height="560">
+  <defs>
+    <!-- Deep dark background gradient -->
+    <radialGradient id="bgGrad" cx="50%" cy="40%" r="60%">
+      <stop offset="0%" stop-color="#1C1C1E"/>
+      <stop offset="60%" stop-color="#111111"/>
+      <stop offset="100%" stop-color="#0a0a0a"/>
+    </radialGradient>
+    <!-- Outer glow ring gradient -->
+    <linearGradient id="ringGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#00FFE0"/>
+      <stop offset="35%" stop-color="#00C9B1"/>
+      <stop offset="65%" stop-color="#007A80"/>
+      <stop offset="100%" stop-color="#00FFE0"/>
+    </linearGradient>
+    <!-- Wave front gradient -->
+    <linearGradient id="waveFront" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#00FFE0"/>
+      <stop offset="100%" stop-color="#007A80"/>
+    </linearGradient>
+    <!-- Wave mid -->
+    <linearGradient id="waveMid" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#00C9B1"/>
+      <stop offset="100%" stop-color="#005060"/>
+    </linearGradient>
+    <!-- Screen gradient -->
+    <linearGradient id="screenGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#111111"/>
+      <stop offset="100%" stop-color="#1a1a1a"/>
+    </linearGradient>
+    <!-- Yin yang teal half -->
+    <linearGradient id="yinTeal" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00FFE0"/>
+      <stop offset="100%" stop-color="#00C9B1"/>
+    </linearGradient>
+    <!-- Premium gold accent -->
+    <linearGradient id="goldAccent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFE066"/>
+      <stop offset="100%" stop-color="#FFA500"/>
+    </linearGradient>
+    <!-- Laptop chrome -->
+    <linearGradient id="laptopChrome" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#2C2C2E"/>
+      <stop offset="100%" stop-color="#1C1C1E"/>
+    </linearGradient>
+    <!-- Badge drop shadow -->
+    <filter id="badgeShadow" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="8" stdDeviation="18" flood-color="#00FFE0" flood-opacity="0.18"/>
+      <feDropShadow dx="0" dy="20" stdDeviation="30" flood-color="#000" flood-opacity="0.7"/>
+    </filter>
+    <!-- Yin yang glow -->
+    <filter id="yyglow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <!-- Screen glow -->
+    <filter id="screenGlow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="5" result="glow"/>
+      <feMerge>
+        <feMergeNode in="glow"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <!-- Wave glow -->
+    <filter id="waveGlow" x="-10%" y="-20%" width="120%" height="140%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <!-- Star glow -->
+    <filter id="starGlow" x="-200%" y="-200%" width="500%" height="500%">
+      <feGaussianBlur stdDeviation="2.5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <!-- Laptop shadow -->
+    <filter id="laptopShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#00FFE0" flood-opacity="0.15"/>
+      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#000" flood-opacity="0.5"/>
+    </filter>
+    <!-- Text glow -->
+    <filter id="textGlow" x="-20%" y="-60%" width="140%" height="220%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <clipPath id="circleClip">
+      <circle cx="280" cy="285" r="158"/>
+    </clipPath>
+    <clipPath id="yyLeft">
+      <rect x="234" y="128" width="46" height="92"/>
+    </clipPath>
+    <clipPath id="yyRight">
+      <rect x="280" y="128" width="46" height="92"/>
+    </clipPath>
+  </defs>
+
+  <!-- OUTERMOST HALO -->
+  <circle cx="280" cy="285" r="195" fill="none" stroke="#00FFE0" stroke-width="1" stroke-opacity="0.08"/>
+  <circle cx="280" cy="285" r="188" fill="none" stroke="#00C9B1" stroke-width="1" stroke-opacity="0.12"/>
+
+  <!-- OUTER BADGE RING -->
+  <circle cx="280" cy="285" r="178" fill="#000a0a"/>
+  <circle cx="280" cy="285" r="174" fill="none" stroke="url(#ringGrad)" stroke-width="5"/>
+  <circle cx="280" cy="285" r="169" fill="none" stroke="#00FFE0" stroke-width="1" stroke-opacity="0.2"/>
+  <circle cx="280" cy="285" r="164" fill="none" stroke="#00C9B1" stroke-width="0.5" stroke-opacity="0.15"/>
+
+  <!-- MAIN CIRCLE -->
+  <circle cx="280" cy="285" r="160" fill="url(#bgGrad)" filter="url(#badgeShadow)"/>
+
+  <!-- SUBTLE RADIAL LINES -->
+  <g clip-path="url(#circleClip)" opacity="0.04" stroke="#00FFE0" stroke-width="1">
+    <line x1="280" y1="125" x2="280" y2="445"/>
+    <line x1="120" y1="285" x2="440" y2="285"/>
+    <line x1="167" y1="172" x2="393" y2="398"/>
+    <line x1="393" y1="172" x2="167" y2="398"/>
+    <line x1="140" y1="230" x2="420" y2="340"/>
+    <line x1="420" y1="230" x2="140" y2="340"/>
+    <line x1="230" y1="125" x2="330" y2="445"/>
+    <line x1="330" y1="125" x2="230" y2="445"/>
+  </g>
+
+  <!-- GRID -->
+  <g clip-path="url(#circleClip)" opacity="0.05" stroke="#00D4A8" stroke-width="0.8">
+    <line x1="120" y1="190" x2="440" y2="190"/>
+    <line x1="120" y1="220" x2="440" y2="220"/>
+    <line x1="120" y1="250" x2="440" y2="250"/>
+    <line x1="120" y1="280" x2="440" y2="280"/>
+    <line x1="120" y1="310" x2="440" y2="310"/>
+    <line x1="120" y1="340" x2="440" y2="340"/>
+    <line x1="120" y1="370" x2="440" y2="370"/>
+    <line x1="155" y1="130" x2="155" y2="445"/>
+    <line x1="185" y1="130" x2="185" y2="445"/>
+    <line x1="215" y1="130" x2="215" y2="445"/>
+    <line x1="245" y1="130" x2="245" y2="445"/>
+    <line x1="280" y1="130" x2="280" y2="445"/>
+    <line x1="315" y1="130" x2="315" y2="445"/>
+    <line x1="345" y1="130" x2="345" y2="445"/>
+    <line x1="375" y1="130" x2="375" y2="445"/>
+    <line x1="405" y1="130" x2="405" y2="445"/>
+  </g>
+
+  <!-- STARS -->
+  <g filter="url(#starGlow)">
+    <circle cx="155" cy="168" r="1.8" fill="#00FFE0" opacity="0.9"/>
+    <circle cx="178" cy="148" r="1.2" fill="#fff" opacity="0.7"/>
+    <circle cx="200" cy="172" r="2.2" fill="#00FFE0" opacity="0.8"/>
+    <circle cx="168" cy="195" r="1.4" fill="#fff" opacity="0.6"/>
+    <circle cx="143" cy="210" r="1.6" fill="#00D4A8" opacity="0.75"/>
+    <circle cx="190" cy="155" r="1" fill="#fff" opacity="0.5"/>
+    <path d="M148,182 L150,177 L152,182 L157,184 L152,186 L150,191 L148,186 L143,184 Z" fill="#00FFE0" opacity="0.7"/>
+    <circle cx="360" cy="155" r="1.8" fill="#00FFE0" opacity="0.85"/>
+    <circle cx="385" cy="170" r="1.3" fill="#fff" opacity="0.7"/>
+    <circle cx="375" cy="145" r="2" fill="#00FFE0" opacity="0.75"/>
+    <circle cx="340" cy="168" r="1.5" fill="#fff" opacity="0.6"/>
+    <circle cx="400" cy="195" r="1.6" fill="#00D4A8" opacity="0.7"/>
+    <circle cx="350" cy="148" r="1" fill="#fff" opacity="0.5"/>
+    <path d="M390,178 L392,173 L394,178 L399,180 L394,182 L392,187 L390,182 L385,180 Z" fill="#00FFE0" opacity="0.7"/>
+    <circle cx="145" cy="355" r="1.5" fill="#00D4A8" opacity="0.6"/>
+    <circle cx="162" cy="375" r="1.8" fill="#00FFE0" opacity="0.7"/>
+    <circle cx="148" cy="395" r="1.2" fill="#fff" opacity="0.5"/>
+    <circle cx="168" cy="345" r="1" fill="#fff" opacity="0.4"/>
+    <circle cx="395" cy="355" r="1.5" fill="#00D4A8" opacity="0.6"/>
+    <circle cx="378" cy="372" r="1.8" fill="#00FFE0" opacity="0.7"/>
+    <circle cx="398" cy="390" r="1.2" fill="#fff" opacity="0.5"/>
+    <circle cx="362" cy="345" r="1" fill="#fff" opacity="0.4"/>
+    <circle cx="220" cy="140" r="1" fill="#00FFE0" opacity="0.5"/>
+    <circle cx="335" cy="142" r="1.2" fill="#00FFE0" opacity="0.55"/>
+    <circle cx="210" cy="415" r="1.2" fill="#00D4A8" opacity="0.4"/>
+    <circle cx="348" cy="412" r="1" fill="#00D4A8" opacity="0.4"/>
+  </g>
+
+  <!-- YIN YANG -->
+  <g transform="translate(280,174)" filter="url(#yyglow)">
+    <circle cx="0" cy="0" r="50" fill="none" stroke="#00FFE0" stroke-width="1.5" opacity="0.3"/>
+    <circle cx="0" cy="0" r="46" fill="none" stroke="#00C9B1" stroke-width="1" opacity="0.2"/>
+    <!-- RIGHT half = teal -->
+    <path d="M 0,-44 A 44,44 0 0,1 0,44 A 22,22 0 0,1 0,0 A 22,22 0 0,0 0,-44 Z" fill="url(#yinTeal)"/>
+    <!-- LEFT half = dark -->
+    <path d="M 0,-44 A 44,44 0 0,0 0,44 A 22,22 0 0,0 0,0 A 22,22 0 0,1 0,-44 Z" fill="#111111"/>
+    <!-- Top bulge = TEAL dot on dark side -->
+    <circle cx="0" cy="-22" r="11" fill="url(#yinTeal)"/>
+    <!-- Bottom bulge = DARK dot on teal side -->
+    <circle cx="0" cy="22" r="11" fill="#111111"/>
+    <!-- Inner contrast dots -->
+    <circle cx="0" cy="-22" r="4.5" fill="#111111"/>
+    <circle cx="0" cy="22" r="4.5" fill="#00FFE0"/>
+    <!-- Outer border -->
+    <circle cx="0" cy="0" r="44" fill="none" stroke="#00FFE0" stroke-width="3"/>
+    <!-- Shine arc -->
+    <path d="M 8,-40 A 40,40 0 0,1 40,8" stroke="#fff" stroke-width="1.5" fill="none" opacity="0.15" stroke-linecap="round"/>
+  </g>
+
+  <!-- CONNECT LINE -->
+  <line x1="280" y1="219" x2="280" y2="234" stroke="#00FFE0" stroke-width="1.5" stroke-opacity="0.35" stroke-dasharray="3,3"/>
+
+  <!-- LAPTOP -->
+  <g transform="translate(280,290)" filter="url(#laptopShadow)">
+    <rect x="-84" y="-76" width="168" height="112" rx="10" fill="url(#laptopChrome)" stroke="#00C9B1" stroke-width="3.5"/>
+    <rect x="-78" y="-70" width="156" height="100" rx="6" fill="#111111"/>
+    <rect x="-74" y="-66" width="148" height="92" rx="5" fill="url(#screenGrad)"/>
+    <g filter="url(#screenGlow)">
+      <rect x="-66" y="-58" width="136" height="14" rx="3" fill="#1a1a1a"/>
+      <circle cx="-57" cy="-51" r="4" fill="#FF5F57"/>
+      <circle cx="-45" cy="-51" r="4" fill="#FEBC2E"/>
+      <circle cx="-33" cy="-51" r="4" fill="#28C840"/>
+      <rect x="-22" y="-58" width="88" height="14" rx="3" fill="#1C1C1E"/>
+      <rect x="-18" y="-55" width="60" height="8" rx="2" fill="#222222"/>
+      <rect x="-66" y="-38" width="100" height="5.5" rx="2.5" fill="#00D4A8" opacity="0.95"/>
+      <rect x="-66" y="-28" width="68" height="4.5" rx="2" fill="#00C9B1" opacity="0.65"/>
+      <rect x="-66" y="-19" width="120" height="4.5" rx="2" fill="#00D4A8" opacity="0.75"/>
+      <rect x="-66" y="-10" width="50" height="4.5" rx="2" fill="#00FFE0" opacity="0.55"/>
+      <rect x="-66" y="-1" width="85" height="4.5" rx="2" fill="#00C9B1" opacity="0.65"/>
+      <rect x="-66" y="8" width="108" height="4.5" rx="2" fill="#00D4A8" opacity="0.45"/>
+      <rect x="-66" y="17" width="72" height="4.5" rx="2" fill="#00C9B1" opacity="0.5"/>
+      <rect x="46" y="17" width="3" height="13" rx="1.5" fill="#00FFE0" opacity="0.95"/>
+      <!-- Mini yin yang on screen -->
+      <g transform="translate(55,-48)" opacity="0.9">
+        <circle cx="0" cy="0" r="9" fill="none" stroke="#00C9B1" stroke-width="1.5"/>
+        <path d="M 0,-9 A 9,9 0 0,1 0,9 A 4.5,4.5 0 0,1 0,0 A 4.5,4.5 0 0,0 0,-9 Z" fill="#00C9B1"/>
+        <path d="M 0,-9 A 9,9 0 0,0 0,9 A 4.5,4.5 0 0,0 0,0 A 4.5,4.5 0 0,1 0,-9 Z" fill="#111111"/>
+        <circle cx="0" cy="-4.5" r="2" fill="#111111"/>
+        <circle cx="0" cy="4.5" r="2" fill="#00C9B1"/>
+      </g>
+      <path d="M -74,-66 L -50,-66 L -74,-44 Z" fill="#fff" opacity="0.04"/>
+    </g>
+    <rect x="-90" y="36" width="180" height="24" rx="7" fill="url(#laptopChrome)" stroke="#00C9B1" stroke-width="3"/>
+    <rect x="-78" y="41" width="156" height="5" rx="2" fill="#1a1a1a" opacity="0.5"/>
+    <rect x="-78" y="48" width="156" height="5" rx="2" fill="#1a1a1a" opacity="0.3"/>
+    <rect x="-84" y="34" width="168" height="6" rx="2" fill="#000" opacity="0.4"/>
+    <rect x="-22" y="40" width="44" height="15" rx="5" fill="#111111" stroke="#00C9B1" stroke-width="1.5" stroke-opacity="0.55"/>
+    <line x1="-88" y1="59" x2="88" y2="59" stroke="#00C9B1" stroke-width="1" stroke-opacity="0.3"/>
+  </g>
+
+  <!-- WAVES -->
+  <path d="M 122,368 C 155,330 178,360 215,340 C 252,320 272,352 310,330 C 348,308 368,340 438,315 L 438,445 L 122,445 Z" fill="#1C1C1E" opacity="0.5" clip-path="url(#circleClip)"/>
+  <path d="M 120,382 C 155,345 180,374 218,354 C 256,334 278,366 315,344 C 352,322 375,356 440,332 L 440,445 L 120,445 Z" fill="url(#waveMid)" opacity="0.55" clip-path="url(#circleClip)"/>
+  <path d="M 118,396 C 152,358 178,390 216,368 C 252,347 276,380 314,358 C 350,336 376,370 442,346 L 442,445 L 118,445 Z" fill="url(#waveFront)" opacity="0.88" clip-path="url(#circleClip)" filter="url(#waveGlow)"/>
+
+  <!-- WAVE SPARKLES -->
+  <g clip-path="url(#circleClip)">
+    <circle cx="162" cy="387" r="4" fill="#fff" opacity="0.9" filter="url(#starGlow)"/>
+    <circle cx="258" cy="367" r="4.5" fill="#fff" opacity="0.85" filter="url(#starGlow)"/>
+    <circle cx="306" cy="356" r="3.5" fill="#fff" opacity="0.8" filter="url(#starGlow)"/>
+    <circle cx="360" cy="364" r="4" fill="#fff" opacity="0.85" filter="url(#starGlow)"/>
+    <circle cx="192" cy="377" r="2" fill="#00FFE0" opacity="0.7"/>
+    <circle cx="232" cy="371" r="2.2" fill="#00FFE0" opacity="0.65"/>
+    <circle cx="330" cy="358" r="2" fill="#00FFE0" opacity="0.65"/>
+    <circle cx="390" cy="368" r="2" fill="#00FFE0" opacity="0.6"/>
+  </g>
+
+  <!-- TEXT: STEADY FLOW -->
+  <path id="topArc" d="M 122,285 A 158,158 0 0,1 438,285" fill="none"/>
+  <text font-family="'Arial Black','Franklin Gothic Heavy','Impact',sans-serif" font-size="46" font-weight="900" letter-spacing="6" fill="none" stroke="#000" stroke-width="8" stroke-linejoin="round">
+    <textPath href="#topArc" startOffset="50%" text-anchor="middle">STEADY FLOW</textPath>
+  </text>
+  <text font-family="'Arial Black','Franklin Gothic Heavy','Impact',sans-serif" font-size="46" font-weight="900" letter-spacing="6" fill="#00FFE0" filter="url(#textGlow)">
+    <textPath href="#topArc" startOffset="50%" text-anchor="middle">STEADY FLOW</textPath>
+  </text>
+  <text font-family="'Arial Black','Franklin Gothic Heavy','Impact',sans-serif" font-size="46" font-weight="900" letter-spacing="6" fill="none" stroke="#fff" stroke-width="0.8" stroke-opacity="0.2">
+    <textPath href="#topArc" startOffset="50%" text-anchor="middle">STEADY FLOW</textPath>
+  </text>
+
+  <!-- TEXT: WEB & MARKETING SERVICES -->
+  <path id="bottomArc" d="M 120,300 A 160,160 0 0,0 440,300" fill="none"/>
+  <text font-family="'Arial Black','Franklin Gothic Heavy','Impact',sans-serif" font-size="20" font-weight="900" letter-spacing="2.5" fill="none" stroke="#000" stroke-width="5" stroke-linejoin="round">
+    <textPath href="#bottomArc" startOffset="50%" text-anchor="middle">WEB &amp; MARKETING SERVICES</textPath>
+  </text>
+  <text font-family="'Arial Black','Franklin Gothic Heavy','Impact',sans-serif" font-size="20" font-weight="900" letter-spacing="2.5" fill="#00C9B1" filter="url(#textGlow)">
+    <textPath href="#bottomArc" startOffset="50%" text-anchor="middle">WEB &amp; MARKETING SERVICES</textPath>
+  </text>
+
+  <!-- RING ACCENT DOTS -->
+  <circle cx="280" cy="111" r="5.5" fill="#00FFE0" filter="url(#starGlow)"/>
+  <circle cx="280" cy="459" r="5.5" fill="#00FFE0" filter="url(#starGlow)"/>
+  <circle cx="106" cy="285" r="5.5" fill="#00FFE0" filter="url(#starGlow)"/>
+  <circle cx="454" cy="285" r="5.5" fill="#00FFE0" filter="url(#starGlow)"/>
+  <circle cx="163" cy="142" r="3.5" fill="#00C9B1" opacity="0.8"/>
+  <circle cx="397" cy="142" r="3.5" fill="#00C9B1" opacity="0.8"/>
+  <circle cx="163" cy="428" r="3.5" fill="#00C9B1" opacity="0.8"/>
+  <circle cx="397" cy="428" r="3.5" fill="#00C9B1" opacity="0.8"/>
+  <g stroke="#00C9B1" stroke-width="2" stroke-opacity="0.4">
+    <line x1="280" y1="111" x2="280" y2="120"/>
+    <line x1="280" y1="459" x2="280" y2="450"/>
+    <line x1="106" y1="285" x2="115" y2="285"/>
+    <line x1="454" y1="285" x2="445" y2="285"/>
+  </g>
+</svg>
