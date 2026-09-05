@@ -5144,9 +5144,9 @@ function view_pipeline(){
   return `
   ${motdBanner()}
   <div class="card paint-masthead">
-    <img src="assets/logo.png" onerror="this.style.display='none'" alt="SteadyWorks">
+    <img src="assets/logo.png" onerror="this.style.display='none'" alt="SteadyWorks" style="height:42px !important;width:auto !important;max-width:160px;max-height:42px;object-fit:contain;">
     <span class="pm-x">×</span>
-    <img src="assets/fab-logo.png" onerror="this.style.display='none'" alt="Fully Active Building Services">
+    <img src="assets/fab-logo.png" onerror="this.style.display='none'" alt="Fully Active Building Services" style="height:42px !important;width:auto !important;max-width:160px;max-height:42px;object-fit:contain;">
   </div>
 
   <div class="card mt-10 flex-between" style="flex-wrap:wrap;gap:8px;">
