@@ -1,4 +1,3 @@
-// MARKER-TEST-4SEP-2247
 /* ===================== STEADYWORKS — OPS PLATFORM ===================== */
 
 /* ---------- DATA LAYER ---------- */
@@ -1884,6 +1883,15 @@ async function bootApp(session){
     syncLeadsFromSupabase(false);
     syncCallsFromSupabase(false);
     setInterval(()=>{ syncLeadsFromSupabase(false); syncCallsFromSupabase(false); }, 60000);
+    // Pull the full shared state periodically too, so a change made on one
+    // device (or by someone else logged in) shows up here without needing
+    // a manual refresh. Skipped while a modal/form is open so it can't
+    // clobber something you're mid-way through editing.
+    setInterval(async ()=>{
+      if(document.getElementById('active-modal')) return;
+      const got = await pullCloudState();
+      if(got){ renderNav(); renderPage(); }
+    }, 45000);
   }
 }
 
