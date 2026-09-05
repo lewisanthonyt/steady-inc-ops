@@ -507,7 +507,7 @@ const ROUTES = [
   {id:'followups', label:'Follow Ups', section:'steadyworks'},
   {id:'jobs', label:'Jobs', section:'steadyworks'},
   {id:'job-sources', label:'Job Sources', section:'steadyworks'},
-  {id:'quotes', label:'Quotes', section:'steadyworks'},
+  {id:'pipeline', label:'Quotes', section:'steadyworks'},
   {id:'invoices', label:'Invoices', section:'steadyworks'},
   {id:'customers', label:'Customers', section:'steadyworks'},
   {id:'subcontractors', label:'Subcontractors', section:'steadyworks'},
@@ -521,7 +521,6 @@ const ROUTES = [
   {id:'team', label:'Team', section:'steadyflow'},
   {id:'sf-expenses', label:'Expenses', section:'steadyflow'},
   {id:'sf-compliance', label:'Compliance', section:'steadyflow'},
-  {id:'pipeline', label:'Quote-to-Job Pipeline', section:'collaborations'},
   {id:'activity', label:'Activity Log', section:'system'},
   {id:'bugs', label:'Bugs', section:'system'},
   {id:'settings', label:'Settings', section:'system'}
@@ -536,7 +535,7 @@ const SECTION_LABELS = {
 const SECTION_ACCENT = { overview:'var(--gold-light)', steadyworks:'var(--gold-light)', steadyflow:'var(--teal)', collaborations:'#A78BFA', system:'#999' };
 const ICONS = {
   dashboard:'🏠', tasks:'✅', goals:'🎯', budget:'🧮', 'sw-dashboard':'📊', 'sf-dashboard':'📊', 'sf-clients':'💻', 'sf-quotes':'📝', 'sf-invoices':'🧾', 'sf-expenses':'💷', 'sf-compliance':'🛡️', leads:'📥', followups:'📞', jobs:'🛠️', 'job-sources':'📍', quotes:'📝', invoices:'🧾', calendar:'📅',
-  customers:'👥', team:'👷', subcontractors:'🦺', expenses:'💷', compliance:'🛡️', reports:'📈', activity:'🕐', bugs:'🐞', settings:'⚙️', pipeline:'🎨'
+  customers:'👥', team:'👷', subcontractors:'🦺', expenses:'💷', compliance:'🛡️', reports:'📈', activity:'🕐', bugs:'🐞', settings:'⚙️', pipeline:'📝'
 };
 
 let currentRoute = 'dashboard';
@@ -642,7 +641,7 @@ const PAGE_META = {
   followups:['Follow Ups','Missed calls and client follow-up'],
   jobs:['Jobs','All active and historic job records'],
   'job-sources':['Job Sources','Where your leads and jobs are actually coming from'],
-  pipeline:['Quote-to-Job Pipeline','SteadyWorks × Fabs — one board from first quote to paid job'],
+  pipeline:['Quotes','Every SteadyWorks quote, start to finish — tag one as Joint when Fabs are collaborating on it'],
   quotes:['Quotes','Build, send and track quotations'],
   invoices:['Invoices','Billing, payments and outstanding balances'],
   calendar:['Calendar','Shared across all companies — job schedule plus merged Google Calendars'],
@@ -3361,7 +3360,15 @@ function addLineItem(){ window._editingItems.push({desc:'',qty:1,unit:'ea',rate:
 function removeLineItem(i){ window._editingItems.splice(i,1); renderLineItems(); }
 function updateLineItem(i,field,val){
   window._editingItems[i][field] = (field==='qty'||field==='rate') ? Number(val)||0 : val;
-  renderLineItems();
+  // Don't call renderLineItems() here — it rebuilds every row's innerHTML on
+  // every keystroke, which yanks focus out of the input after each
+  // character (the "can only type one letter at a time" bug). Instead,
+  // patch just the one computed cell and the totals summary in place.
+  if(field==='qty' || field==='rate'){
+    const row = document.querySelectorAll('#line-items-body tr')[i];
+    if(row && row.children[4]) row.children[4].textContent = fmt(window._editingItems[i].qty * window._editingItems[i].rate);
+  }
+  updateTotals();
 }
 function updateTotals(){
   const vatRate = Number(document.getElementById('f-vatRate')?.value)||0;
@@ -3788,7 +3795,7 @@ function printDoc(kind, id){
   const toName = isSf ? doc.clientName : doc.customerName;
   const businessName = isSf ? 'SteadyFlow Marketing' : DB.settings.businessName;
   const accent = isSf ? '#00A99D' : '#E11D2A';
-  const logoSrc = isSf ? 'assets/sf-logo.png' : 'assets/logo.png';
+  const logoSrc = isSf ? 'assets/sf-logo.svg' : 'assets/logo.png';
   const accentSoft = isSf ? '#E6F7F5' : '#FDECEC';
   const w = window.open('','_blank');
   w.document.write(`
@@ -3811,9 +3818,24 @@ function printDoc(kind, id){
       .logo-box{width:110px;height:110px;flex-shrink:0;border-radius:14px;overflow:hidden;}
       .logo-box img{width:100%;height:100%;object-fit:cover;}
       .to-line{font-weight:600;color:#111;}
+      .head-center{display:flex;flex-direction:column;align-items:center;text-align:center;border-bottom:3px solid ${accent};padding-bottom:14px;}
+      .head-center .logo-box{margin:0 0 10px;}
+      .head-center h2{margin-top:14px;}
     </style></head><body>
+    ${kind==='quote' ? `
+    <div class="head-center">
+      <div class="logo-box"><img src="${logoSrc}" alt="${esc(businessName)}"></div>
+      <h1>${esc(businessName)}</h1>
+      <div style="font-weight:500;">${esc(DB.settings.address)}</div>
+      <div style="font-weight:500;">${esc(DB.settings.phone)} · ${esc(DB.settings.email)}</div>
+      <h2>QUOTE</h2>
+      <div class="doc-number">${number}</div>
+      <div style="font-weight:500;">${fmtDate(doc.createdAt)}</div>
+    </div>
+    ` : `
     <div class="head"><div class="head-left"><div class="logo-box"><img src="${logoSrc}" alt="${esc(businessName)}"></div><div><h1>${esc(businessName)}</h1>${isSf?'':`<div style="font-weight:500;">${esc(DB.settings.address)}</div><div style="font-weight:500;">${esc(DB.settings.phone)} · ${esc(DB.settings.email)}</div>`}</div></div>
     <div class="head-right"><h2>${isQuote?'QUOTE':'INVOICE'}</h2><div class="doc-number">${number}</div><div style="font-weight:500;">${fmtDate(doc.createdAt)}</div></div></div>
+    `}
     <p style="margin-top:24px;font-weight:500;">To: <span class="to-line">${esc(toName)}</span></p>
     <table><thead><tr><th>Description</th><th>Qty</th><th>Unit</th><th>Rate</th><th>Total</th></tr></thead>
     <tbody>${doc.items.map(i=>`<tr><td>${esc(i.desc)}</td><td>${i.qty}</td><td>${esc(i.unit)}</td><td>${fmt(i.rate)}</td><td>${fmt(i.qty*i.rate)}</td></tr>`).join('')}</tbody></table>
@@ -5041,7 +5063,7 @@ function paintSplit(rec){
   return Object.assign({}, c, {reinvestment, splittable, swShare, fabsShare});
 }
 const PAINT_JOB_TYPES = [{id:'joint', label:'Joint (with Fabs)'}, {id:'personal', label:'Personal (SteadyWorks only)'}];
-let PAINT_TYPE_FILTER = 'joint';
+let PAINT_TYPE_FILTER = 'all';
 function paintFilteredRecords(){
   const recs = paintRecords();
   if(PAINT_TYPE_FILTER==='all') return recs;
@@ -5143,14 +5165,8 @@ function view_pipeline(){
 
   return `
   ${motdBanner()}
-  <div class="card paint-masthead">
-    <img src="assets/logo.png" onerror="this.style.display='none'" alt="SteadyWorks" style="height:42px !important;width:auto !important;max-width:160px;max-height:42px;object-fit:contain;">
-    <span class="pm-x">×</span>
-    <img src="assets/fab-logo.png" onerror="this.style.display='none'" alt="Fully Active Building Services" style="height:42px !important;width:auto !important;max-width:160px;max-height:42px;object-fit:contain;">
-  </div>
-
-  <div class="card mt-10 flex-between" style="flex-wrap:wrap;gap:8px;">
-    <div class="small muted">Viewing: <strong>${PAINT_TYPE_FILTER==='joint'?'Joint jobs (with Fabs)':PAINT_TYPE_FILTER==='personal'?'Personal jobs (SteadyWorks only)':'All jobs'}</strong></div>
+  <div class="card flex-between" style="flex-wrap:wrap;gap:8px;">
+    <div class="small muted">Viewing: <strong>${PAINT_TYPE_FILTER==='joint'?'Joint jobs (with Fabs)':PAINT_TYPE_FILTER==='personal'?'SteadyWorks only':'All quotes'}</strong></div>
     <div class="seg-toggle">
       <button class="seg-btn ${PAINT_TYPE_FILTER==='joint'?'active':''}" onclick="setPaintTypeFilter('joint')">Joint</button>
       <button class="seg-btn ${PAINT_TYPE_FILTER==='personal'?'active':''}" onclick="setPaintTypeFilter('personal')">Personal</button>
@@ -5384,7 +5400,7 @@ function openPipelineQuickAdd(){
       </div>
       <div class="form-row">
         <div class="form-group"><label>Date Quoted</label><input id="qa-date" type="date" value="${new Date().toISOString().slice(0,10)}"></div>
-        <div class="form-group"><label>Job Type</label><select id="qa-jobtype">${PAINT_JOB_TYPES.map(t=>`<option value="${t.id}" ${(PAINT_TYPE_FILTER==='personal'?'personal':'joint')===t.id?'selected':''}>${t.label}</option>`).join('')}</select></div>
+        <div class="form-group"><label>Job Type</label><select id="qa-jobtype">${PAINT_JOB_TYPES.map(t=>`<option value="${t.id}" ${(PAINT_TYPE_FILTER==='joint'?'joint':'personal')===t.id?'selected':''}>${t.label}</option>`).join('')}</select></div>
       </div>
       <p class="small muted">Add trade costs, materials, deposit and notes after creating — this just gets it on the board fast.</p>
     </div>
