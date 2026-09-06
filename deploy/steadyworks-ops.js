@@ -548,6 +548,23 @@ function navigate(route, param){
   renderPage();
   window.scrollTo(0,0);
   closeMobileNav();
+  playPageFlash();
+}
+let pageFlashTimer = null;
+function playPageFlash(){
+  const overlay = document.getElementById('page-flash-overlay');
+  const video = document.getElementById('page-flash-video');
+  if(!overlay || !video) return;
+  clearTimeout(pageFlashTimer);
+  overlay.style.display = 'flex';
+  overlay.style.transition = 'none';
+  overlay.style.opacity = '1';
+  try{ video.currentTime = 1; video.play().catch(()=>{}); }catch(e){}
+  pageFlashTimer = setTimeout(()=>{
+    overlay.style.transition = 'opacity .3s ease';
+    overlay.style.opacity = '0';
+    setTimeout(()=>{ overlay.style.display = 'none'; video.pause(); }, 300);
+  }, 2000);
 }
 function closeMobileNav(){
   document.getElementById('sidebar').classList.remove('open');
