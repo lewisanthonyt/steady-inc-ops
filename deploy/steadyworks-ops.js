@@ -1795,12 +1795,14 @@ function loginError(msg){
   const el = document.getElementById('login-error');
   el.textContent = msg; el.style.display = 'block';
 }
+let JUST_SIGNED_IN = false;
 async function doSignIn(){
   const email = document.getElementById('login-email').value.trim();
   const password = document.getElementById('login-password').value;
   if(!email || !password) return loginError('Enter your email and password.');
   const { error } = await sb.auth.signInWithPassword({ email, password });
   if(error) return loginError(error.message);
+  JUST_SIGNED_IN = true;
 }
 async function doSignUp(){
   const email = document.getElementById('login-email').value.trim();
@@ -1824,6 +1826,24 @@ function showApp(session){
   const emailEl = document.getElementById('session-email');
   if(emailEl) emailEl.textContent = session.user.email;
   bootApp(session);
+  if(JUST_SIGNED_IN){
+    JUST_SIGNED_IN = false;
+    showLoginSplash();
+  }
+}
+function showLoginSplash(){
+  const splash = document.getElementById('login-splash');
+  if(!splash) return;
+  splash.style.display = 'flex';
+  splash.style.opacity = '1';
+  splash.querySelectorAll('video').forEach(v=>{
+    try{ v.currentTime = 0; v.play().catch(()=>{}); }catch(e){}
+  });
+  setTimeout(()=>{
+    splash.style.transition = 'opacity .5s ease';
+    splash.style.opacity = '0';
+    setTimeout(()=>{ splash.style.display = 'none'; }, 500);
+  }, 5000);
 }
 
 /* ---------- ROLE / ACCESS SCOPE ----------
