@@ -73,6 +73,7 @@ function defaultData(){
     customers:[],
     employees:[],
     subcontractors:[],
+    timesheets:[],
     expenses:[],
     compliance:[],
     events:[],
@@ -96,6 +97,8 @@ function defaultData(){
     sfExpenses:[],
     sfCompliance:[],
     budgets:{},
+    assets:[],
+    liabilities:[],
     geocodeCache:{},
     counters:{job:0, quote:0, invoice:0, variation:0, sfQuote:0, sfInvoice:0},
     activityLog:[],
@@ -519,8 +522,13 @@ const ROUTES = [
   {id:'sf-quotes', label:'Quotes', section:'steadyflow'},
   {id:'sf-invoices', label:'Invoices', section:'steadyflow'},
   {id:'team', label:'Team', section:'steadyflow'},
+  {id:'timesheets', label:'Timesheets', section:'steadyflow'},
   {id:'sf-expenses', label:'Expenses', section:'steadyflow'},
   {id:'sf-compliance', label:'Compliance', section:'steadyflow'},
+  {id:'accounting', label:'Snapshot', section:'accounting'},
+  {id:'forecast', label:'Forecast', section:'accounting'},
+  {id:'balance-sheet', label:'Balance Sheet', section:'accounting'},
+  {id:'assets-liabilities', label:'Assets & Liabilities', section:'accounting'},
   {id:'activity', label:'Activity Log', section:'system'},
   {id:'bugs', label:'Bugs', section:'system'},
   {id:'settings', label:'Settings', section:'system'}
@@ -530,12 +538,14 @@ const SECTION_LABELS = {
   steadyworks: 'STEADYWORKS · PLUMBING',
   steadyflow: 'STEADYFLOW · MARKETING',
   collaborations: 'COLLABORATIONS',
+  accounting: 'ACCOUNTING',
   system: 'SYSTEM'
 };
-const SECTION_ACCENT = { overview:'var(--gold-light)', steadyworks:'var(--gold-light)', steadyflow:'var(--teal)', collaborations:'#A78BFA', system:'#999' };
+const SECTION_ACCENT = { overview:'var(--gold-light)', steadyworks:'var(--gold-light)', steadyflow:'var(--teal)', collaborations:'#A78BFA', accounting:'#22C55E', system:'#999' };
 const ICONS = {
   dashboard:'🏠', tasks:'✅', goals:'🎯', budget:'🧮', 'sw-dashboard':'📊', 'sf-dashboard':'📊', 'sf-clients':'💻', 'sf-quotes':'📝', 'sf-invoices':'🧾', 'sf-expenses':'💷', 'sf-compliance':'🛡️', leads:'📥', followups:'📞', jobs:'🛠️', 'job-sources':'📍', quotes:'📝', invoices:'🧾', calendar:'📅',
-  customers:'👥', team:'👷', subcontractors:'🦺', expenses:'💷', compliance:'🛡️', reports:'📈', activity:'🕐', bugs:'🐞', settings:'⚙️', pipeline:'📝'
+  customers:'👥', team:'👷', timesheets:'🕒', subcontractors:'🦺', expenses:'💷', compliance:'🛡️', reports:'📈', activity:'🕐', bugs:'🐞', settings:'⚙️', pipeline:'📝',
+  accounting:'💰', forecast:'📈', 'balance-sheet':'⚖️', 'assets-liabilities':'🏦'
 };
 
 let currentRoute = 'dashboard';
@@ -664,13 +674,18 @@ const PAGE_META = {
   calendar:['Calendar','Shared across all companies — job schedule plus merged Google Calendars'],
   customers:['Customers','Client database and history'],
   team:['Team','Team members, roles and availability — shared across Steady Inc'],
+  timesheets:['Timesheets','Weekly hours for the team — fill in on-site, print a blank sheet, or import a completed one'],
   subcontractors:['Subcontractors','Trades, day rates and insurance status'],
   expenses:['Expenses','Costs, materials and overheads'],
   compliance:['Compliance','Certificates, insurance and renewals'],
   reports:['Reports','Business performance reporting'],
   activity:['Activity Log','A record of what was created, changed and deleted, and when'],
   bugs:['Bugs','Known issues and updates needed — logged now, fixed later'],
-  settings:['Settings','Company details, rates and preferences']
+  settings:['Settings','Company details, rates and preferences'],
+  accounting:['Snapshot','A quick read on where Steady Inc stands right now — SteadyWorks + SteadyFlow combined'],
+  forecast:['Forecast','A simple projection of where revenue is headed over the next few months'],
+  'balance-sheet':['Balance Sheet','What Steady Inc owns versus what it owes'],
+  'assets-liabilities':['Assets & Liabilities','What the business owns and owes — feeds the Balance Sheet']
 };
 
 function renderPage(){
@@ -679,7 +694,7 @@ function renderPage(){
   document.getElementById('page-sub').textContent = meta[1];
   const content = document.getElementById('content');
   const actions = document.getElementById('topbar-actions');
-  actions.innerHTML = CURRENT_PROFILE.role==='partner' ? '' : '<button class="btn btn-ghost" aria-label="Search everything" title="Search (Cmd+K)" onclick="openGlobalSearch()">🔍 Search <span class="small muted search-shortcut-hint" style="margin-left:4px;">⌘K</span></button>';
+  actions.innerHTML = (CURRENT_PROFILE.role==='partner'||CURRENT_PROFILE.role==='accountant') ? '' : '<button class="btn btn-ghost" aria-label="Search everything" title="Search (Cmd+K)" onclick="openGlobalSearch()">🔍 Search <span class="small muted search-shortcut-hint" style="margin-left:4px;">⌘K</span></button>';
   try{
     const fn = window['view_' + currentRoute.replace('-','_')];
     if(typeof fn === 'function'){ content.innerHTML = fn(); afterRender(currentRoute); }
@@ -715,12 +730,17 @@ function afterRender(route){
     'sf-dashboard': `<button class="btn btn-gold" onclick="openSfActivityModal()">+ Log Today's Activity</button>`,
     'sf-quotes': `<button class="btn btn-gold" onclick="openSfQuoteModal()">+ New Quote</button>`,
     'sf-invoices': `<button class="btn btn-gold" onclick="openSfInvoiceModal()">+ New Invoice</button>`,
-    'sf-expenses': `<button class="btn btn-gold" onclick="openSfExpenseModal()">+ New Expense</button>`,
+    'sf-expenses': `<button class="btn btn-ghost" onclick="openImportExpensesModal('sf')">📥 Import CSV</button> <button class="btn btn-gold" onclick="openSfExpenseModal()">+ New Expense</button>`,
     'sf-compliance': `<button class="btn btn-gold" onclick="openSfComplianceModal()">+ Add Document</button>`,
+    accounting: `<button class="btn btn-gold" onclick="printAccountingReport('snapshot')">🖨️ Export PDF</button>`,
+    forecast: `<button class="btn btn-gold" onclick="printAccountingReport('forecast')">🖨️ Export PDF</button>`,
+    'balance-sheet': `<button class="btn btn-gold" onclick="printAccountingReport('balance-sheet')">🖨️ Export PDF</button>`,
+    'assets-liabilities': `<button class="btn btn-ghost" onclick="openImportAssetsLiabilitiesModal('asset')">📥 Import Assets</button> <button class="btn btn-ghost" onclick="openImportAssetsLiabilitiesModal('liability')">📥 Import Liabilities</button> <button class="btn btn-ghost" onclick="openLiabilityModal()">+ New Liability</button> <button class="btn btn-gold" onclick="openAssetModal()">+ New Asset</button>`,
     customers: `<button class="btn btn-ghost" onclick="openImportContactsModal('customer')">📇 Import Contacts</button> <button class="btn btn-gold" onclick="openCustomerModal()">+ New Customer</button>`,
     team: `<button class="btn btn-gold" onclick="openEmployeeModal()">+ Add Team Member</button>`,
+    timesheets: `<button class="btn btn-ghost" onclick="openPrintBlankTimesheetModal()">🖨️ Print Blank Sheet</button> <button class="btn btn-ghost" onclick="openImportTimesheetModal()">📥 Import Filled Sheet</button> <button class="btn btn-gold" onclick="openTimesheetModal()">+ New Timesheet</button>`,
     subcontractors: `<button class="btn btn-ghost" onclick="openImportContactsModal('subcontractor')">📇 Import Contacts</button> <button class="btn btn-gold" onclick="openSubcontractorModal()">+ Add Subcontractor</button>`,
-    expenses: `<button class="btn btn-gold" onclick="openExpenseModal()">+ New Expense</button>`,
+    expenses: `<button class="btn btn-ghost" onclick="openImportExpensesModal('sw')">📥 Import CSV</button> <button class="btn btn-gold" onclick="openExpenseModal()">+ New Expense</button>`,
     compliance: `<button class="btn btn-gold" onclick="openComplianceModal()">+ Add Document</button>`,
     calendar: `<button class="btn btn-gold" onclick="openEventModal()">+ New Event</button>`,
     'sf-clients': `<button class="btn btn-gold" onclick="openSfClientModal()">+ New Client / Lead</button>`,
@@ -1876,6 +1896,16 @@ let CURRENT_PROFILE = {role:'owner', scope:null};
 let CURRENT_USER_ID = null;
 let CURRENT_USER_EMAIL = null;
 const PARTNER_ALLOWED_ROUTES = {pipeline:true}; // scope for a 'partner' role — pipeline only, for now
+// An 'accountant' profile only ever sees the Accounting section. Unlike
+// 'partner' (which never even fetches the shared cloud state), an accountant
+// DOES need the full app_settings blob pulled down so the Snapshot/Forecast/
+// Balance Sheet pages can add up real numbers across SteadyWorks + SteadyFlow —
+// so this is a UI-level restriction, not a data-level one. A technically
+// determined accountant could inspect network requests and see the raw JSON
+// (customer names, job details, everything) even though the UI only ever
+// renders them the four accounting pages. Fine for a trusted accountant;
+// worth knowing if that's ever a concern.
+const ACCOUNTANT_ALLOWED_ROUTES = {accounting:true, forecast:true, 'balance-sheet':true, 'assets-liabilities':true};
 async function loadUserProfile(userId){
   try{
     const {data} = await sb.from('profiles').select('*').eq('id', userId).maybeSingle();
@@ -1884,8 +1914,9 @@ async function loadUserProfile(userId){
   return {role:'owner', scope:null};
 }
 function isRouteAllowed(route){
-  if(CURRENT_PROFILE.role!=='partner') return true;
-  return !!PARTNER_ALLOWED_ROUTES[route];
+  if(CURRENT_PROFILE.role==='partner') return !!PARTNER_ALLOWED_ROUTES[route];
+  if(CURRENT_PROFILE.role==='accountant') return !!ACCOUNTANT_ALLOWED_ROUTES[route];
+  return true;
 }
 
 /* ---------- INIT ---------- */
@@ -1901,6 +1932,9 @@ async function bootApp(session){
   subscribePaintPipelineRealtime();
   if(CURRENT_PROFILE.role==='partner'){
     currentRoute = 'pipeline';
+  } else if(CURRENT_PROFILE.role==='accountant'){
+    currentRoute = 'accounting';
+    await pullCloudState(); // needs the shared numbers to add up the Snapshot/Forecast/Balance Sheet — see note above isRouteAllowed
   } else {
     const gotCloudCopy = await pullCloudState();
     if(!gotCloudCopy) pushCloudState(); // first run on this account — seed the cloud from whatever's local
@@ -1912,13 +1946,15 @@ async function bootApp(session){
     document.getElementById('sidebar-backdrop').style.display = document.getElementById('sidebar').classList.contains('open') ? 'block' : 'none';
   };
   document.addEventListener('keydown', (e)=>{
-    if(CURRENT_PROFILE.role==='partner') return;
+    if(CURRENT_PROFILE.role==='partner' || CURRENT_PROFILE.role==='accountant') return;
     if((e.metaKey||e.ctrlKey) && e.key.toLowerCase()==='k'){ e.preventDefault(); openGlobalSearch(); }
   });
-  if(CURRENT_PROFILE.role!=='partner'){
+  if(CURRENT_PROFILE.role==='owner'){
     syncLeadsFromSupabase(false);
     syncCallsFromSupabase(false);
     setInterval(()=>{ syncLeadsFromSupabase(false); syncCallsFromSupabase(false); }, 60000);
+  }
+  if(CURRENT_PROFILE.role!=='partner'){
     // Pull the full shared state periodically too, so a change made on one
     // device (or by someone else logged in) shows up here without needing
     // a manual refresh. Skipped while a modal/form is open so it can't
@@ -3882,6 +3918,516 @@ function printDoc(kind, id){
   w.document.close(); w.print();
 }
 
+/* ===================== ACCOUNTING ===================== */
+const ASSET_CATEGORIES = ['Cash & Bank','Equipment & Tools','Vehicles','Property','Investments','Other'];
+const LIABILITY_CATEGORIES = ['Loans','Credit Cards','Tax Owed','Supplier Credit','Other'];
+
+function accountingRollup(){
+  const now = new Date();
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const startOfYear = new Date(now.getFullYear(), 0, 1);
+  const sum = list => list.reduce((s,i)=>s+calcInvoiceTotal(i).total,0);
+  const sumFrom = (list, from) => list.filter(i=>new Date(i.createdAt)>=from).reduce((s,i)=>s+calcInvoiceTotal(i).total,0);
+  const expSum = (list, from) => (list||[]).filter(e=>!from || new Date(e.date)>=from).reduce((s,e)=>s+Number(e.amount||0),0);
+  const openStatuses = i => i.status!=='paid' && i.status!=='cancelled' && i.status!=='declined';
+
+  const swPaid = DB.invoices.filter(i=>i.status==='paid');
+  const sfPaid = (DB.sfInvoices||[]).filter(i=>i.status==='paid');
+
+  const swRevenueMTD = sumFrom(swPaid, startOfMonth), sfRevenueMTD = sumFrom(sfPaid, startOfMonth);
+  const swRevenueYTD = sumFrom(swPaid, startOfYear), sfRevenueYTD = sumFrom(sfPaid, startOfYear);
+  const swRevenueAll = sum(swPaid), sfRevenueAll = sum(sfPaid);
+  const swExpMTD = expSum(DB.expenses, startOfMonth), sfExpMTD = expSum(DB.sfExpenses, startOfMonth);
+  const swExpYTD = expSum(DB.expenses, startOfYear), sfExpYTD = expSum(DB.sfExpenses, startOfYear);
+  const swExpAll = expSum(DB.expenses), sfExpAll = expSum(DB.sfExpenses);
+  const sfMRR = (DB.sfClients||[]).filter(c=>c.status==='active').reduce((s,c)=>s+Number(c.mrr||0),0);
+  const swOutstanding = DB.invoices.filter(openStatuses).reduce((s,i)=>s+calcInvoiceTotal(i).total,0);
+  const sfOutstanding = (DB.sfInvoices||[]).filter(openStatuses).reduce((s,i)=>s+calcInvoiceTotal(i).total,0);
+
+  return {
+    swRevenueMTD, sfRevenueMTD, revenueMTD: swRevenueMTD+sfRevenueMTD,
+    swRevenueYTD, sfRevenueYTD, revenueYTD: swRevenueYTD+sfRevenueYTD,
+    swRevenueAll, sfRevenueAll, revenueAll: swRevenueAll+sfRevenueAll,
+    swExpMTD, sfExpMTD, expensesMTD: swExpMTD+sfExpMTD,
+    swExpYTD, sfExpYTD, expensesYTD: swExpYTD+sfExpYTD,
+    swExpAll, sfExpAll, expensesAll: swExpAll+sfExpAll,
+    sfMRR, swOutstanding, sfOutstanding, outstandingAll: swOutstanding+sfOutstanding,
+    cashPosition: (swRevenueAll+sfRevenueAll) - (swExpAll+sfExpAll)
+  };
+}
+
+function view_accounting(){
+  const r = accountingRollup();
+  const profitMTD = r.revenueMTD - r.expensesMTD;
+  const profitYTD = r.revenueYTD - r.expensesYTD;
+  const marginMTD = r.revenueMTD ? Math.round((profitMTD/r.revenueMTD)*100) : 0;
+
+  return `
+  <div class="card" style="background:rgba(34,197,94,.08);border-color:rgba(34,197,94,.3);margin-bottom:18px;">
+    <p class="small muted">Cash-basis figures pulled from paid invoices and logged expenses across SteadyWorks + SteadyFlow — not a live bank balance. UGC/Cookbook/Animation aren't included yet since they don't have a tracked ledger.</p>
+  </div>
+  <div class="grid grid-4" style="margin-bottom:18px;">
+    <div class="card kpi-card"><div class="kpi-label">Revenue (this month)</div><div class="kpi-value">${fmt(r.revenueMTD)}</div><div class="small muted mt-10">SW ${fmt(r.swRevenueMTD)} · SF ${fmt(r.sfRevenueMTD)}</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Expenses (this month)</div><div class="kpi-value">${fmt(r.expensesMTD)}</div><div class="small muted mt-10">SW ${fmt(r.swExpMTD)} · SF ${fmt(r.sfExpMTD)}</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Profit (this month)</div><div class="kpi-value" style="color:${profitMTD<0?'var(--danger)':'inherit'};">${fmt(profitMTD)}</div><div class="small muted mt-10">${marginMTD}% margin</div></div>
+    <div class="card kpi-card"><div class="kpi-label">SteadyFlow MRR</div><div class="kpi-value">${fmt(r.sfMRR)}</div><div class="small muted mt-10">Active recurring clients</div></div>
+  </div>
+  <div class="grid grid-3" style="margin-bottom:18px;">
+    <div class="card kpi-card"><div class="kpi-label">Revenue (YTD)</div><div class="kpi-value">${fmt(r.revenueYTD)}</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Profit (YTD)</div><div class="kpi-value" style="color:${profitYTD<0?'var(--danger)':'inherit'};">${fmt(profitYTD)}</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Outstanding Invoices</div><div class="kpi-value">${fmt(r.outstandingAll)}</div><div class="small muted mt-10">SW ${fmt(r.swOutstanding)} · SF ${fmt(r.sfOutstanding)}</div></div>
+  </div>
+  <div class="grid grid-2">
+    <div class="card"><div class="card-title">Since Tracking Began</div>
+      <div class="flex-between small mb-10"><span>Total revenue collected</span><strong>${fmt(r.revenueAll)}</strong></div>
+      <div class="flex-between small mb-10"><span>Total expenses logged</span><strong>${fmt(r.expensesAll)}</strong></div>
+      <div class="divider"></div>
+      <div class="flex-between"><span>Tracked cash position</span><strong style="color:${r.cashPosition<0?'var(--danger)':'var(--success)'};">${fmt(r.cashPosition)}</strong></div>
+    </div>
+    <div class="card"><div class="card-title">Jump to</div>
+      <div class="mb-10"><a style="color:var(--gold);cursor:pointer;font-weight:600;" onclick="navigate('forecast')">📈 Forecast →</a></div>
+      <div class="mb-10"><a style="color:var(--gold);cursor:pointer;font-weight:600;" onclick="navigate('balance-sheet')">⚖️ Balance Sheet →</a></div>
+      <div><a style="color:var(--gold);cursor:pointer;font-weight:600;" onclick="navigate('assets-liabilities')">🏦 Assets & Liabilities →</a></div>
+    </div>
+  </div>`;
+}
+
+function view_forecast(){
+  const r = accountingRollup();
+  const now = new Date();
+  const monthsBack = 3;
+  const monthKey = d => d.getFullYear()+'-'+d.getMonth();
+  const trailingAvg = (list)=>{
+    const byMonth = {};
+    for(let i=0;i<monthsBack;i++){
+      const d = new Date(now.getFullYear(), now.getMonth()-i, 1);
+      byMonth[monthKey(d)] = 0;
+    }
+    list.forEach(inv=>{
+      const k = monthKey(new Date(inv.createdAt));
+      if(k in byMonth) byMonth[k] += calcInvoiceTotal(inv).total;
+    });
+    return Object.values(byMonth).reduce((a,b)=>a+b,0) / monthsBack;
+  };
+  const swAvg = trailingAvg(DB.invoices.filter(i=>i.status==='paid'));
+  const sfAvgOneOff = trailingAvg((DB.sfInvoices||[]).filter(i=>i.status==='paid'));
+  const sfMRR = r.sfMRR;
+
+  const monthsAhead = 6;
+  const rows = [];
+  for(let i=1;i<=monthsAhead;i++){
+    const d = new Date(now.getFullYear(), now.getMonth()+i, 1);
+    rows.push({label: d.toLocaleString('en-GB',{month:'short',year:'numeric'}), sw: swAvg, sf: sfMRR+sfAvgOneOff, total: swAvg+sfMRR+sfAvgOneOff});
+  }
+  const totalForecast = rows.reduce((s,x)=>s+x.total,0);
+
+  return `
+  <div class="card" style="background:rgba(34,197,94,.08);border-color:rgba(34,197,94,.3);margin-bottom:18px;">
+    <p class="small muted">A simple projection, not a sophisticated model: SteadyWorks is projected from its trailing 3-month average of paid invoices; SteadyFlow is projected from current active MRR plus its trailing 3-month average of one-off work. Treat this as a rough steer, not a guarantee.</p>
+  </div>
+  <div class="grid grid-3" style="margin-bottom:18px;">
+    <div class="card kpi-card"><div class="kpi-label">SteadyWorks (monthly run-rate)</div><div class="kpi-value">${fmt(swAvg)}</div></div>
+    <div class="card kpi-card"><div class="kpi-label">SteadyFlow MRR</div><div class="kpi-value">${fmt(sfMRR)}</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Next ${monthsAhead} months (projected)</div><div class="kpi-value">${fmt(totalForecast)}</div></div>
+  </div>
+  <div class="card">
+    <div class="card-title">${monthsAhead}-Month Revenue Forecast</div>
+    <div style="position:relative;height:240px;width:100%;margin-bottom:18px;"><canvas id="chartForecast"></canvas></div>
+    <table>
+      <thead><tr><th>Month</th><th>SteadyWorks</th><th>SteadyFlow</th><th>Total</th></tr></thead>
+      <tbody>${rows.map(x=>`<tr><td>${x.label}</td><td>${fmt(x.sw)}</td><td>${fmt(x.sf)}</td><td><strong>${fmt(x.total)}</strong></td></tr>`).join('')}</tbody>
+    </table>
+  </div>
+  <script>setTimeout(()=>{
+    const labels=${JSON.stringify(rows.map(x=>x.label))};
+    const sw=${JSON.stringify(rows.map(x=>Math.round(x.sw)))};
+    const sf=${JSON.stringify(rows.map(x=>Math.round(x.sf)))};
+    chartSafe('chartForecast','bar',{labels,datasets:[{label:'SteadyWorks',data:sw,backgroundColor:'#E11D2A'},{label:'SteadyFlow',data:sf,backgroundColor:'#00E5CC'}]},{scales:{x:{stacked:true},y:{stacked:true}},plugins:{legend:{position:'bottom'}}});
+  },0)</script>`;
+}
+
+function view_balance_sheet(){
+  const r = accountingRollup();
+  const totalAssetsManual = (DB.assets||[]).reduce((s,a)=>s+Number(a.value||0),0);
+  const totalLiabilities = (DB.liabilities||[]).reduce((s,l)=>s+Number(l.value||0),0);
+  const totalAssets = totalAssetsManual + Math.max(r.cashPosition,0) + r.outstandingAll;
+  const equity = totalAssets - totalLiabilities;
+
+  const assetRows = (DB.assets||[]).slice().sort((a,b)=>(b.value||0)-(a.value||0)).map(a=>`<tr><td><span class="tag-chip">${esc(a.category)}</span></td><td>${esc(a.name)}</td><td>${fmt(a.value)}</td></tr>`).join('');
+  const liabRows = (DB.liabilities||[]).slice().sort((a,b)=>(b.value||0)-(a.value||0)).map(l=>`<tr><td><span class="tag-chip">${esc(l.category)}</span></td><td>${esc(l.name)}</td><td>${fmt(l.value)}</td></tr>`).join('');
+
+  return `
+  <div class="card" style="background:rgba(34,197,94,.08);border-color:rgba(34,197,94,.3);margin-bottom:18px;">
+    <p class="small muted">Assets = tracked cash position (if positive) + outstanding invoices owed to you + anything added on the Assets & Liabilities page. Liabilities = whatever's added there. Add real numbers on that page for an accurate picture — <a style="color:var(--gold);cursor:pointer;font-weight:600;" onclick="navigate('assets-liabilities')">go there →</a></p>
+  </div>
+  <div class="grid grid-3" style="margin-bottom:18px;">
+    <div class="card kpi-card"><div class="kpi-label">Total Assets</div><div class="kpi-value">${fmt(totalAssets)}</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Total Liabilities</div><div class="kpi-value">${fmt(totalLiabilities)}</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Equity (Net Worth)</div><div class="kpi-value" style="color:${equity<0?'var(--danger)':'var(--success)'};">${fmt(equity)}</div></div>
+  </div>
+  <div class="grid grid-2">
+    <div class="card"><div class="card-title">Assets</div>
+      <div class="flex-between small mb-10"><span>Tracked cash position</span><strong>${fmt(Math.max(r.cashPosition,0))}</strong></div>
+      <div class="flex-between small mb-10"><span>Outstanding invoices (receivable)</span><strong>${fmt(r.outstandingAll)}</strong></div>
+      ${assetRows ? `<table style="margin-top:10px;"><thead><tr><th>Category</th><th>Name</th><th>Value</th></tr></thead><tbody>${assetRows}</tbody></table>` : '<p class="small muted mt-10">No other assets added yet.</p>'}
+    </div>
+    <div class="card"><div class="card-title">Liabilities</div>
+      ${liabRows ? `<table><thead><tr><th>Category</th><th>Name</th><th>Value</th></tr></thead><tbody>${liabRows}</tbody></table>` : '<p class="small muted">No liabilities added yet — nice.</p>'}
+    </div>
+  </div>`;
+}
+
+function view_assets_liabilities(){
+  const assets = (DB.assets||[]).slice().sort((a,b)=>(b.value||0)-(a.value||0));
+  const liabilities = (DB.liabilities||[]).slice().sort((a,b)=>(b.value||0)-(a.value||0));
+  const totalAssets = assets.reduce((s,a)=>s+Number(a.value||0),0);
+  const totalLiabilities = liabilities.reduce((s,l)=>s+Number(l.value||0),0);
+
+  const assetRows = assets.map(a=>`<tr><td><span class="tag-chip">${esc(a.category)}</span></td><td>${esc(a.name)}</td><td>${fmt(a.value)}</td><td>${esc(a.notes||'')}</td><td><button class="icon-btn" aria-label="Edit asset" onclick="openAssetModal('${a.id}')">✎</button><button class="icon-btn" aria-label="Delete asset" onclick="deleteAsset('${a.id}')">✕</button></td></tr>`).join('');
+  const liabRows = liabilities.map(l=>`<tr><td><span class="tag-chip">${esc(l.category)}</span></td><td>${esc(l.name)}</td><td>${fmt(l.value)}</td><td>${esc(l.notes||'')}</td><td><button class="icon-btn" aria-label="Edit liability" onclick="openLiabilityModal('${l.id}')">✎</button><button class="icon-btn" aria-label="Delete liability" onclick="deleteLiability('${l.id}')">✕</button></td></tr>`).join('');
+
+  return `
+  <div class="card"><div class="card-title">Assets <span class="small muted">${fmt(totalAssets)} total</span></div>
+    <table><thead><tr><th>Category</th><th>Name</th><th>Value</th><th>Notes</th><th></th></tr></thead>
+    <tbody>${assetRows || '<tr><td colspan="5" class="muted" style="text-align:center;padding:20px;">Nothing added yet — equipment, vehicles, savings, property, whatever the business owns.</td></tr>'}</tbody></table>
+  </div>
+  <div class="card mt-10"><div class="card-title">Liabilities <span class="small muted">${fmt(totalLiabilities)} total</span></div>
+    <table><thead><tr><th>Category</th><th>Name</th><th>Value</th><th>Notes</th><th></th></tr></thead>
+    <tbody>${liabRows || '<tr><td colspan="5" class="muted" style="text-align:center;padding:20px;">Nothing added yet — loans, credit cards, tax owed, whatever the business owes.</td></tr>'}</tbody></table>
+  </div>`;
+}
+function openAssetModal(id){
+  const a = id ? (DB.assets||[]).find(x=>x.id===id) : null;
+  openModal(`
+    <div class="modal-head"><h2>${a?'Edit Asset':'New Asset'}</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group"><label>Category</label><select id="f-category">${ASSET_CATEGORIES.map(c=>`<option ${a&&a.category===c?'selected':''}>${c}</option>`).join('')}</select></div>
+        <div class="form-group"><label>Value (£)</label><input id="f-value" type="number" value="${a?a.value:''}"></div>
+      </div>
+      <div class="form-group"><label>Name</label><input id="f-name" type="text" value="${a?esc(a.name):''}" placeholder="e.g. Transit van, ISA savings"></div>
+      <div class="form-group"><label>Notes</label><textarea id="f-notes">${a?esc(a.notes||''):''}</textarea></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-gold" onclick="saveAsset('${a?a.id:''}')">${a?'Save Changes':'Add Asset'}</button>
+    </div>`);
+}
+function saveAsset(id){
+  const nameVal = document.getElementById('f-name').value.trim();
+  if(!nameVal){ toast('Enter a name','⚠️'); document.getElementById('f-name').focus(); return; }
+  const valueVal = Number(document.getElementById('f-value').value)||0;
+  if(valueVal<=0){ toast('Enter a value greater than £0','⚠️'); document.getElementById('f-value').focus(); return; }
+  DB.assets = DB.assets||[];
+  const data = {category:document.getElementById('f-category').value, name:nameVal, value:valueVal, notes:document.getElementById('f-notes').value};
+  if(id){ Object.assign(DB.assets.find(a=>a.id===id), data); toast('Asset updated'); }
+  else { DB.assets.push(Object.assign({id:uid()}, data)); toast('Asset added'); }
+  save(); closeModal(); renderPage();
+}
+function deleteAsset(id){
+  confirmDelete('Delete this asset?', "This can't be undone.", ()=>{
+    DB.assets = (DB.assets||[]).filter(a=>a.id!==id); save(); renderPage(); toast('Asset deleted','🗑️');
+  });
+}
+function openLiabilityModal(id){
+  const l = id ? (DB.liabilities||[]).find(x=>x.id===id) : null;
+  openModal(`
+    <div class="modal-head"><h2>${l?'Edit Liability':'New Liability'}</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group"><label>Category</label><select id="f-category">${LIABILITY_CATEGORIES.map(c=>`<option ${l&&l.category===c?'selected':''}>${c}</option>`).join('')}</select></div>
+        <div class="form-group"><label>Value (£)</label><input id="f-value" type="number" value="${l?l.value:''}"></div>
+      </div>
+      <div class="form-group"><label>Name</label><input id="f-name" type="text" value="${l?esc(l.name):''}" placeholder="e.g. Van finance, Business loan"></div>
+      <div class="form-group"><label>Notes</label><textarea id="f-notes">${l?esc(l.notes||''):''}</textarea></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-gold" onclick="saveLiability('${l?l.id:''}')">${l?'Save Changes':'Add Liability'}</button>
+    </div>`);
+}
+function saveLiability(id){
+  const nameVal = document.getElementById('f-name').value.trim();
+  if(!nameVal){ toast('Enter a name','⚠️'); document.getElementById('f-name').focus(); return; }
+  const valueVal = Number(document.getElementById('f-value').value)||0;
+  if(valueVal<=0){ toast('Enter a value greater than £0','⚠️'); document.getElementById('f-value').focus(); return; }
+  DB.liabilities = DB.liabilities||[];
+  const data = {category:document.getElementById('f-category').value, name:nameVal, value:valueVal, notes:document.getElementById('f-notes').value};
+  if(id){ Object.assign(DB.liabilities.find(l=>l.id===id), data); toast('Liability updated'); }
+  else { DB.liabilities.push(Object.assign({id:uid()}, data)); toast('Liability added'); }
+  save(); closeModal(); renderPage();
+}
+function deleteLiability(id){
+  confirmDelete('Delete this liability?', "This can't be undone.", ()=>{
+    DB.liabilities = (DB.liabilities||[]).filter(l=>l.id!==id); save(); renderPage(); toast('Liability deleted','🗑️');
+  });
+}
+
+/* ---------- Generic CSV import helpers (bank exports, spreadsheets — headers vary a lot) ---------- */
+function parseCSV(text){
+  const lines = text.split(/\r\n|\n|\r/).filter(l=>l.trim().length);
+  if(!lines.length) return [];
+  const splitLine = (line)=>{
+    const out = []; let cur=''; let inQuotes=false;
+    for(let i=0;i<line.length;i++){
+      const ch = line[i];
+      if(ch==='"'){ inQuotes = !inQuotes; continue; }
+      if(ch===',' && !inQuotes){ out.push(cur); cur=''; continue; }
+      cur += ch;
+    }
+    out.push(cur);
+    return out.map(s=>s.trim());
+  };
+  const headers = splitLine(lines[0]).map(h=>h.toLowerCase().trim());
+  return lines.slice(1).map(line=>{
+    const cells = splitLine(line);
+    const row = {};
+    headers.forEach((h,i)=>{ row[h] = cells[i]!==undefined ? cells[i] : ''; });
+    return row;
+  });
+}
+function csvFindCol(row, candidates){
+  const keys = Object.keys(row);
+  for(const cand of candidates){
+    const found = keys.find(k=>k.includes(cand));
+    if(found) return row[found];
+  }
+  return '';
+}
+
+/* ---------- Import Expenses from CSV (bank/spreadsheet export) ---------- */
+let IMPORT_EXPENSE_ROWS = [];
+function openImportExpensesModal(kind){
+  IMPORT_EXPENSE_ROWS = [];
+  openModal(`
+    <div class="modal-head"><h2>Import Expenses (CSV)</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <p class="small muted mb-10">Upload a CSV export from your bank or a spreadsheet — needs a date, a description and an amount column (any reasonable header names work). Category defaults to Miscellaneous; adjust before importing.</p>
+      <input id="import-expense-file" type="file" accept=".csv,text/csv" onchange="handleImportExpenseFile(this,'${kind}')">
+      <div id="import-expense-review" style="margin-top:16px;"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button id="import-expense-run-btn" class="btn btn-gold" style="display:none;" onclick="runImportExpenses('${kind}')">Import Selected</button>
+    </div>`, true);
+}
+function handleImportExpenseFile(input, kind){
+  const file = input.files && input.files[0];
+  if(!file) return;
+  const cats = kind==='sf' ? SF_EXPENSE_CATEGORIES : EXPENSE_CATEGORIES;
+  const reader = new FileReader();
+  reader.onload = (e)=>{
+    const rows = parseCSV(e.target.result);
+    IMPORT_EXPENSE_ROWS = rows.map(r=>{
+      const dateRaw = csvFindCol(r,['date']);
+      const d = new Date(dateRaw);
+      const dateStr = !isNaN(d) ? d.toISOString().slice(0,10) : new Date().toISOString().slice(0,10);
+      const amountRaw = csvFindCol(r,['amount','value','debit','credit']).replace(/[^0-9.\-]/g,'');
+      return {
+        selected: true,
+        date: dateStr,
+        desc: csvFindCol(r,['desc','memo','note','narrative','detail']) || csvFindCol(r,['name']),
+        amount: Math.abs(Number(amountRaw))||0,
+        category: cats[cats.length-1]
+      };
+    }).filter(r=>r.amount>0);
+    renderImportExpenseReview(kind);
+  };
+  reader.readAsText(file);
+}
+function renderImportExpenseReview(kind){
+  const cats = kind==='sf' ? SF_EXPENSE_CATEGORIES : EXPENSE_CATEGORIES;
+  const box = document.getElementById('import-expense-review');
+  const btn = document.getElementById('import-expense-run-btn');
+  if(!box) return;
+  if(!IMPORT_EXPENSE_ROWS.length){ box.innerHTML = '<p class="small muted">No usable rows found — check the file has date and amount columns.</p>'; if(btn) btn.style.display='none'; return; }
+  const selectedCount = IMPORT_EXPENSE_ROWS.filter(r=>r.selected).length;
+  box.innerHTML = `
+    <p class="small muted mb-10">${IMPORT_EXPENSE_ROWS.length} rows found — ${selectedCount} selected to import.</p>
+    <div style="max-height:340px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;">
+      <table style="width:100%;">
+        <thead><tr><th style="width:36px;"></th><th>Date</th><th>Description</th><th>Category</th><th>Amount</th></tr></thead>
+        <tbody>
+          ${IMPORT_EXPENSE_ROWS.map((r,i)=>`
+            <tr>
+              <td><input type="checkbox" ${r.selected?'checked':''} onchange="IMPORT_EXPENSE_ROWS[${i}].selected=this.checked; renderImportExpenseReview('${kind}');"></td>
+              <td><input type="date" value="${r.date}" style="width:130px;" onchange="IMPORT_EXPENSE_ROWS[${i}].date=this.value;"></td>
+              <td><input type="text" value="${esc(r.desc)}" style="width:100%;" onchange="IMPORT_EXPENSE_ROWS[${i}].desc=this.value;"></td>
+              <td><select onchange="IMPORT_EXPENSE_ROWS[${i}].category=this.value;">${cats.map(c=>`<option ${r.category===c?'selected':''}>${c}</option>`).join('')}</select></td>
+              <td><input type="number" value="${r.amount}" style="width:90px;" onchange="IMPORT_EXPENSE_ROWS[${i}].amount=Number(this.value)||0;"></td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
+  if(btn) btn.style.display = 'inline-block';
+}
+function runImportExpenses(kind){
+  const rows = IMPORT_EXPENSE_ROWS.filter(r=>r.selected && r.amount>0);
+  if(!rows.length){ toast('Nothing selected to import','⚠️'); return; }
+  if(kind==='sf'){ DB.sfExpenses = DB.sfExpenses||[]; rows.forEach(r=>DB.sfExpenses.push({id:uid(), category:r.category, amount:r.amount, desc:r.desc||'Imported expense', date:r.date})); }
+  else { DB.expenses = DB.expenses||[]; rows.forEach(r=>DB.expenses.push({id:uid(), category:r.category, amount:r.amount, desc:r.desc||'Imported expense', date:r.date})); }
+  logActivity('Expenses imported', `${rows.length} expense(s) into ${kind==='sf'?'SteadyFlow':'SteadyWorks'}`);
+  save(); closeModal(); renderPage();
+  toast(`Imported ${rows.length} expense${rows.length===1?'':'s'}`);
+}
+
+/* ---------- Import Assets / Liabilities from CSV ---------- */
+let IMPORT_AL_ROWS = [];
+function openImportAssetsLiabilitiesModal(type){
+  IMPORT_AL_ROWS = [];
+  openModal(`
+    <div class="modal-head"><h2>Import ${type==='liability'?'Liabilities':'Assets'} (CSV)</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <p class="small muted mb-10">CSV needs a name and a value column — category and notes are optional and default sensibly.</p>
+      <input id="import-al-file" type="file" accept=".csv,text/csv" onchange="handleImportALFile(this,'${type}')">
+      <div id="import-al-review" style="margin-top:16px;"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button id="import-al-run-btn" class="btn btn-gold" style="display:none;" onclick="runImportAL('${type}')">Import Selected</button>
+    </div>`, true);
+}
+function handleImportALFile(input, type){
+  const file = input.files && input.files[0];
+  if(!file) return;
+  const cats = type==='liability' ? LIABILITY_CATEGORIES : ASSET_CATEGORIES;
+  const reader = new FileReader();
+  reader.onload = (e)=>{
+    const rows = parseCSV(e.target.result);
+    IMPORT_AL_ROWS = rows.map(r=>({
+      selected: true,
+      name: csvFindCol(r,['name','item','description']),
+      value: Math.abs(Number(csvFindCol(r,['value','amount']).replace(/[^0-9.\-]/g,'')))||0,
+      category: cats[cats.length-1],
+      notes: csvFindCol(r,['notes','note'])
+    })).filter(r=>r.name && r.value>0);
+    renderImportALReview(type);
+  };
+  reader.readAsText(file);
+}
+function renderImportALReview(type){
+  const cats = type==='liability' ? LIABILITY_CATEGORIES : ASSET_CATEGORIES;
+  const box = document.getElementById('import-al-review');
+  const btn = document.getElementById('import-al-run-btn');
+  if(!box) return;
+  if(!IMPORT_AL_ROWS.length){ box.innerHTML = '<p class="small muted">No usable rows found — check the file has name and value columns.</p>'; if(btn) btn.style.display='none'; return; }
+  const selectedCount = IMPORT_AL_ROWS.filter(r=>r.selected).length;
+  box.innerHTML = `
+    <p class="small muted mb-10">${IMPORT_AL_ROWS.length} rows found — ${selectedCount} selected to import.</p>
+    <div style="max-height:340px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;">
+      <table style="width:100%;">
+        <thead><tr><th style="width:36px;"></th><th>Name</th><th>Category</th><th>Value</th></tr></thead>
+        <tbody>
+          ${IMPORT_AL_ROWS.map((r,i)=>`
+            <tr>
+              <td><input type="checkbox" ${r.selected?'checked':''} onchange="IMPORT_AL_ROWS[${i}].selected=this.checked; renderImportALReview('${type}');"></td>
+              <td><input type="text" value="${esc(r.name)}" style="width:100%;" onchange="IMPORT_AL_ROWS[${i}].name=this.value;"></td>
+              <td><select onchange="IMPORT_AL_ROWS[${i}].category=this.value;">${cats.map(c=>`<option ${r.category===c?'selected':''}>${c}</option>`).join('')}</select></td>
+              <td><input type="number" value="${r.value}" style="width:90px;" onchange="IMPORT_AL_ROWS[${i}].value=Number(this.value)||0;"></td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
+  if(btn) btn.style.display = 'inline-block';
+}
+function runImportAL(type){
+  const rows = IMPORT_AL_ROWS.filter(r=>r.selected && r.value>0);
+  if(!rows.length){ toast('Nothing selected to import','⚠️'); return; }
+  if(type==='liability'){ DB.liabilities = DB.liabilities||[]; rows.forEach(r=>DB.liabilities.push({id:uid(), category:r.category, name:r.name, value:r.value, notes:r.notes||''})); }
+  else { DB.assets = DB.assets||[]; rows.forEach(r=>DB.assets.push({id:uid(), category:r.category, name:r.name, value:r.value, notes:r.notes||''})); }
+  logActivity(`${type==='liability'?'Liabilities':'Assets'} imported`, `${rows.length} row(s)`);
+  save(); closeModal(); renderPage();
+  const label = type==='liability' ? (rows.length===1?'liability':'liabilities') : (rows.length===1?'asset':'assets');
+  toast(`Imported ${rows.length} ${label}`);
+}
+
+/* ---------- Print/export an Accounting page as a PDF (browser print-to-PDF, same approach as printDoc) ---------- */
+function printAccountingReport(kind){
+  const r = accountingRollup();
+  const now = new Date();
+  const accent = '#22C55E';
+  const accentSoft = '#E9FBF0';
+  let title, bodyHtml;
+
+  if(kind==='snapshot'){
+    const profitMTD = r.revenueMTD - r.expensesMTD;
+    const profitYTD = r.revenueYTD - r.expensesYTD;
+    title = 'Financial Snapshot';
+    bodyHtml = `
+      <table><thead><tr><th>Metric</th><th>SteadyWorks</th><th>SteadyFlow</th><th>Total</th></tr></thead>
+      <tbody>
+        <tr><td>Revenue (this month)</td><td>${fmt(r.swRevenueMTD)}</td><td>${fmt(r.sfRevenueMTD)}</td><td><strong>${fmt(r.revenueMTD)}</strong></td></tr>
+        <tr><td>Expenses (this month)</td><td>${fmt(r.swExpMTD)}</td><td>${fmt(r.sfExpMTD)}</td><td><strong>${fmt(r.expensesMTD)}</strong></td></tr>
+        <tr><td>Profit (this month)</td><td>${fmt(r.swRevenueMTD-r.swExpMTD)}</td><td>${fmt(r.sfRevenueMTD-r.sfExpMTD)}</td><td><strong>${fmt(profitMTD)}</strong></td></tr>
+        <tr><td>Revenue (YTD)</td><td>${fmt(r.swRevenueYTD)}</td><td>${fmt(r.sfRevenueYTD)}</td><td><strong>${fmt(r.revenueYTD)}</strong></td></tr>
+        <tr><td>Profit (YTD)</td><td></td><td></td><td><strong>${fmt(profitYTD)}</strong></td></tr>
+        <tr><td>Outstanding invoices</td><td>${fmt(r.swOutstanding)}</td><td>${fmt(r.sfOutstanding)}</td><td><strong>${fmt(r.outstandingAll)}</strong></td></tr>
+        <tr><td>SteadyFlow MRR</td><td></td><td></td><td><strong>${fmt(r.sfMRR)}</strong></td></tr>
+        <tr><td>Tracked cash position</td><td></td><td></td><td><strong>${fmt(r.cashPosition)}</strong></td></tr>
+      </tbody></table>`;
+  } else if(kind==='balance-sheet'){
+    const totalAssetsManual = (DB.assets||[]).reduce((s,a)=>s+Number(a.value||0),0);
+    const totalLiabilities = (DB.liabilities||[]).reduce((s,l)=>s+Number(l.value||0),0);
+    const totalAssets = totalAssetsManual + Math.max(r.cashPosition,0) + r.outstandingAll;
+    const equity = totalAssets - totalLiabilities;
+    title = 'Balance Sheet';
+    bodyHtml = `
+      <h2 style="margin-top:0;">Assets</h2>
+      <table><tbody>
+        <tr><td>Tracked cash position</td><td>${fmt(Math.max(r.cashPosition,0))}</td></tr>
+        <tr><td>Outstanding invoices (receivable)</td><td>${fmt(r.outstandingAll)}</td></tr>
+        ${(DB.assets||[]).map(a=>`<tr><td>${esc(a.name)} — ${esc(a.category)}</td><td>${fmt(a.value)}</td></tr>`).join('')}
+        <tr><td><strong>Total Assets</strong></td><td><strong>${fmt(totalAssets)}</strong></td></tr>
+      </tbody></table>
+      <h2>Liabilities</h2>
+      <table><tbody>
+        ${(DB.liabilities||[]).map(l=>`<tr><td>${esc(l.name)} — ${esc(l.category)}</td><td>${fmt(l.value)}</td></tr>`).join('') || '<tr><td colspan="2">None recorded</td></tr>'}
+        <tr><td><strong>Total Liabilities</strong></td><td><strong>${fmt(totalLiabilities)}</strong></td></tr>
+      </tbody></table>
+      <h2>Equity</h2>
+      <table><tbody><tr><td><strong>Net Worth</strong></td><td><strong>${fmt(equity)}</strong></td></tr></tbody></table>`;
+  } else {
+    title = 'Revenue Forecast';
+    const monthsBack=3, monthKey=d=>d.getFullYear()+'-'+d.getMonth();
+    const trailingAvg=(list)=>{
+      const byMonth={};
+      for(let i=0;i<monthsBack;i++){ const d=new Date(now.getFullYear(),now.getMonth()-i,1); byMonth[monthKey(d)]=0; }
+      list.forEach(inv=>{ const k=monthKey(new Date(inv.createdAt)); if(k in byMonth) byMonth[k]+=calcInvoiceTotal(inv).total; });
+      return Object.values(byMonth).reduce((a,b)=>a+b,0)/monthsBack;
+    };
+    const swAvg = trailingAvg(DB.invoices.filter(i=>i.status==='paid'));
+    const sfAvgOneOff = trailingAvg((DB.sfInvoices||[]).filter(i=>i.status==='paid'));
+    const sfMRR = r.sfMRR;
+    const rowsHtml = [];
+    for(let i=1;i<=6;i++){
+      const d = new Date(now.getFullYear(), now.getMonth()+i, 1);
+      const sf = sfMRR+sfAvgOneOff;
+      rowsHtml.push(`<tr><td>${d.toLocaleString('en-GB',{month:'short',year:'numeric'})}</td><td>${fmt(swAvg)}</td><td>${fmt(sf)}</td><td><strong>${fmt(swAvg+sf)}</strong></td></tr>`);
+    }
+    bodyHtml = `<table><thead><tr><th>Month</th><th>SteadyWorks</th><th>SteadyFlow</th><th>Total</th></tr></thead><tbody>${rowsHtml.join('')}</tbody></table>`;
+  }
+
+  const w = window.open('','_blank');
+  w.document.write(`
+    <html><head><title>${title}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+      body{font-family:'Manrope',Arial,sans-serif;padding:40px;color:#1A1A1A;-webkit-font-smoothing:antialiased;}
+      h1{color:${accent};font-size:22px;font-weight:800;margin:0;}
+      h2{color:${accent};font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin:26px 0 8px;}
+      table{width:100%;border-collapse:collapse;margin-top:10px;}
+      th{padding:8px;text-align:left;font-size:11px;font-weight:700;text-transform:uppercase;color:${accent};background:${accentSoft};}
+      td{padding:8px;border-bottom:1px solid #eee;font-size:13.5px;}
+      .head{border-bottom:3px solid ${accent};padding-bottom:14px;margin-bottom:10px;}
+    </style></head><body>
+    <div class="head"><h1>Steady Inc — ${title}</h1><div style="font-size:12px;color:#666;margin-top:4px;">Generated ${fmtDate(now.toISOString())}</div></div>
+    ${bodyHtml}
+    <p style="margin-top:30px;font-size:11px;color:#999;">Cash-basis figures from tracked invoices and expenses — not a substitute for formal accounts.</p>
+    </body></html>`);
+  w.document.close(); w.print();
+}
+
 /* ===================== CALENDAR ===================== */
 let calCursor = new Date();
 let calMode = 'due';
@@ -4229,6 +4775,262 @@ function deleteEmployee(id){
   confirmDelete('Remove '+(e0?e0.name:'this team member')+'?', "This can't be undone.", ()=>{
     DB.employees = DB.employees.filter(e=>e.id!==id); save(); closeModal(); renderPage(); toast('Removed','🗑️');
   });
+}
+
+/* ===================== TIMESHEETS ===================== */
+function mondayOf(dateStr){
+  const d = new Date(dateStr);
+  const day = d.getDay(); // 0=Sun..6=Sat
+  const diff = (day===0 ? -6 : 1-day);
+  d.setDate(d.getDate()+diff);
+  return d.toISOString().slice(0,10);
+}
+function weekDays(weekStart){
+  const out = [];
+  const d = new Date(weekStart);
+  for(let i=0;i<7;i++){ const x=new Date(d); x.setDate(d.getDate()+i); out.push(x.toISOString().slice(0,10)); }
+  return out;
+}
+function timesheetTotal(ts){
+  return weekDays(ts.weekStart).reduce((s,day)=>s+Number((ts.days[day]&&ts.days[day].hours)||0),0);
+}
+function view_timesheets(){
+  const list = [...(DB.timesheets||[])].sort((a,b)=>b.weekStart.localeCompare(a.weekStart));
+  const rows = list.map(ts=>{
+    const days = weekDays(ts.weekStart);
+    const total = timesheetTotal(ts);
+    return `<tr>
+      <td>${esc(ts.employeeName)}</td>
+      <td>${fmtDate(days[0])} – ${fmtDate(days[6])}</td>
+      <td><strong>${total.toFixed(1)}h</strong></td>
+      <td><span class="pill ${ts.status==='submitted'?'st-won':'st-onhold'}">${ts.status==='submitted'?'Submitted':'Draft'}</span></td>
+      <td style="text-align:right;">
+        <button class="icon-btn" aria-label="Edit timesheet" onclick="openTimesheetModal('${ts.id}')">✎</button>
+        <button class="icon-btn" aria-label="Print timesheet" onclick="printTimesheet('${ts.id}')">🖨️</button>
+        <button class="icon-btn" aria-label="Delete timesheet" onclick="deleteTimesheet('${ts.id}')">🗑️</button>
+      </td>
+    </tr>`;
+  }).join('');
+  return `
+    <div class="card">
+      <table><thead><tr><th>Team Member</th><th>Week</th><th>Total Hours</th><th>Status</th><th></th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="5" class="empty-state">No timesheets yet — add one, print a blank sheet, or import a filled one.</td></tr>'}</tbody>
+      </table>
+    </div>`;
+}
+function openTimesheetModal(id){
+  const ts = id ? DB.timesheets.find(t=>t.id===id) : null;
+  const employeeId = ts ? ts.employeeId : (DB.employees[0] ? DB.employees[0].id : '');
+  const weekStart = ts ? ts.weekStart : mondayOf(new Date().toISOString().slice(0,10));
+  openModal(`
+    <div class="modal-head"><h2>${ts?'Edit Timesheet':'New Timesheet'}</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group"><label>Team Member</label><select id="ts-employee" ${ts?'disabled':''} onchange="renderTimesheetGrid()">${DB.employees.map(e=>`<option value="${e.id}" ${employeeId===e.id?'selected':''}>${esc(e.name)}</option>`).join('') || '<option value="">Add a team member first</option>'}</select></div>
+        <div class="form-group"><label>Week Starting (Monday)</label><input id="ts-weekstart" type="date" value="${weekStart}" ${ts?'disabled':''} onchange="document.getElementById('ts-weekstart').value=mondayOf(this.value); renderTimesheetGrid();"></div>
+      </div>
+      <div id="ts-grid"></div>
+      <div class="form-group mt-10"><label>Status</label><select id="ts-status">${['draft','submitted'].map(s=>`<option value="${s}" ${(ts&&ts.status===s)?'selected':''}>${s==='draft'?'Draft':'Submitted'}</option>`).join('')}</select></div>
+    </div>
+    <div class="modal-foot">
+      ${ts?`<button class="btn btn-danger" onclick="deleteTimesheet('${ts.id}')">Delete</button>`:''}
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-gold" onclick="saveTimesheet('${ts?ts.id:''}')">${ts?'Save Changes':'Create Timesheet'}</button>
+    </div>`, true);
+  window._tsEditing = ts ? JSON.parse(JSON.stringify(ts.days||{})) : {};
+  renderTimesheetGrid();
+}
+function renderTimesheetGrid(){
+  const grid = document.getElementById('ts-grid');
+  if(!grid) return;
+  const weekStartInput = document.getElementById('ts-weekstart');
+  const weekStart = weekStartInput ? weekStartInput.value : mondayOf(new Date().toISOString().slice(0,10));
+  const days = weekDays(weekStart);
+  const dayNames = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  grid.innerHTML = `
+    <table><thead><tr><th>Day</th><th>Hours</th><th>Notes</th></tr></thead>
+    <tbody>
+      ${days.map((d,i)=>{
+        const existing = (window._tsEditing && window._tsEditing[d]) || {hours:0,note:''};
+        return `<tr>
+          <td>${dayNames[i]} <span class="small muted">${fmtDate(d)}</span></td>
+          <td><input type="number" step="0.25" min="0" max="24" value="${existing.hours||0}" style="width:80px;" data-day="${d}" class="ts-hours-input" onchange="window._tsEditing['${d}']=window._tsEditing['${d}']||{}; window._tsEditing['${d}'].hours=Number(this.value)||0;"></td>
+          <td><input type="text" value="${esc(existing.note||'')}" style="width:100%;" data-day="${d}" class="ts-note-input" onchange="window._tsEditing['${d}']=window._tsEditing['${d}']||{}; window._tsEditing['${d}'].note=this.value;"></td>
+        </tr>`;
+      }).join('')}
+    </tbody></table>`;
+}
+function saveTimesheet(id){
+  const employeeSel = document.getElementById('ts-employee');
+  const employee = DB.employees.find(e=>e.id===employeeSel.value);
+  if(!employee){ toast('Add a team member first','⚠️'); return; }
+  const weekStart = mondayOf(document.getElementById('ts-weekstart').value);
+  const status = document.getElementById('ts-status').value;
+  const days = window._tsEditing || {};
+  if(id){
+    const ts = DB.timesheets.find(t=>t.id===id);
+    Object.assign(ts, {days, status});
+    toast('Timesheet updated');
+  } else {
+    DB.timesheets.push({id:uid(), employeeId:employee.id, employeeName:employee.name, weekStart, days, status});
+    toast('Timesheet created');
+  }
+  logActivity('Timesheet saved', `${employee.name} — week of ${fmtDate(weekStart)}`);
+  save(); closeModal(); renderPage();
+}
+function deleteTimesheet(id){
+  const ts = DB.timesheets.find(t=>t.id===id);
+  confirmDelete('Delete this timesheet?', "This can't be undone.", ()=>{
+    DB.timesheets = DB.timesheets.filter(t=>t.id!==id); save(); closeModal(); renderPage(); toast('Timesheet deleted','🗑️');
+  });
+}
+
+/* ---------- Print a BLANK timesheet to hand out / fill by hand ---------- */
+function openPrintBlankTimesheetModal(){
+  const weekStart = mondayOf(new Date().toISOString().slice(0,10));
+  openModal(`
+    <div class="modal-head"><h2>Print Blank Timesheet</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <div class="form-group"><label>Team Member</label><select id="pb-employee">${DB.employees.map(e=>`<option value="${e.id}">${esc(e.name)}</option>`).join('') || '<option value="">Add a team member first</option>'}</select></div>
+      <div class="form-group"><label>Week Starting (Monday)</label><input id="pb-weekstart" type="date" value="${weekStart}" onchange="this.value=mondayOf(this.value);"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-gold" onclick="printBlankTimesheet()">🖨️ Print</button>
+    </div>`);
+}
+function printBlankTimesheet(){
+  const employee = DB.employees.find(e=>e.id===document.getElementById('pb-employee').value);
+  const weekStart = mondayOf(document.getElementById('pb-weekstart').value);
+  const days = weekDays(weekStart);
+  const dayNames = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
+  const accent = '#00E5CC';
+  const w = window.open('','_blank');
+  w.document.write(`
+    <html><head><title>Timesheet — ${employee?esc(employee.name):''}</title>
+    <style>
+      body{font-family:Arial,sans-serif;padding:40px;color:#1A1A1A;}
+      h1{color:${accent};font-size:22px;font-weight:800;margin:0;}
+      table{width:100%;border-collapse:collapse;margin-top:20px;}
+      th{padding:10px;text-align:left;font-size:12px;text-transform:uppercase;background:#f0fdfb;color:${accent};border:1px solid #ddd;}
+      td{padding:14px 10px;border:1px solid #ddd;font-size:14px;}
+      .head{border-bottom:3px solid ${accent};padding-bottom:14px;margin-bottom:6px;}
+      .sig{margin-top:40px;display:flex;gap:60px;}
+      .sig div{flex:1;border-top:1px solid #999;padding-top:6px;font-size:12px;color:#666;}
+    </style></head><body>
+    <div class="head"><h1>Steady Inc — Weekly Timesheet</h1>
+      <div style="font-size:13px;color:#666;margin-top:6px;">Employee: <strong>${employee?esc(employee.name):'_______________'}</strong> &nbsp;·&nbsp; Week: ${fmtDate(days[0])} – ${fmtDate(days[6])}</div>
+    </div>
+    <table><thead><tr><th style="width:110px;">Day</th><th style="width:90px;">Hours</th><th>Notes / Job</th></tr></thead>
+    <tbody>${days.map((d,i)=>`<tr><td>${dayNames[i]}<br><span style="font-size:11px;color:#999;">${fmtDate(d)}</span></td><td></td><td></td></tr>`).join('')}
+    <tr><td colspan="2" style="text-align:right;"><strong>Total Hours</strong></td><td></td></tr>
+    </tbody></table>
+    <div class="sig"><div>Employee Signature</div><div>Date</div></div>
+    </body></html>`);
+  w.document.close(); w.print();
+  closeModal();
+}
+function printTimesheet(id){
+  const ts = DB.timesheets.find(t=>t.id===id);
+  if(!ts) return;
+  const days = weekDays(ts.weekStart);
+  const dayNames = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
+  const accent = '#00E5CC';
+  const total = timesheetTotal(ts);
+  const w = window.open('','_blank');
+  w.document.write(`
+    <html><head><title>Timesheet — ${esc(ts.employeeName)}</title>
+    <style>
+      body{font-family:Arial,sans-serif;padding:40px;color:#1A1A1A;}
+      h1{color:${accent};font-size:22px;font-weight:800;margin:0;}
+      table{width:100%;border-collapse:collapse;margin-top:20px;}
+      th{padding:10px;text-align:left;font-size:12px;text-transform:uppercase;background:#f0fdfb;color:${accent};border:1px solid #ddd;}
+      td{padding:10px;border:1px solid #ddd;font-size:14px;}
+      .head{border-bottom:3px solid ${accent};padding-bottom:14px;margin-bottom:6px;}
+    </style></head><body>
+    <div class="head"><h1>Steady Inc — Weekly Timesheet</h1>
+      <div style="font-size:13px;color:#666;margin-top:6px;">Employee: <strong>${esc(ts.employeeName)}</strong> &nbsp;·&nbsp; Week: ${fmtDate(days[0])} – ${fmtDate(days[6])} &nbsp;·&nbsp; Status: ${ts.status==='submitted'?'Submitted':'Draft'}</div>
+    </div>
+    <table><thead><tr><th style="width:110px;">Day</th><th style="width:90px;">Hours</th><th>Notes</th></tr></thead>
+    <tbody>${days.map((d,i)=>{const e=ts.days[d]||{hours:0,note:''};return `<tr><td>${dayNames[i]}<br><span style="font-size:11px;color:#999;">${fmtDate(d)}</span></td><td>${Number(e.hours||0).toFixed(2)}</td><td>${esc(e.note||'')}</td></tr>`;}).join('')}
+    <tr><td colspan="1" style="text-align:right;"><strong>Total Hours</strong></td><td colspan="2"><strong>${total.toFixed(2)}</strong></td></tr>
+    </tbody></table>
+    </body></html>`);
+  w.document.close(); w.print();
+}
+
+/* ---------- Import a filled-in timesheet from CSV (Date, Hours, Notes) ---------- */
+let IMPORT_TS_ROWS = [];
+function openImportTimesheetModal(){
+  IMPORT_TS_ROWS = [];
+  const weekStart = mondayOf(new Date().toISOString().slice(0,10));
+  openModal(`
+    <div class="modal-head"><h2>Import Filled Timesheet (CSV)</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <p class="small muted mb-10">CSV needs a date column and an hours column (a notes column is optional). Rows outside the selected week are ignored.</p>
+      <div class="form-row">
+        <div class="form-group"><label>Team Member</label><select id="it-employee">${DB.employees.map(e=>`<option value="${e.id}">${esc(e.name)}</option>`).join('') || '<option value="">Add a team member first</option>'}</select></div>
+        <div class="form-group"><label>Week Starting (Monday)</label><input id="it-weekstart" type="date" value="${weekStart}" onchange="this.value=mondayOf(this.value); if(IMPORT_TS_ROWS.length) renderImportTimesheetReview();"></div>
+      </div>
+      <input id="import-ts-file" type="file" accept=".csv,text/csv" onchange="handleImportTimesheetFile(this)">
+      <div id="import-ts-review" style="margin-top:16px;"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button id="import-ts-run-btn" class="btn btn-gold" style="display:none;" onclick="runImportTimesheet()">Import</button>
+    </div>`, true);
+}
+function handleImportTimesheetFile(input){
+  const file = input.files && input.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = (e)=>{
+    const rows = parseCSV(e.target.result);
+    IMPORT_TS_ROWS = rows.map(r=>{
+      const dateRaw = csvFindCol(r,['date']);
+      const d = new Date(dateRaw);
+      return {
+        date: !isNaN(d) ? d.toISOString().slice(0,10) : '',
+        hours: Number(csvFindCol(r,['hour','hrs']).replace(/[^0-9.\-]/g,''))||0,
+        note: csvFindCol(r,['note','memo','job','desc'])
+      };
+    }).filter(r=>r.date);
+    renderImportTimesheetReview();
+  };
+  reader.readAsText(file);
+}
+function renderImportTimesheetReview(){
+  const box = document.getElementById('import-ts-review');
+  const btn = document.getElementById('import-ts-run-btn');
+  if(!box) return;
+  const weekStart = mondayOf(document.getElementById('it-weekstart').value);
+  const days = weekDays(weekStart);
+  const inWeek = IMPORT_TS_ROWS.filter(r=>days.includes(r.date));
+  if(!IMPORT_TS_ROWS.length){ box.innerHTML = '<p class="small muted">No usable rows found — check the file has date and hours columns.</p>'; if(btn) btn.style.display='none'; return; }
+  box.innerHTML = `
+    <p class="small muted mb-10">${IMPORT_TS_ROWS.length} rows found — ${inWeek.length} fall inside the selected week and will be imported.</p>
+    <div style="max-height:300px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;">
+      <table style="width:100%;"><thead><tr><th>Date</th><th>Hours</th><th>Notes</th><th>In week?</th></tr></thead>
+        <tbody>${IMPORT_TS_ROWS.map(r=>`<tr><td>${fmtDate(r.date)}</td><td>${r.hours}</td><td>${esc(r.note)}</td><td>${days.includes(r.date)?'✅':'—'}</td></tr>`).join('')}</tbody>
+      </table>
+    </div>`;
+  if(btn) btn.style.display = inWeek.length ? 'inline-block' : 'none';
+}
+function runImportTimesheet(){
+  const employee = DB.employees.find(e=>e.id===document.getElementById('it-employee').value);
+  if(!employee){ toast('Add a team member first','⚠️'); return; }
+  const weekStart = mondayOf(document.getElementById('it-weekstart').value);
+  const days = weekDays(weekStart);
+  const inWeek = IMPORT_TS_ROWS.filter(r=>days.includes(r.date));
+  if(!inWeek.length){ toast('No rows fall inside that week','⚠️'); return; }
+  const dayData = {};
+  inWeek.forEach(r=>{ dayData[r.date] = {hours:r.hours, note:r.note||''}; });
+  let ts = DB.timesheets.find(t=>t.employeeId===employee.id && t.weekStart===weekStart);
+  if(ts){ Object.assign(ts.days, dayData); }
+  else { DB.timesheets.push({id:uid(), employeeId:employee.id, employeeName:employee.name, weekStart, days:dayData, status:'submitted'}); }
+  logActivity('Timesheet imported', `${employee.name} — week of ${fmtDate(weekStart)} (${inWeek.length} day(s))`);
+  save(); closeModal(); renderPage();
+  toast(`Imported ${inWeek.length} day${inWeek.length===1?'':'s'} for ${employee.name}`);
 }
 
 /* ===================== SUBCONTRACTORS ===================== */
