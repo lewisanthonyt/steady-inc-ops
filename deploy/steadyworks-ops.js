@@ -1,4 +1,4 @@
-/* ===================== STEADYWORKS — OPS PLATFORM ===================== */
+/* ===================== STEADY INC — OPERATIONS PLATFORM ===================== */
 
 /* ---------- DATA LAYER ---------- */
 const STORE_KEY = 'steadyworks_ops_data_v1';
@@ -63,6 +63,9 @@ function defaultData(){
         labour:45, callout:75, emergencyCallout:150, dayRate:380, markup:15
       },
       defaultRetentionPct:5,
+      bank:{accountName:'', bankName:'', sortCode:'', accountNumber:''},
+      paymentLink:'',
+      paymentTermsDays:14,
       defectsPeriodDays:90,
       terms:'Payment due within 14 days of invoice date. Late payments may incur a 5% surcharge.'
     },
@@ -87,7 +90,11 @@ function defaultData(){
       {id:'tpl-fu-appt-email', channel:'email', name:'Confirming an appointment (email)', subject:'Confirming your appointment', body:'Hi {{name}},\n\nJust confirming we\'ve got you booked in. We\'ll text/call ahead on the day, but let us know if anything changes on your end.\n\nThanks,\nSteadyWorks Ltd'},
       {id:'tpl-fu-appt-sms', channel:'sms', name:'Confirming an appointment (text)', subject:'', body:'Hi {{name}}, confirming your appointment with SteadyWorks. We\'ll be in touch ahead of time — let us know if anything changes.'},
       {id:'tpl-fu-checkin-email', channel:'email', name:'General check-in (email)', subject:'Just checking in', body:'Hi {{name}},\n\nIt\'s been a little while since we last spoke — just checking in to see if you still need any help, or if your plans have changed.\n\nHappy to pick things back up whenever suits.\n\nThanks,\nSteadyWorks Ltd'},
-      {id:'tpl-fu-checkin-sms', channel:'sms', name:'General check-in (text)', subject:'', body:'Hi {{name}}, just checking in to see if you still need any help, or if your plans have changed. This is SteadyWorks — happy to pick things back up whenever suits.'}
+      {id:'tpl-fu-checkin-sms', channel:'sms', name:'General check-in (text)', subject:'', body:'Hi {{name}}, just checking in to see if you still need any help, or if your plans have changed. This is SteadyWorks — happy to pick things back up whenever suits.'},
+      {id:'tpl-fu-invoice-email', channel:'email', name:'Invoice reminder (email)', subject:'Invoice {{number}} — {{amount}} outstanding', body:'Hi {{name}},\n\nJust a friendly reminder that invoice {{number}} for {{amount}} was due on {{date}}. If it\'s already been paid, thank you and please ignore this.\n\nOur bank details are on the invoice — let me know if you need another copy.\n\nThanks,\nSteadyWorks Ltd'},
+      {id:'tpl-fu-invoice-sms', channel:'sms', name:'Invoice reminder (text)', subject:'', body:'Hi {{name}}, a quick reminder from SteadyWorks that invoice {{number}} for {{amount}} was due on {{date}}. If it\'s already paid, thank you! Any questions just reply here.'},
+      {id:'tpl-fu-service-email', channel:'email', name:'Service due (email)', subject:'Your {{service}} is due', body:'Hi {{name}},\n\nYour {{service}} is due around {{date}}. Keeping it up to date keeps things running safely and protects your warranty.\n\nReply with a couple of days that suit and we\'ll get you booked in.\n\nThanks,\nSteadyWorks Ltd'},
+      {id:'tpl-fu-service-sms', channel:'sms', name:'Service due (text)', subject:'', body:'Hi {{name}}, SteadyWorks here — your {{service}} is due around {{date}}. Reply with a day that suits and we\'ll book you in.'}
     ]},
     followUps:[],
     sfClients:[],
@@ -100,9 +107,15 @@ function defaultData(){
     assets:[],
     liabilities:[],
     geocodeCache:{},
-    counters:{job:0, quote:0, invoice:0, variation:0, sfQuote:0, sfInvoice:0},
+    counters:{job:0, quote:0, invoice:0, variation:0, sfQuote:0, sfInvoice:0, po:0},
     activityLog:[],
     paintPipeline:[],
+    sfProspects:[],
+    swServices:[], priceBook:[], purchaseOrders:[],
+    tgPayments:[], tgCycles:[], tgOverrides:[], tgAcqSpend:[], tgOwnerPay:[], tgExpansion:[], tgRewards:[], tgMissions:[], tgReviews:[], tgDecisions:[], tgAudit:[],
+    targets: tgDefaults(),
+    sfAcquisitionWeekly:{weekKey:'', clientsWon:0, emailsDone:0, callsDone:0, dmsDone:0, days:{}},
+    _deleted:{},
     paintPipelineSettings:{
       weeklyProfitTarget: 2500,
       marketingSpendWeekly: 300,
@@ -120,27 +133,47 @@ function logActivity(action, detail){
   if(DB.activityLog.length>300) DB.activityLog = DB.activityLog.slice(0,300);
 }
 
+// List fields that are merged by record id (never blindly overwritten) on every cloud push/pull.
+const ARRAY_MERGE_KEYS = ['jobs','leads','quotes','invoices','customers','employees','subcontractors','timesheets','expenses','compliance','events','followUps','sfClients','sfQuotes','sfInvoices','sfActivity','sfExpenses','sfCompliance','sfProspects','swServices','priceBook','purchaseOrders','assets','liabilities','activityLog','paintPipeline','tgPayments','tgCycles','tgOverrides','tgAcqSpend','tgOwnerPay','tgExpansion','tgRewards','tgMissions','tgReviews','tgDecisions','tgAudit'];
 let DB = load();
 
+// Brings any stored/cloud copy up to the current schema without losing data:
+// every list field is guaranteed to be an array, nested settings objects get
+// new default keys filled in (stored values always win), and templates gain
+// any new built-in templates by id. Safe to run repeatedly.
+function normalizeDB(stored){
+  const defaults = defaultData(); // pristine copy — never mutated below
+  const src = (stored && typeof stored==='object') ? stored : {};
+  const merged = Object.assign(defaultData(), src);
+  ARRAY_MERGE_KEYS.concat(['timesheets']).forEach(k=>{ if(!Array.isArray(merged[k])) merged[k] = []; });
+  ['settings','paintPipelineSettings','counters','budgets','geocodeCache','sfAcquisitionWeekly','_deleted','targets'].forEach(k=>{
+    const d = defaultData()[k];
+    merged[k] = Object.assign({}, d, (src[k] && typeof src[k]==='object' && !Array.isArray(src[k])) ? src[k] : {});
+  });
+  merged.settings.rates = Object.assign({}, defaultData().settings.rates, (src.settings && src.settings.rates) || {});
+  merged.settings.bank = Object.assign({}, defaultData().settings.bank, (src.settings && src.settings.bank) || {});
+  if(!Array.isArray(merged.settings.monthlyTargets) || merged.settings.monthlyTargets.length!==12){
+    merged.settings.monthlyTargets = Array(12).fill((Number(merged.settings.annualTarget)||0)/12);
+  }
+  // templates is a nested object — make sure newly-added template kinds
+  // (e.g. followup) and new built-in templates (by id) reach existing users.
+  const storedTpl = (src.templates && typeof src.templates==='object') ? src.templates : {};
+  merged.templates = Object.assign({}, defaults.templates, storedTpl);
+  Object.keys(defaults.templates).forEach(kind=>{
+    const storedList = Array.isArray(storedTpl[kind]) ? storedTpl[kind] : [];
+    const storedIds = new Set(storedList.map(t=>t.id));
+    const missing = defaults.templates[kind].filter(t=>!storedIds.has(t.id) && !merged._deleted[t.id]);
+    merged.templates[kind] = storedList.concat(missing);
+  });
+  return merged;
+}
+
 function load(){
-  try{
-    const raw = localStorage.getItem(STORE_KEY);
-    if(raw){
-      const defaults = defaultData();
-      const stored = JSON.parse(raw);
-      const merged = Object.assign(defaults, stored);
-      // templates is a nested object — make sure newly-added template kinds
-      // (e.g. followup) survive merging into older saved data.
-      merged.templates = Object.assign({}, defaults.templates, stored.templates||{});
-      // within each template kind, add any new default templates (by id)
-      // that aren't already present in the user's saved list, so new
-      // built-in templates (e.g. review requests) reach existing users.
-      Object.keys(defaults.templates).forEach(kind=>{
-        const storedList = (stored.templates && stored.templates[kind]) || [];
-        const storedIds = new Set(storedList.map(t=>t.id));
-        const missing = defaults.templates[kind].filter(t=>!storedIds.has(t.id));
-        merged.templates[kind] = storedList.concat(missing);
-      });
+  let raw = null;
+  try{ raw = localStorage.getItem(STORE_KEY); }catch(e){}
+  if(raw){
+    try{
+      const merged = normalizeDB(JSON.parse(raw));
       // one-time: give existing installs a few example Follow Ups rows so
       // the new tab isn't empty on first look. Only runs once, ever —
       // guarded by demoFollowUpsSeeded so deleting the examples sticks.
@@ -158,14 +191,64 @@ function load(){
         merged.demoFollowUpsSeeded = true;
       }
       return merged;
+    }catch(e){
+      // Unreadable local copy: park it under a backup key rather than letting
+      // the next save overwrite it — the cloud copy is pulled on login anyway.
+      try{ localStorage.setItem(STORE_KEY+'_corrupt_'+Date.now(), raw); }catch(e2){}
+      console.warn('Local data could not be parsed — kept a backup copy and starting from the cloud copy.', e);
     }
-  }catch(e){}
+  }
   return defaultData();
 }
+
+/* ---------- DELETION TRACKING ----------
+   Saves merge local + cloud by id so a stale tab can never wipe records —
+   but that also meant a deleted record came straight back from the cloud on
+   the next save. Every save now diffs each list against the last-known ids
+   and records a tombstone for anything removed; merges drop tombstoned ids.
+   Tombstones expire after 120 days. */
+let _knownIds = {};
+function snapshotIds(){
+  _knownIds = {};
+  ARRAY_MERGE_KEYS.forEach(k=>{ _knownIds[k] = new Set((DB[k]||[]).map(x=>x&&x.id).filter(Boolean)); });
+  _knownIds.__tpl = new Set();
+  Object.values(DB.templates||{}).forEach(list=>(list||[]).forEach(t=>t&&t.id&&_knownIds.__tpl.add(t.id)));
+}
+function recordDeletions(){
+  DB._deleted = DB._deleted || {};
+  const now = new Date().toISOString();
+  ARRAY_MERGE_KEYS.forEach(k=>{
+    const prev = _knownIds[k]; if(!prev) return;
+    const cur = new Set((DB[k]||[]).map(x=>x&&x.id).filter(Boolean));
+    prev.forEach(id=>{ if(!cur.has(id)) DB._deleted[id] = now; });
+  });
+  if(_knownIds.__tpl){
+    const curTpl = new Set();
+    Object.values(DB.templates||{}).forEach(list=>(list||[]).forEach(t=>t&&t.id&&curTpl.add(t.id)));
+    _knownIds.__tpl.forEach(id=>{ if(!curTpl.has(id)) DB._deleted[id] = now; });
+  }
+  const cutoff = Date.now() - 120*86400000;
+  Object.keys(DB._deleted).forEach(id=>{ if(new Date(DB._deleted[id]).getTime() < cutoff) delete DB._deleted[id]; });
+}
+function writeLocal(){
+  try{
+    localStorage.setItem(STORE_KEY, JSON.stringify(DB));
+    return true;
+  }catch(e){
+    // Usually the browser's ~5MB quota (job photos are stored inline).
+    // The cloud copy still gets pushed, so nothing is lost — but say so.
+    console.warn('Local save failed:', e);
+    if(!window._quotaWarned){ window._quotaWarned = true; toast('Browser storage is full — changes are still syncing to the cloud. Consider removing large photos.','⚠️'); }
+    return false;
+  }
+}
 function save(){
-  localStorage.setItem(STORE_KEY, JSON.stringify(DB));
+  recordDeletions();
+  snapshotIds();
+  writeLocal();
   pushCloudState();
 }
+snapshotIds();
 
 /* ---------- CLOUD SYNC (whole-app state, so it's not stuck on one browser) ---------- */
 const CLOUD_STATE_BUSINESS = 'steadyworks_full_state';
@@ -175,19 +258,33 @@ let cloudSyncTimer = null;
 // overwritten. This is what stops a stale background tab from wiping out
 // records that were added elsewhere (another tab, another device, or a
 // direct fix) since this tab last loaded its data.
-const ARRAY_MERGE_KEYS = ['jobs','leads','quotes','invoices','customers','employees','subcontractors','expenses','compliance','events','followUps','sfClients','sfQuotes','sfInvoices','sfActivity','sfExpenses','sfCompliance','activityLog','paintPipeline'];
 
-function mergeArraysById(cloudArr, localArr){
+function mergeArraysById(cloudArr, localArr, deleted){
   if(!Array.isArray(cloudArr)) cloudArr = [];
   if(!Array.isArray(localArr)) localArr = [];
+  deleted = deleted || {};
   const map = new Map();
   cloudArr.forEach(item=>{ if(item && item.id!=null) map.set(item.id, item); });
   localArr.forEach(item=>{ if(item && item.id!=null) map.set(item.id, item); }); // local wins on conflicting ids
   const seen = new Set();
   const ordered = [];
-  cloudArr.forEach(item=>{ if(item && item.id!=null && !seen.has(item.id)){ ordered.push(map.get(item.id)); seen.add(item.id); } });
-  localArr.forEach(item=>{ if(item && item.id!=null && !seen.has(item.id)){ ordered.push(map.get(item.id)); seen.add(item.id); } });
+  const add = item=>{ if(item && item.id!=null && !seen.has(item.id) && !deleted[item.id]){ ordered.push(map.get(item.id)); seen.add(item.id); } };
+  cloudArr.forEach(add);
+  localArr.forEach(add);
   return ordered;
+}
+function mergeTombstones(a, b){ return Object.assign({}, (a&&typeof a==='object')?a:{}, (b&&typeof b==='object')?b:{}); }
+// Number counters only ever go up — taking the max stops two devices issuing
+// the same quote/invoice/job number off a stale counter.
+function mergeCounters(a, b){
+  const out = Object.assign({}, a||{}, b||{});
+  Object.keys(out).forEach(k=>{ out[k] = Math.max(Number((a||{})[k])||0, Number((b||{})[k])||0); });
+  return out;
+}
+function mergeTemplates(cloudTpl, localTpl, deleted){
+  const out = Object.assign({}, cloudTpl||{}, localTpl||{});
+  Object.keys(out).forEach(kind=>{ out[kind] = mergeArraysById((cloudTpl||{})[kind], (localTpl||{})[kind], deleted); });
+  return out;
 }
 
 // Builds what should actually be pushed to the cloud: local's non-list
@@ -198,9 +295,12 @@ function mergeArraysById(cloudArr, localArr){
 function mergeDbForPush(cloudData, localDb){
   const merged = Object.assign({}, localDb);
   if(cloudData && typeof cloudData === 'object'){
+    merged._deleted = mergeTombstones(cloudData._deleted, localDb._deleted);
     ARRAY_MERGE_KEYS.forEach(key=>{
-      merged[key] = mergeArraysById(cloudData[key], localDb[key]);
+      merged[key] = mergeArraysById(cloudData[key], localDb[key], merged._deleted);
     });
+    merged.counters = mergeCounters(cloudData.counters, localDb.counters);
+    merged.templates = mergeTemplates(cloudData.templates, localDb.templates, merged._deleted);
   }
   return merged;
 }
@@ -212,7 +312,8 @@ function pushCloudState(){
       const { data: existing } = await sb.from('app_settings').select('data').eq('business', CLOUD_STATE_BUSINESS).maybeSingle();
       const merged = mergeDbForPush(existing && existing.data, DB);
       DB = merged;
-      localStorage.setItem(STORE_KEY, JSON.stringify(DB));
+      snapshotIds();
+      writeLocal();
       await sb.from('app_settings').upsert(
         {business: CLOUD_STATE_BUSINESS, data: DB, updated_at: new Date().toISOString()},
         {onConflict:'business'}
@@ -224,10 +325,28 @@ async function pullCloudState(){
   try{
     const { data, error } = await sb.from('app_settings').select('data,updated_at').eq('business', CLOUD_STATE_BUSINESS).maybeSingle();
     if(error || !data || !data.data) return false;
-    const defaults = defaultData();
-    DB = Object.assign(defaults, data.data);
-    DB.templates = Object.assign({}, defaults.templates, data.data.templates||{});
-    localStorage.setItem(STORE_KEY, JSON.stringify(DB));
+    // Same safety net as pushCloudState: merge list fields by id (cloud ∪ local)
+    // instead of blindly overwriting, so a periodic background pull can never
+    // silently erase a record that was just added locally but hasn't been
+    // pushed yet (this is exactly how a handful of SteadyWorks jobs went
+    // missing before this fix — a pull landed mid-edit and wiped them).
+    // Deletions made on either side are respected via the merged tombstones.
+    recordDeletions(); // capture anything deleted locally since the last save
+    const incoming = Object.assign({}, data.data);
+    incoming._deleted = mergeTombstones(data.data._deleted, DB._deleted);
+    ARRAY_MERGE_KEYS.forEach(key=>{
+      incoming[key] = mergeArraysById(data.data[key], DB[key], incoming._deleted);
+    });
+    incoming.counters = mergeCounters(data.data.counters, DB.counters);
+    incoming.templates = mergeTemplates(data.data.templates, DB.templates, incoming._deleted);
+    // Local-only conveniences (acquisition planner ticks) shouldn't be
+    // clobbered by an older cloud copy mid-week.
+    if(DB.sfAcquisitionWeekly && (!incoming.sfAcquisitionWeekly || (incoming.sfAcquisitionWeekly.updatedAt||'') < (DB.sfAcquisitionWeekly.updatedAt||''))){
+      incoming.sfAcquisitionWeekly = DB.sfAcquisitionWeekly;
+    }
+    DB = normalizeDB(incoming);
+    snapshotIds();
+    writeLocal();
     return true;
   }catch(e){ console.warn('Cloud pull failed, using local copy:', e); return false; }
 }
@@ -302,6 +421,7 @@ async function syncCallsFromSupabase(showToast){
   }
 }
 
+function localDateStr(d){ d = d||new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 function uid(){ return Math.random().toString(36).slice(2,10) + Date.now().toString(36); }
 
 function nextJobNumber(){
@@ -327,12 +447,12 @@ function nextSfInvoiceNumber(){
 
 function fmt(n){
   n = Number(n)||0;
-  return '£' + n.toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2});
+  return (n<0?'-':'') + '£' + Math.abs(n).toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2});
 }
 function fmtDate(d){
   if(!d) return '—';
   const dt = new Date(d);
-  if(isNaN(dt)) return d;
+  if(isNaN(dt)) return esc(String(d));
   return dt.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'});
 }
 function daysUntil(d){
@@ -501,23 +621,30 @@ function seedData(){
 /* ---------- ROUTER ---------- */
 const ROUTES = [
   {id:'dashboard', label:'Dashboard', section:'overview'},
+  {id:'targets', label:'Targets', section:'overview'},
   {id:'tasks', label:'Tasks', section:'overview'},
   {id:'goals', label:'Goals & Roadmap', section:'overview'},
   {id:'calendar', label:'Calendar', section:'overview'},
   {id:'budget', label:'Budget', section:'overview'},
   {id:'sw-dashboard', label:'Dashboard', section:'steadyworks'},
+  {id:'sw-desk', label:'Commercial Desk', section:'steadyworks'},
   {id:'leads', label:'Leads', section:'steadyworks'},
+  {id:'quotes', label:'Quotes', section:'steadyworks'},
   {id:'followups', label:'Follow Ups', section:'steadyworks'},
   {id:'jobs', label:'Jobs', section:'steadyworks'},
   {id:'job-sources', label:'Job Sources', section:'steadyworks'},
   {id:'pipeline', label:'Quote-to-Job Pipeline', section:'steadyworks'},
   {id:'invoices', label:'Invoices', section:'steadyworks'},
   {id:'customers', label:'Customers', section:'steadyworks'},
+  {id:'services', label:'Service Plans', section:'steadyworks'},
+  {id:'price-book', label:'Price Book', section:'steadyworks'},
   {id:'subcontractors', label:'Subcontractors', section:'steadyworks'},
   {id:'expenses', label:'Expenses', section:'steadyworks'},
   {id:'compliance', label:'Compliance', section:'steadyworks'},
   {id:'reports', label:'Reports', section:'steadyworks'},
   {id:'sf-dashboard', label:'Dashboard', section:'steadyflow'},
+  {id:'sf-leads', label:'Lead Engine', section:'steadyflow'},
+  {id:'sf-acquisition', label:'Acquisition', section:'steadyflow'},
   {id:'sf-clients', label:'Clients', section:'steadyflow'},
   {id:'sf-quotes', label:'Quotes', section:'steadyflow'},
   {id:'sf-invoices', label:'Invoices', section:'steadyflow'},
@@ -543,7 +670,7 @@ const SECTION_LABELS = {
 };
 const SECTION_ACCENT = { overview:'var(--gold-light)', steadyworks:'var(--gold-light)', steadyflow:'var(--teal)', collaborations:'#A78BFA', accounting:'#22C55E', system:'#999' };
 const ICONS = {
-  dashboard:'🏠', tasks:'✅', goals:'🎯', budget:'🧮', 'sw-dashboard':'📊', 'sf-dashboard':'📊', 'sf-clients':'💻', 'sf-quotes':'📝', 'sf-invoices':'🧾', 'sf-expenses':'💷', 'sf-compliance':'🛡️', leads:'📥', followups:'📞', jobs:'🛠️', 'job-sources':'📍', quotes:'📝', invoices:'🧾', calendar:'📅',
+  dashboard:'🏠', targets:'🏁', services:'🔁', 'price-book':'📒', tasks:'✅', goals:'🎯', budget:'🧮', 'sw-dashboard':'📊', 'sf-dashboard':'📊', 'sf-acquisition':'🎯', 'sf-leads':'🧭', 'sw-desk':'🏢', 'sf-clients':'💻', 'sf-quotes':'📝', 'sf-invoices':'🧾', 'sf-expenses':'💷', 'sf-compliance':'🛡️', leads:'📥', followups:'📞', jobs:'🛠️', 'job-sources':'📍', quotes:'📝', invoices:'🧾', calendar:'📅',
   customers:'👥', team:'👷', timesheets:'🕒', subcontractors:'🦺', expenses:'💷', compliance:'🛡️', reports:'📈', activity:'🕐', bugs:'🐞', settings:'⚙️', pipeline:'📝',
   accounting:'💰', forecast:'📈', 'balance-sheet':'⚖️', 'assets-liabilities':'🏦'
 };
@@ -551,30 +678,30 @@ const ICONS = {
 let currentRoute = 'dashboard';
 let currentParam = null;
 
+let _navFadeTimer = null;
 function navigate(route, param){
+  const prevRoute = currentRoute;
+  // remember the open job tab only while you stay on the same job
+  if(!(route==='jobs' && param && param===currentParam)) window._jobTab = null;
   currentRoute = isRouteAllowed(route) ? route : 'pipeline';
   currentParam = param || null;
   renderNav();
-  renderPage();
-  window.scrollTo(0,0);
   closeMobileNav();
-  playPageFlash();
-}
-let pageFlashTimer = null;
-function playPageFlash(){
-  const overlay = document.getElementById('page-flash-overlay');
-  const video = document.getElementById('page-flash-video');
-  if(!overlay || !video) return;
-  clearTimeout(pageFlashTimer);
-  overlay.style.display = 'flex';
-  overlay.style.transition = 'none';
-  overlay.style.opacity = '1';
-  try{ video.currentTime = 1; video.play().catch(()=>{}); }catch(e){}
-  pageFlashTimer = setTimeout(()=>{
-    overlay.style.transition = 'opacity .3s ease';
-    overlay.style.opacity = '0';
-    setTimeout(()=>{ overlay.style.display = 'none'; video.pause(); }, 300);
-  }, 2000);
+  const content = document.getElementById('content');
+  clearTimeout(_navFadeTimer);
+  // Same-module re-renders (e.g. saving inside a job) stay instant; moving
+  // between modules dips the content to dark for 120ms, then fades back in.
+  if(prevRoute===currentRoute || !content){
+    if(content) content.classList.remove('content-out');
+    renderPage(); window.scrollTo(0,0);
+    return;
+  }
+  content.classList.add('content-out');
+  _navFadeTimer = setTimeout(()=>{
+    renderPage();
+    window.scrollTo(0,0);
+    requestAnimationFrame(()=>content.classList.remove('content-out'));
+  }, 120);
 }
 function closeMobileNav(){
   document.getElementById('sidebar').classList.remove('open');
@@ -589,9 +716,17 @@ function toggleNavSection(section){
   localStorage.setItem('steadyworks_nav_collapsed', JSON.stringify(NAV_COLLAPSED));
   renderNav();
 }
+// Pages used day to day. Everything else is one click away under "Show all pages",
+// and any hidden page that needs attention (has a badge) still shows.
+const NAV_CORE = new Set(['dashboard','targets','tasks','calendar','sw-dashboard','leads','quotes','followups','jobs','pipeline','invoices','customers','services','expenses',
+  'sf-dashboard','sf-acquisition','sf-clients','sf-quotes','sf-invoices','sf-expenses','accounting','settings']);
+let NAV_SIMPLE = true;
+try{ NAV_SIMPLE = localStorage.getItem('steadyworks_nav_simple')!=='0'; }catch(e){}
+function toggleNavSimple(){ NAV_SIMPLE = !NAV_SIMPLE; try{ localStorage.setItem('steadyworks_nav_simple', NAV_SIMPLE?'1':'0'); }catch(e){} renderNav(); }
 function renderNav(){
   const nav = document.getElementById('nav');
-  let lastSection = null;
+  let lastSection = null, hiddenCt = 0;
+  const simple = NAV_SIMPLE && CURRENT_PROFILE.role==='owner';
   const visibleRoutes = ROUTES.filter(r=>isRouteAllowed(r.id));
   nav.innerHTML = visibleRoutes.map(r=>{
     let sectionHeader = '';
@@ -605,7 +740,7 @@ function renderNav(){
     if(NAV_COLLAPSED[r.section]) return sectionHeader;
     let badge = '';
     if(r.id==='invoices'){
-      const overdue = DB.invoices.filter(i=>i.status==='overdue').length;
+      const overdue = DB.invoices.filter(i=>invoiceStatus(i)==='overdue').length;
       if(overdue) badge = `<span class="nav-badge">${overdue}</span>`;
     }
     if(r.id==='compliance'){
@@ -620,6 +755,14 @@ function renderNav(){
       const missing = DB.jobs.filter(j=>!['completed','invoiced','cancelled'].includes(j.status) && jobMissingDocs(j)).length;
       if(missing) badge = `<span class="nav-badge">${missing}</span>`;
     }
+    if(r.id==='quotes'){
+      const chase = DB.quotes.filter(swQuoteNeedsChase).length;
+      if(chase) badge = `<span class="nav-badge" style="background:var(--warning);color:#1a1200;" title="Quotes waiting on a follow-up">${chase}</span>`;
+    }
+    if(r.id==='services'){
+      const due = (DB.swServices||[]).filter(sv=>swServiceStatus(sv).due).length;
+      if(due) badge = `<span class="nav-badge" style="background:var(--warning);color:#1a1200;" title="Services due or overdue">${due}</span>`;
+    }
     if(r.id==='followups'){
       const open = DB.followUps.filter(f=>f.status!=='done').length;
       if(open) badge = `<span class="nav-badge">${open}</span>`;
@@ -628,8 +771,24 @@ function renderNav(){
       const leadCt = DB.sfClients.filter(c=>c.status==='lead').length;
       if(leadCt) badge = `<span class="nav-badge" style="background:var(--teal);color:#001a1a;">${leadCt}</span>`;
     }
+    if(r.id==='targets'){
+      const waiting = new Set((DB.tgCycles||[]).filter(c=>c.achieved && !c.ack).map(c=>c.biz)).size;
+      if(waiting) badge = `<span class="nav-badge" style="background:var(--success);color:#04130a;" title="Level complete — see what changes next">${waiting}</span>`;
+    }
+    if(r.id==='sf-acquisition'){
+      const stale = (DB.sfProspects||[]).filter(acqIsStale).length;
+      if(stale) badge = `<span class="nav-badge" style="background:var(--warning);color:#1a1200;" title="Prospects with no update for 7+ days">${stale}</span>`;
+    }
+    if(r.id==='sw-desk' && typeof swNavBadge==='function'){
+      const due = swNavBadge();
+      if(due) badge = `<span class="nav-badge" title="Commercial follow-ups due">${due}</span>`;
+    }
+    if(r.id==='sf-leads' && typeof leNavBadge==='function'){
+      const due = leNavBadge();
+      if(due) badge = `<span class="nav-badge" style="background:var(--teal);color:#001a1a;" title="Lead Engine follow-ups due">${due}</span>`;
+    }
     if(r.id==='sf-invoices'){
-      const overdue = (DB.sfInvoices||[]).filter(i=>i.status==='overdue').length;
+      const overdue = (DB.sfInvoices||[]).filter(i=>invoiceStatus(i)==='overdue').length;
       if(overdue) badge = `<span class="nav-badge">${overdue}</span>`;
     }
     if(r.id==='sf-compliance'){
@@ -640,11 +799,12 @@ function renderNav(){
       const open = BUGS_CACHE.filter(b=>b.status!=='fixed').length;
       if(open) badge = `<span class="nav-badge">${open}</span>`;
     }
+    if(simple && !NAV_CORE.has(r.id) && !badge && currentRoute!==r.id){ hiddenCt++; return sectionHeader; }
     const sectionClass = r.section==='steadyflow' ? 'nav-item-teal' : r.section==='collaborations' ? 'nav-item-purple' : '';
     return `${sectionHeader}<div class="nav-item ${currentRoute===r.id?'active':''} ${sectionClass}" onclick="navigate('${r.id}')">
       <span class="nav-icon">${ICONS[r.id]}</span>${r.label}${badge}
     </div>`;
-  }).join('');
+  }).join('') + (CURRENT_PROFILE.role==='owner' ? `<div class="nav-more" onclick="toggleNavSimple()">${NAV_SIMPLE ? '＋ Show all pages <span>'+hiddenCt+' more</span>' : '－ Show everyday pages only'}</div>` : '');
 }
 function jobMissingDocs(j){
   const docs = j.documents||[];
@@ -654,11 +814,15 @@ function jobMissingDocs(j){
 
 const PAGE_META = {
   dashboard:['Dashboard','Steady Inc — combined performance across every business'],
+  targets:['Targets','Target → actions → cash → reinvestment → capacity → next level'],
   tasks:['Tasks','Day-by-day checklist across SteadyWorks, SteadyFlow, Cookbook & Animation'],
   goals:['Goals & Roadmap','Long-term goals and revenue targets, month by month'],
   budget:['Budget','Plan spend by category and track it against your income targets'],
   'sw-dashboard':['SteadyWorks Dashboard','Plumbing business performance at a glance'],
   'sf-dashboard':['SteadyFlow Dashboard','Marketing agency performance at a glance'],
+  'sw-desk':['Commercial Desk','Up to 3 organisations a day where a relationship could create repeat maintenance work'],
+  'sf-leads':['Lead Engine','Up to 3 researched businesses worth contacting today — with the evidence behind every claim'],
+  'sf-acquisition':['Acquisition','Win new website & marketing clients — pipeline, emails, pitches and your weekly plan'],
   'sf-clients':['SteadyFlow Clients','Marketing agency prospects & clients — website/marketing packages'],
   'sf-quotes':['SteadyFlow Quotes','Build, send and track quotations for SteadyFlow clients'],
   'sf-invoices':['SteadyFlow Invoices','Billing, payments and outstanding balances for SteadyFlow clients'],
@@ -669,10 +833,12 @@ const PAGE_META = {
   jobs:['Jobs','All active and historic job records'],
   'job-sources':['Job Sources','Where your leads and jobs are actually coming from'],
   pipeline:['Quote-to-Job Pipeline','Every SteadyWorks quote, start to finish — tag one as Joint when Fabs are collaborating on it'],
-  quotes:['Quotes','Build, send and track quotations'],
+  quotes:['Quotes','Build, send, chase and win quotations'],
   invoices:['Invoices','Billing, payments and outstanding balances'],
   calendar:['Calendar','Shared across all companies — job schedule plus merged Google Calendars'],
   customers:['Customers','Client database and history'],
+  'price-book':['Price Book','Your standard jobs, materials and rates — pick them straight into quotes and invoices'],
+  services:['Service Plans','Annual boiler services, landlord gas safety and other repeat work — never miss a renewal'],
   team:['Team','Team members, roles and availability — shared across Steady Inc'],
   timesheets:['Timesheets','Weekly hours for the team — fill in on-site, print a blank sheet, or import a completed one'],
   subcontractors:['Subcontractors','Trades, day rates and insurance status'],
@@ -694,7 +860,7 @@ function renderPage(){
   document.getElementById('page-sub').textContent = meta[1];
   const content = document.getElementById('content');
   const actions = document.getElementById('topbar-actions');
-  actions.innerHTML = (CURRENT_PROFILE.role==='partner'||CURRENT_PROFILE.role==='accountant') ? '' : '<button class="btn btn-ghost" aria-label="Search everything" title="Search (Cmd+K)" onclick="openGlobalSearch()">🔍 Search <span class="small muted search-shortcut-hint" style="margin-left:4px;">⌘K</span></button>';
+  actions.innerHTML = (CURRENT_PROFILE.role==='partner'||CURRENT_PROFILE.role==='accountant') ? '' : '<button class="btn btn-ghost" aria-label="Search everything" title="Search (Cmd+K)" onclick="openGlobalSearch()">🔍 Search <span class="small muted search-shortcut-hint" style="margin-left:4px;">⌘K</span></button><button class="btn btn-ghost" onclick="openQuickAdd(event)" title="Add anything">＋ New</button>';
   try{
     const fn = window['view_' + currentRoute.replace('-','_')];
     if(typeof fn === 'function'){ content.innerHTML = fn(); afterRender(currentRoute); }
@@ -714,7 +880,14 @@ function afterRender(route){
     calendar: afterRender_calendar,
     reports: afterRender_reports,
     'sf-dashboard': afterRender_sf_dashboard,
-    pipeline: afterRender_pipeline
+    pipeline: afterRender_pipeline,
+    forecast: afterRender_forecast,
+    expenses: afterRender_expenses,
+    'sf-expenses': afterRender_sf_expenses,
+    'sf-acquisition': afterRender_sf_acquisition,
+    'sf-leads': typeof afterRender_sf_leads==='function' ? afterRender_sf_leads : null,
+    'sw-desk': typeof afterRender_sw_desk==='function' ? afterRender_sw_desk : null,
+    targets: afterRender_targets
   };
   if(hooks[route]) hooks[route]();
   // topbar action buttons
@@ -729,6 +902,10 @@ function afterRender(route){
     invoices: `<button class="btn btn-ghost" onclick="openTemplatesModal('invoice')">Templates</button><button class="btn btn-gold" onclick="openInvoiceModal()">+ New Invoice</button>`,
     'sf-dashboard': `<button class="btn btn-gold" onclick="openSfActivityModal()">+ Log Today's Activity</button>`,
     'sf-quotes': `<button class="btn btn-gold" onclick="openSfQuoteModal()">+ New Quote</button>`,
+    targets: `<button class="btn btn-ghost" onclick="tgOpenAcq()">+ Acquisition spend</button><button class="btn btn-gold" onclick="tgOpenPayment()">+ Money received</button>`,
+    'sf-leads': `<button class="btn btn-ghost" onclick="leReload()">↻ Refresh</button><button class="btn btn-gold" onclick="openLeLeadModal()">+ Add Lead</button>`,
+    'sw-desk': `<button class="btn btn-ghost" onclick="leReload()">↻ Refresh</button><button class="btn btn-gold" onclick="openSwOrgModal()">+ Add Organisation</button>`,
+    'sf-acquisition': `<button class="btn btn-ghost" onclick="exportProspectsCSV()">⬇️ Export CSV</button><button class="btn btn-gold" onclick="openProspectModal()">+ Add Prospect</button>`,
     'sf-invoices': `<button class="btn btn-gold" onclick="openSfInvoiceModal()">+ New Invoice</button>`,
     'sf-expenses': `<button class="btn btn-ghost" onclick="openImportExpensesModal('sf')">📥 Import CSV</button> <button class="btn btn-gold" onclick="openSfExpenseModal()">+ New Expense</button>`,
     'sf-compliance': `<button class="btn btn-gold" onclick="openSfComplianceModal()">+ Add Document</button>`,
@@ -736,6 +913,8 @@ function afterRender(route){
     forecast: `<button class="btn btn-gold" onclick="printAccountingReport('forecast')">🖨️ Export PDF</button>`,
     'balance-sheet': `<button class="btn btn-gold" onclick="printAccountingReport('balance-sheet')">🖨️ Export PDF</button>`,
     'assets-liabilities': `<button class="btn btn-ghost" onclick="openImportAssetsLiabilitiesModal('asset')">📥 Import Assets</button> <button class="btn btn-ghost" onclick="openImportAssetsLiabilitiesModal('liability')">📥 Import Liabilities</button> <button class="btn btn-ghost" onclick="openLiabilityModal()">+ New Liability</button> <button class="btn btn-gold" onclick="openAssetModal()">+ New Asset</button>`,
+    services: `<button class="btn btn-gold" onclick="swOpenService()">+ New Service Plan</button>`,
+    'price-book': `<button class="btn btn-ghost" onclick="pbExportCSV()">⬇️ Export CSV</button><button class="btn btn-gold" onclick="pbOpenItem()">+ New Item</button>`,
     customers: `<button class="btn btn-ghost" onclick="openImportContactsModal('customer')">📇 Import Contacts</button> <button class="btn btn-gold" onclick="openCustomerModal()">+ New Customer</button>`,
     team: `<button class="btn btn-gold" onclick="openEmployeeModal()">+ Add Team Member</button>`,
     timesheets: `<button class="btn btn-ghost" onclick="openPrintBlankTimesheetModal()">🖨️ Print Blank Sheet</button> <button class="btn btn-ghost" onclick="openImportTimesheetModal()">📥 Import Filled Sheet</button> <button class="btn btn-gold" onclick="openTimesheetModal()">+ New Timesheet</button>`,
@@ -785,13 +964,7 @@ async function loadBugs(){
 const BUG_SEVERITIES = ['low','medium','high'];
 const BUG_STATUSES = ['open','in_progress','fixed'];
 function bugExampleCard(){
-  return `<div class="card mb-10" style="border:1px dashed #C9A227;background:rgba(201,162,39,.06);">
-    <div class="flex-between">
-      <strong>Invoice PDF cuts off long client names <span class="pill" style="background:rgba(201,162,39,.18);color:#E8C468;">Example</span></strong>
-      <span class="pill priority-med">Medium</span>
-    </div>
-    <p class="small muted mt-10">SteadyFlow · Reported by Lewis · Not real — this is what a logged bug looks like.</p>
-  </div>`;
+  return '';
 }
 function view_bugs(){
   if(BUGS_CACHE===null){
@@ -898,13 +1071,7 @@ function exampleTaskRow(title, done, business, dateLabel){
     </div>`;
 }
 function tasksExampleBlock(){
-  return `<div class="card" style="border:1px dashed #C9A227;background:rgba(201,162,39,.08);margin-bottom:18px;">
-    <div class="card-title">Example <span class="pill" style="background:rgba(201,162,39,.18);color:#E8C468;">Sample — not real data</span></div>
-    <p class="small muted mb-10">This is what a task row looks like — tick the box to mark done, filter by business above, real items load below.</p>
-    ${exampleTaskRow('Call MyJobQuote to top up lead credits', false, 'steadyworks', 'Mon 13 Jul · Week 1')}
-    ${exampleTaskRow('Post SteadyFlow outreach batch (10 emails)', false, 'steadyflow', 'Tue 14 Jul · Week 1')}
-    ${exampleTaskRow('Record cookbook intro voiceover', true, 'cookbook', 'Sun 12 Jul · Week 1')}
-  </div>`;
+  return '';
 }
 /* ---------- FOCUS SCORE (prioritization framework) ----------
    score = impact*3 + urgency*3 + effort bonus (quick wins nudged up) + deadline bonus (imminent due dates nudged up)
@@ -940,7 +1107,7 @@ function view_tasks(){
   }
   const filtered = TASKS_FILTER==='all' ? TASKS_CACHE : TASKS_CACHE.filter(t=>t.business===TASKS_FILTER);
   const todoSorted = filtered.filter(t=>t.status!=='done').map(t=>Object.assign({}, t, {_score:taskScore(t)})).sort((a,b)=>b._score-a._score);
-  const done = filtered.filter(t=>t.status==='done').sort((a,b)=>new Date(b.due_date||t.created_at||0)-new Date(a.due_date||0));
+  const done = filtered.filter(t=>t.status==='done').sort((a,b)=>new Date(b.due_date||b.created_at||0)-new Date(a.due_date||a.created_at||0));
 
   const top3 = todoSorted.slice(0,3);
   const queue = todoSorted.slice(3,9);
@@ -1111,16 +1278,7 @@ function deleteTask(id){
 }
 
 function goalExampleCard(){
-  return `<div class="card" style="border:1px dashed #C9A227;background:rgba(201,162,39,.08);">
-    <div class="card-title">Reach £10,000/month combined <span class="pill" style="background:rgba(201,162,39,.18);color:#E8C468;">Example</span></div>
-    <div class="small muted" style="margin-bottom:10px;">Illustrates the format — real goals (with linked tasks and live progress) load alongside this.</div>
-    <div class="flex-between small" style="margin-bottom:6px;">
-      <span>Target: 11 Sep 2026</span>
-      <span>£10,000/mo</span>
-    </div>
-    <div class="progress-bar"><div class="progress-bar-fill" style="width:40%;"></div></div>
-    <div class="small muted" style="margin-top:6px;">8/20 tasks done · 40%</div>
-  </div>`;
+  return '';
 }
 function view_goals(){
   if(GOALS_CACHE===null || TASKS_CACHE===null){
@@ -1217,7 +1375,6 @@ function deleteGoal(id){
     toast('Goal deleted','🗑️');
   });
 }
-function fmtDate(d){ try{ return new Date(d).toLocaleDateString('en-GB',{day:'2-digit',month:'short'}); }catch(e){ return d; } }
 
 /* ---------- SHARED: TARGET / GOAL PROGRESS BARS (used on both dashboards) ---------- */
 function progressBarCard(title, footer, pct){
@@ -1257,8 +1414,8 @@ function dashboardGoalsHtml(bizKey, routeName){
 }
 
 /* ---------- STEADYFLOW DASHBOARD ---------- */
-function sfTodayStr(){ return new Date().toISOString().slice(0,10); }
-function sfDaysAgoStr(n){ const d=new Date(); d.setDate(d.getDate()-n); return d.toISOString().slice(0,10); }
+function sfTodayStr(){ return localDateStr(); }
+function sfDaysAgoStr(n){ const d=new Date(); d.setDate(d.getDate()-n); return localDateStr(d); }
 function view_sf_dashboard(){
   DB.sfActivity = DB.sfActivity||[];
   DB.sfQuotes = DB.sfQuotes||[];
@@ -1266,8 +1423,8 @@ function view_sf_dashboard(){
 
   const activeClients = DB.sfClients.filter(c=>c.status==='active').length;
   const leadCt = DB.sfClients.filter(c=>c.status==='lead').length;
-  const mrrTotal = DB.sfClients.filter(c=>c.status==='active').reduce((s,c)=>s+(Number(c.mrr)||0),0);
-  const outstanding = DB.sfInvoices.filter(i=>i.status!=='paid').reduce((s,i)=>s+calcInvoiceTotal(i).total,0);
+  const mrrTotal = DB.sfClients.filter(c=>c.status==='active' && c.billingType!=='one-off').reduce((s,c)=>s+(Number(c.mrr)||0),0);
+  const outstanding = DB.sfInvoices.filter(i=>i.status!=='paid').reduce((s,i)=>s+invoiceOutstanding(i),0);
 
   const weekStart = sfDaysAgoStr(6);
   const weekEntries = DB.sfActivity.filter(a=>a.date>=weekStart);
@@ -1321,6 +1478,7 @@ function view_sf_dashboard(){
     ${progressBarCard('Weekly Call Target', weekCalls+' of '+weeklyCallTarget+' calls', callPct)}
   </div>
   <div class="grid grid-3" style="margin-bottom:20px;align-items:start;">
+    <div style="cursor:pointer;" onclick="navigate('sf-acquisition')">${progressBarCard('🎯 New Clients This Week <span class="small" style="color:var(--teal);font-weight:700;">Open Acquisition →</span>', acqWonThisWeek().length+' of '+ACQ_WEEKLY_TARGET+' won · '+acqActiveProspects().length+' active prospects', acqWonThisWeek().length/ACQ_WEEKLY_TARGET*100)}</div>
     ${dashboardGoalsHtml('steadyflow','sf-dashboard')}
   </div>
 
@@ -1348,7 +1506,7 @@ function view_sf_dashboard(){
     <div class="card-title">Recent Daily Activity <span class="small muted">${DB.sfActivity.length} days logged</span></div>
     <table>
       <thead><tr><th>Date</th><th>Emails</th><th>Calls</th><th>Notes</th><th></th></tr></thead>
-      <tbody>${activityRows || '<tr><td colspan="5" class="muted" style="text-align:center;padding:30px;">No outreach logged yet — use the button above to log today.</td></tr>'}</tbody>
+      <tbody>${activityRows || emptyRow(5,'No outreach logged yet.','+ Log Today\'s Activity','openSfActivityModal()')}</tbody>
     </table>
   </div>`;
 }
@@ -1438,39 +1596,69 @@ const SF_PACKAGES = [
   'Business OS — Essential — £690',
   'Business OS — Business Manager — £990',
   'Business OS — AI Automation — £1,395',
-  'Retainer — Social Starter — £199/mo',
-  'Retainer — Growth — £669/mo',
-  'Retainer — Full Marketing — £1,099/mo',
+  'Retainer — Essentials — £300/mo',
+  'Retainer — Growth — £900/mo',
+  'Retainer — Full Marketing — £1,500/mo',
   'Bundle (Website + Business OS, 8% off)',
   'UGC Content Creation',
   'Custom'
 ];
+// Older package labels already saved on client records — still shown when a
+// client is on one, but no longer offered for new clients.
+const SF_LEGACY_PACKAGES = ['Retainer — Social Starter — £199/mo','Retainer — Growth — £669/mo','Retainer — Full Marketing — £1,099/mo'];
+function sfPackageOptions(current){
+  const list = SF_PACKAGES.slice();
+  if(current && !list.includes(current)) list.unshift(current);
+  return list.map(p=>`<option ${current===p?'selected':''}>${esc(p)}</option>`).join('');
+}
 let SF_FILTER = 'all';
 
+let SF_CLIENT_SEARCH = '';
+function sfClientRows(){
+  const q = SF_CLIENT_SEARCH.trim().toLowerCase();
+  const list = (SF_FILTER==='all' ? DB.sfClients : DB.sfClients.filter(c=>c.status===SF_FILTER))
+    .filter(c=>!q || [c.name,c.biz,c.email,c.phone,c.niche,c.package].join(' ').toLowerCase().includes(q))
+    .slice().sort((a,b)=>({active:0,lead:1,paused:2}[a.status]??3)-({active:0,lead:1,paused:2}[b.status]??3) || String(a.name).localeCompare(String(b.name)));
+  if(!list.length){
+    return DB.sfClients.length
+      ? emptyRow(6,'No clients match that search or filter.')
+      : emptyRow(6,'No clients yet — add your first lead or client. New prospects from outreach live in Acquisition until they sign.','+ New Client / Lead','openSfClientModal()');
+  }
+  return list.map(c=>{
+    const dd = c.callDate ? daysUntil(c.callDate) : null;
+    const callCls = dd!==null && dd<0 ? 'color:var(--danger);font-weight:700;' : dd===0 ? 'color:var(--warning);font-weight:700;' : '';
+    return `<tr class="row-link" onclick="openSfClientModal('${c.id}')">
+      <td><strong>${esc(c.name)}</strong><div class="small muted">${esc(c.biz||'')}${c.niche?' · '+esc(c.niche):''}</div></td>
+      <td class="small">${esc(c.package||'—')}</td>
+      <td>${c.billingType==='one-off' ? `${fmt(c.mrr)} <span class="small muted">one-off</span>` : `${fmt(c.mrr)}<span class="small muted">/mo</span>`}</td>
+      <td><span class="pill ${SF_STATUS_CLS[c.status]||'st-draft'}"><span class="pill-dot" style="background:currentColor;"></span>${esc((c.status||'lead').replace(/^./,x=>x.toUpperCase()))}</span></td>
+      <td class="small" style="${callCls}">${c.callDate?fmtDate(c.callDate):'—'}</td>
+      <td class="small" onclick="event.stopPropagation()">${c.website?`<a href="${esc(/^https?:/i.test(c.website)?c.website:'https://'+c.website)}" target="_blank" rel="noopener" style="color:var(--teal);">Site ↗</a>`:''}${c.email?` <a href="mailto:${esc(c.email)}" style="color:var(--teal);margin-left:8px;">Email</a>`:''}</td>
+    </tr>`;
+  }).join('');
+}
+function setSfClientSearch(v){ SF_CLIENT_SEARCH = v; const b = document.getElementById('sf-clients-body'); if(b) b.innerHTML = sfClientRows(); }
 function view_sf_clients(){
-  const list = SF_FILTER==='all' ? DB.sfClients : DB.sfClients.filter(c=>c.status===SF_FILTER);
-  const mrrTotal = DB.sfClients.filter(c=>c.status==='active').reduce((s,c)=>s+(Number(c.mrr)||0),0);
-  const rows = list.map(c=>`
-    <tr class="row-link" onclick="openSfClientModal('${c.id}')">
-      <td><strong>${esc(c.name)}</strong><div class="small muted">${esc(c.biz||'')}</div></td>
-      <td class="small">${esc(c.package||'')}</td>
-      <td>£${Number(c.mrr)||0}/mo</td>
-      <td><span class="pill ${SF_STATUS_CLS[c.status]||'st-draft'}">${c.status}</span></td>
-      <td class="small">${c.callDate?fmtDate(c.callDate):'—'}</td>
-    </tr>`).join('') || `<tr><td colspan="5"><div class="empty-state small">No clients yet — add your first lead or client.</div></td></tr>`;
+  const mrrTotal = DB.sfClients.filter(c=>c.status==='active' && c.billingType!=='one-off').reduce((s,c)=>s+(Number(c.mrr)||0),0);
+  const count = st => st==='all' ? DB.sfClients.length : DB.sfClients.filter(c=>c.status===st).length;
+  const dueCalls = DB.sfClients.filter(c=>{ const dd=daysUntil(c.callDate); return dd!==null && dd<=0 && c.status!=='paused'; }).length;
   return `
   <div class="grid grid-4" style="margin-bottom:18px;">
-    <div class="card kpi-card"><div class="kpi-label">Active Clients</div><div class="kpi-value">${DB.sfClients.filter(c=>c.status==='active').length}</div></div>
-    <div class="card kpi-card"><div class="kpi-label">Leads</div><div class="kpi-value">${DB.sfClients.filter(c=>c.status==='lead').length}</div></div>
-    <div class="card kpi-card"><div class="kpi-label">MRR (active)</div><div class="kpi-value">£${mrrTotal}</div></div>
-    <div class="card kpi-card"><div class="kpi-label">Total in system</div><div class="kpi-value">${DB.sfClients.length}</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Active Clients</div><div class="kpi-value">${count('active')}</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Leads</div><div class="kpi-value">${count('lead')}</div></div>
+    <div class="card kpi-card"><div class="kpi-label">MRR (active)</div><div class="kpi-value">${fmt(mrrTotal)}</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Calls Due / Overdue</div><div class="kpi-value" style="color:${dueCalls?'var(--warning)':'inherit'};">${dueCalls}</div></div>
   </div>
-  <div class="tabs">
-    ${['all','lead','active','paused'].map(s=>`<button class="tab-btn ${SF_FILTER===s?'active':''}" onclick="setSfFilter('${s}')">${s==='all'?'All':s[0].toUpperCase()+s.slice(1)}</button>`).join('')}
+  <div class="toolbar">
+    <div class="tabs" style="margin-bottom:0;border-bottom:none;">
+      ${['all','lead','active','paused'].map(st=>`<button class="tab-btn ${SF_FILTER===st?'active':''}" onclick="setSfFilter('${st}')">${st==='all'?'All':st[0].toUpperCase()+st.slice(1)} <span class="small muted">${count(st)}</span></button>`).join('')}
+    </div>
+    <div class="spacer"></div>
+    <div class="search-box">🔍<input type="text" placeholder="Search clients…" value="${esc(SF_CLIENT_SEARCH)}" oninput="setSfClientSearch(this.value)"></div>
   </div>
   <div class="card">
-    <table><thead><tr><th>Client</th><th>Package</th><th>MRR</th><th>Status</th><th>Next call</th></tr></thead>
-    <tbody>${rows}</tbody></table>
+    <table><thead><tr><th>Client</th><th>Package</th><th>Value</th><th>Status</th><th>Next call</th><th></th></tr></thead>
+    <tbody id="sf-clients-body">${sfClientRows()}</tbody></table>
   </div>`;
 }
 function setSfFilter(s){ SF_FILTER = s; renderPage(); }
@@ -1494,12 +1682,18 @@ function openSfClientModal(id){
       <div class="form-row">
         <div class="form-group"><label>Package</label>
           <select id="sf-package">
-            ${SF_PACKAGES.map(p=>`<option ${c&&c.package===p?'selected':''}>${p}</option>`).join('')}
+            ${sfPackageOptions(c?c.package:'')}
           </select>
         </div>
-        <div class="form-group"><label>MRR / Value (£)</label><input id="sf-mrr" type="number" value="${c?c.mrr||0:0}"></div>
+        <div class="form-group"><label>Value (£ — per month for retainers)</label><input id="sf-mrr" type="number" min="0" value="${c?c.mrr||0:0}"></div>
       </div>
-      <div class="form-row">
+      <div class="form-row form-row-3">
+        <div class="form-group"><label>Billing Type</label>
+          <select id="sf-billingType">
+            <option value="monthly" ${!c||c.billingType!=='one-off'?'selected':''}>Monthly retainer (recurring)</option>
+            <option value="one-off" ${c&&c.billingType==='one-off'?'selected':''}>One-off project</option>
+          </select>
+        </div>
         <div class="form-group"><label>Status</label>
           <select id="sf-status">
             <option value="lead" ${c&&c.status==='lead'?'selected':''}>Lead</option>
@@ -1518,8 +1712,9 @@ function openSfClientModal(id){
     </div>`);
 }
 function saveSfClient(id){
+  if(!requireField('sf-name','Contact name is required') || !checkEmailField('sf-email')) return;
   const data = {
-    name: document.getElementById('sf-name').value.trim()||'Unnamed',
+    name: document.getElementById('sf-name').value.trim(),
     biz: document.getElementById('sf-biz').value.trim(),
     phone: document.getElementById('sf-phone').value.trim(),
     email: document.getElementById('sf-email').value.trim(),
@@ -1527,6 +1722,7 @@ function saveSfClient(id){
     niche: document.getElementById('sf-niche').value.trim(),
     package: document.getElementById('sf-package').value,
     mrr: Number(document.getElementById('sf-mrr').value)||0,
+    billingType: document.getElementById('sf-billingType').value,
     status: document.getElementById('sf-status').value,
     callDate: document.getElementById('sf-callDate').value,
     notes: document.getElementById('sf-notes').value.trim()
@@ -1551,20 +1747,41 @@ function deleteSfClient(id){
 
 /* ---------- STEADYFLOW QUOTES ---------- */
 const SF_QUOTE_STATUSES = ['draft','sent','approved','declined','expired'];
+let SF_QUOTE_FILTER = 'all';
+function setSfQuoteFilter(f){ SF_QUOTE_FILTER = f; renderPage(); }
 function view_sf_quotes(){
-  const rows = (DB.sfQuotes||[]).slice().sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt)).map(q=>{
+  const all = DB.sfQuotes||[];
+  const list = SF_QUOTE_FILTER==='all' ? all : all.filter(q=>q.status===SF_QUOTE_FILTER);
+  const decided = all.filter(q=>['approved','declined','expired'].includes(q.status));
+  const approved = all.filter(q=>q.status==='approved');
+  const openVal = all.filter(q=>['draft','sent'].includes(q.status)).reduce((s,q)=>s+calcQuoteTotal(q).total,0);
+  const wonVal = approved.reduce((s,q)=>s+calcQuoteTotal(q).total,0);
+  const rows = list.slice().sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt)).map(q=>{
     const t = calcQuoteTotal(q);
+    const client = q.clientId ? DB.sfClients.find(c=>c.id===q.clientId) : null;
+    const expiring = ['draft','sent'].includes(q.status) && q.validUntil && daysUntil(q.validUntil)!==null && daysUntil(q.validUntil)<0;
     return `<tr class="row-link" onclick="openSfQuoteModal('${q.id}')">
       <td><strong>${esc(q.quoteNumber)}</strong></td>
-      <td>${esc(q.clientName)}</td>
-      <td>${statusPill(q.status)}</td>
+      <td>${esc(q.clientName)}${client&&client.biz?`<div class="small muted">${esc(client.biz)}</div>`:''}</td>
+      <td>${statusPill(expiring?'expired':q.status)}</td>
       <td>${fmt(t.total)}</td>
       <td>${fmtDate(q.validUntil)}</td>
     </tr>`;
   }).join('');
-  return `<div class="card"><table>
+  const count = st => st==='all' ? all.length : all.filter(q=>q.status===st).length;
+  return `
+  <div class="grid grid-4" style="margin-bottom:18px;">
+    <div class="card kpi-card"><div class="kpi-label">Open Quotes</div><div class="kpi-value">${fmt(openVal)}</div><div class="small muted mt-10">${count('draft')+count('sent')} draft / sent</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Approved Value</div><div class="kpi-value" style="color:var(--success);">${fmt(wonVal)}</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Win Rate</div><div class="kpi-value">${decided.length?Math.round(approved.length/decided.length*100):0}%</div><div class="small muted mt-10">${approved.length} of ${decided.length} decided</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Total Quotes</div><div class="kpi-value">${all.length}</div></div>
+  </div>
+  <div class="tabs">
+    ${['all'].concat(SF_QUOTE_STATUSES).map(st=>`<button class="tab-btn ${SF_QUOTE_FILTER===st?'active':''}" onclick="setSfQuoteFilter('${st}')">${st==='all'?'All':st[0].toUpperCase()+st.slice(1)} <span class="small muted">${count(st)}</span></button>`).join('')}
+  </div>
+  <div class="card"><table>
     <thead><tr><th>Quote #</th><th>Client</th><th>Status</th><th>Total (inc. VAT)</th><th>Valid Until</th></tr></thead>
-    <tbody>${rows || '<tr><td colspan="5" class="muted" style="text-align:center;padding:30px;">No SteadyFlow quotes yet — create your first quote</td></tr>'}</tbody>
+    <tbody>${rows || (all.length ? emptyRow(5,'No quotes with that status.') : emptyRow(5,'No SteadyFlow quotes yet.','+ New Quote','openSfQuoteModal()'))}</tbody>
   </table></div>`;
 }
 function openSfQuoteModal(id){
@@ -1593,7 +1810,7 @@ function openSfQuoteModal(id){
       <table class="line-items-table" id="line-items-table"><thead><tr><th>Description</th><th style="width:60px;">Qty</th><th style="width:70px;">Unit</th><th style="width:90px;">Rate £</th><th style="width:90px;">Total</th><th></th></tr></thead>
         <tbody id="line-items-body"></tbody>
       </table>
-      <button class="btn btn-ghost btn-sm mt-10" onclick="addLineItem()">+ Add Line Item</button>
+      ${lineItemAdders()}
       <div class="divider"></div>
       <div id="line-items-totals" style="text-align:right;"></div>
       <div class="form-group mt-10"><label>Notes / Terms</label><textarea id="f-notes">${q?esc(q.notes||''):'Payment due within 14 days of invoice date.'}</textarea></div>
@@ -1613,7 +1830,7 @@ function saveSfQuote(id){
   const client = clientSelect ? DB.sfClients.find(c=>c.id===clientSelect) : null;
   const clientNameVal = client ? client.name : document.getElementById('f-clientName').value.trim();
   if(!clientNameVal){ toast('Client is required','⚠️'); return; }
-  const validItems = window._editingItems.filter(i=>i.desc||i.qty||i.rate);
+  const validItems = window._editingItems.filter(i=>String(i.desc||'').trim() || Number(i.rate));
   if(!validItems.length){ toast('Add at least one line item','⚠️'); return; }
   const data = {
     clientId: client ? client.id : null,
@@ -1646,6 +1863,8 @@ function convertSfQuoteToInvoice(qid){
   const invoiceNumber = nextSfInvoiceNumber();
   const due = new Date(); due.setDate(due.getDate()+14);
   DB.sfInvoices = DB.sfInvoices||[];
+  if(q.status!=='approved') q.status = 'approved';
+  logActivity('SteadyFlow invoice created', invoiceNumber+' — from '+q.quoteNumber);
   DB.sfInvoices.push({
     id:uid(), invoiceNumber, clientId:q.clientId||null, clientName:q.clientName,
     status:'draft', items:q.items.slice(), vatRate:q.vatRate, dueDate:due.toISOString().slice(0,10),
@@ -1658,19 +1877,22 @@ function convertSfQuoteToInvoice(qid){
 
 /* ---------- STEADYFLOW INVOICES ---------- */
 const SF_INVOICE_STATUSES = ['draft','sent','paid','partial','overdue'];
+let SF_INVOICE_FILTER = 'all';
+function setSfInvoiceFilter(f){ SF_INVOICE_FILTER = f; renderPage(); }
 function view_sf_invoices(){
   const list = DB.sfInvoices||[];
+  const shown = SF_INVOICE_FILTER==='all' ? list : SF_INVOICE_FILTER==='unpaid' ? list.filter(i=>i.status!=='paid') : list.filter(i=>invoiceStatus(i)===SF_INVOICE_FILTER);
   const totals = {
-    outstanding: list.filter(i=>i.status!=='paid').reduce((s,i)=>s+calcInvoiceTotal(i).total,0),
-    paid: list.filter(i=>i.status==='paid').reduce((s,i)=>s+calcInvoiceTotal(i).total,0),
-    overdue: list.filter(i=>i.status==='overdue').reduce((s,i)=>s+calcInvoiceTotal(i).total,0)
+    outstanding: list.filter(i=>i.status!=='paid').reduce((s,i)=>s+invoiceOutstanding(i),0),
+    paid: list.reduce((s,i)=>s+tgInvoiceReceived(i),0),
+    overdue: list.filter(i=>invoiceStatus(i)==='overdue').reduce((s,i)=>s+invoiceOutstanding(i),0)
   };
-  const rows = list.slice().sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt)).map(inv=>{
+  const rows = shown.slice().sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt)).map(inv=>{
     const t = calcInvoiceTotal(inv);
     return `<tr class="row-link" onclick="openSfInvoiceModal('${inv.id}')">
       <td><strong>${esc(inv.invoiceNumber)}</strong></td>
       <td>${esc(inv.clientName)}</td>
-      <td>${statusPill(inv.status)}</td>
+      <td>${statusPill(invoiceStatus(inv))}</td>
       <td>${fmt(t.total)}</td>
       <td>${fmt(inv.amountPaid||0)}</td>
       <td>${fmtDate(inv.dueDate)}</td>
@@ -1679,12 +1901,15 @@ function view_sf_invoices(){
   return `
   <div class="grid grid-3" style="margin-bottom:18px;">
     <div class="card kpi-card"><div class="kpi-label">Outstanding</div><div class="kpi-value">${fmt(totals.outstanding)}</div></div>
-    <div class="card kpi-card"><div class="kpi-label">Paid (all time)</div><div class="kpi-value">${fmt(totals.paid)}</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Received (all time)</div><div class="kpi-value">${fmt(totals.paid)}</div></div>
     <div class="card kpi-card"><div class="kpi-label">Overdue</div><div class="kpi-value" style="color:var(--danger);">${fmt(totals.overdue)}</div></div>
+  </div>
+  <div class="tabs">
+    ${[['all','All'],['unpaid','Unpaid'],['overdue','Overdue'],['paid','Paid'],['draft','Draft']].map(([k,l])=>`<button class="tab-btn ${SF_INVOICE_FILTER===k?'active':''}" onclick="setSfInvoiceFilter('${k}')">${l}</button>`).join('')}
   </div>
   <div class="card"><table>
     <thead><tr><th>Invoice #</th><th>Client</th><th>Status</th><th>Total</th><th>Paid</th><th>Due Date</th></tr></thead>
-    <tbody>${rows || '<tr><td colspan="6" class="muted" style="text-align:center;padding:30px;">No SteadyFlow invoices yet</td></tr>'}</tbody>
+    <tbody>${rows || (list.length ? emptyRow(6,'No invoices in this view.') : emptyRow(6,'No SteadyFlow invoices yet — create one, or convert an approved quote.','+ New Invoice','openSfInvoiceModal()'))}</tbody>
   </table></div>`;
 }
 function openSfInvoiceModal(id){
@@ -1716,7 +1941,7 @@ function openSfInvoiceModal(id){
       <table class="line-items-table" id="line-items-table"><thead><tr><th>Description</th><th style="width:60px;">Qty</th><th style="width:70px;">Unit</th><th style="width:90px;">Rate £</th><th style="width:90px;">Total</th><th></th></tr></thead>
         <tbody id="line-items-body"></tbody>
       </table>
-      <button class="btn btn-ghost btn-sm mt-10" onclick="addLineItem()">+ Add Line Item</button>
+      ${lineItemAdders()}
       <div class="divider"></div>
       <div id="line-items-totals" style="text-align:right;"></div>
       <div class="form-group mt-10"><label>Notes / Payment Terms</label><textarea id="f-notes">${inv?esc(inv.notes):'Payment due within 14 days of invoice date.'}</textarea></div>
@@ -1735,7 +1960,7 @@ function saveSfInvoice(id){
   const client = clientSelect ? DB.sfClients.find(c=>c.id===clientSelect) : null;
   const clientNameVal = client ? client.name : document.getElementById('f-clientName').value.trim();
   if(!clientNameVal){ toast('Client is required','⚠️'); return; }
-  const validItems = window._editingItems.filter(i=>i.desc||i.qty||i.rate);
+  const validItems = window._editingItems.filter(i=>String(i.desc||'').trim() || Number(i.rate));
   if(!validItems.length){ toast('Add at least one line item','⚠️'); return; }
   const dueDateVal = document.getElementById('f-dueDate').value;
   if(!dueDateVal){ toast('Due date is required','⚠️'); return; }
@@ -1750,13 +1975,17 @@ function saveSfInvoice(id){
     items: validItems
   };
   DB.sfInvoices = DB.sfInvoices||[];
-  if(id){ Object.assign(DB.sfInvoices.find(i=>i.id===id), data); toast('Invoice updated'); }
+  let inv, prevReceived = 0;
+  if(id){ inv = DB.sfInvoices.find(i=>i.id===id); prevReceived = tgInvoiceReceived(inv); Object.assign(inv, data); toast('Invoice updated'); }
   else {
     const invoiceNumber = nextSfInvoiceNumber();
-    DB.sfInvoices.push(Object.assign({id:uid(), invoiceNumber, createdAt:new Date().toISOString().slice(0,10)}, data));
+    inv = Object.assign({id:uid(), invoiceNumber, createdAt:new Date().toISOString().slice(0,10)}, data);
+    DB.sfInvoices.push(inv);
     logActivity('SteadyFlow invoice created', invoiceNumber+' — '+data.clientName);
     toast('Invoice '+invoiceNumber+' created');
   }
+  const pay = tgSyncInvoicePayment(DB, 'sf', inv, new Date(), {prevReceived});
+  if(pay) setTimeout(()=>toast(gbp(pay.amount)+' received — counted toward SteadyFlow target','💷'), 900);
   save(); closeModal(); renderPage(); renderNav();
 }
 function deleteSfInvoice(id){
@@ -1766,14 +1995,82 @@ function deleteSfInvoice(id){
   });
 }
 
+/* ---------- QUICK ADD: the things you add most, from any page ---------- */
+const QUICK_ADD = [
+  ['📥','Lead','openLeadModal()'], ['📝','Quote','openQuoteModal()'], ['🛠️','Job','openJobModal()'], ['🧾','Invoice','openInvoiceModal()'],
+  ['💷','Payment received','quickPayment()'], ['💸','Expense — SteadyWorks','openExpenseModal()'], ['💸','Expense — SteadyFlow','openSfExpenseModal()'],
+  ['🎯','Prospect (SteadyFlow)','openProspectModal()'], ['👤','Customer','openCustomerModal()']
+];
+function openQuickAdd(ev){
+  ev && ev.stopPropagation();
+  const existing = document.getElementById('quick-add-menu');
+  if(existing){ existing.remove(); return; }
+  const btn = ev && ev.currentTarget, r = btn ? btn.getBoundingClientRect() : {right:innerWidth-20, bottom:70};
+  const m = document.createElement('div');
+  m.id = 'quick-add-menu'; m.className = 'quick-add-menu';
+  m.style.top = (r.bottom+6)+'px'; m.style.right = Math.max(10, innerWidth - r.right)+'px';
+  m.innerHTML = QUICK_ADD.map(([i,l,fn])=>`<button onclick="document.getElementById('quick-add-menu').remove(); ${fn}">${i} ${l}</button>`).join('');
+  document.body.appendChild(m);
+  setTimeout(()=>document.addEventListener('click', function close(e){ if(!m.contains(e.target)){ m.remove(); document.removeEventListener('click', close); } }), 0);
+}
+// Payment received: pick the unpaid invoice (dated, method, counted once) — or log other money.
+function quickPayment(){
+  const unpaid = DB.invoices.filter(i=>i.status!=='paid' && i.status!=='draft').sort((a,b)=>String(a.dueDate).localeCompare(String(b.dueDate)));
+  openModal(`<div class="modal-head"><h2>💷 Payment received</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <p class="small muted mb-10">Which SteadyWorks invoice was paid?</p>
+      ${unpaid.length ? unpaid.map(i=>`<div class="tg-exp-row row-link" style="cursor:pointer;" onclick="closeModal(); swOpenRecordPayment('${i.id}')"><div style="flex:1;"><strong>${esc(i.invoiceNumber)}</strong> · ${esc(i.customerName)}<div class="small muted">${fmt(invoiceOutstanding(i))} outstanding · due ${fmtDate(i.dueDate)}</div></div>${statusPill(invoiceStatus(i))}</div>`).join('') : '<p class="small muted">No unpaid SteadyWorks invoices.</p>'}
+      <div class="divider"></div>
+      <button class="btn btn-ghost btn-sm" onclick="closeModal(); tgOpenPayment()">Other money received (SteadyFlow, cash job, no invoice)…</button>
+    </div>`);
+}
+
 /* ---------- MODAL HELPERS ---------- */
 function openModal(html, lg){
   document.getElementById('modal-root').innerHTML = `<div class="modal-overlay open" id="active-modal" onclick="if(event.target===this) closeModal()">
-    <div class="modal ${lg?'modal-lg':''}">${html}</div>
+    <div class="modal ${lg?'modal-lg':''}" role="dialog" aria-modal="true">${html}</div>
   </div>`;
+  if(window.matchMedia && window.matchMedia('(pointer:fine)').matches){
+    setTimeout(()=>{
+      const f = document.querySelector('#active-modal .modal-body input:not([type=hidden]):not([type=checkbox]):not([disabled]), #active-modal .modal-body textarea');
+      if(f && !document.activeElement.closest('#active-modal')) f.focus();
+    }, 40);
+  }
 }
 function closeModal(){
   document.getElementById('modal-root').innerHTML = '';
+}
+document.addEventListener('keydown', e=>{
+  if(e.key!=='Escape') return;
+  if(document.getElementById('active-modal')){ closeModal(); return; }
+  const calc = document.getElementById('calc-widget'); if(calc) calc.remove();
+});
+// Light email sanity check for optional email fields — blank is allowed.
+function checkEmailField(id){
+  const el = document.getElementById(id);
+  if(!el) return true;
+  const v = el.value.trim();
+  el.classList.remove('invalid');
+  if(v && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)){
+    el.classList.add('invalid'); el.focus();
+    toast('That email address doesn\'t look right','⚠️');
+    return false;
+  }
+  return true;
+}
+function requireField(id, msg){
+  const el = document.getElementById(id);
+  if(!el) return true;
+  el.classList.remove('invalid');
+  if(!el.value.trim()){ el.classList.add('invalid'); el.focus(); toast(msg,'⚠️'); return false; }
+  return true;
+}
+// Table empty state with an optional call-to-action button.
+function emptyRow(colspan, msg, btnLabel, onclick){
+  return `<tr><td colspan="${colspan}" class="empty-cell">${msg}${btnLabel?`<br><button class="btn btn-gold btn-sm" onclick="${onclick}">${btnLabel}</button>`:''}</td></tr>`;
+}
+function emptyBlock(msg, btnLabel, onclick, icon){
+  return `<div class="empty-state">${icon?`<div class="ic">${icon}</div>`:''}<div>${msg}</div>${btnLabel?`<button class="btn btn-gold btn-sm" onclick="${onclick}">${btnLabel}</button>`:''}</div>`;
 }
 function openGlobalSearch(){
   openModal(`
@@ -1793,6 +2090,7 @@ function globalSearchIndex(){
   (DB.leads||[]).forEach(l=>items.push({type:'Lead', label:l.name, sub:l.stage||'', go:()=>{closeModal(); navigate('leads'); openLeadModal(l.id);}}));
   (DB.sfClients||[]).forEach(c=>items.push({type:'SteadyFlow Client', label:c.name, sub:c.status||'', go:()=>{closeModal(); navigate('sf-clients'); openSfClientModal(c.id);}}));
   (DB.sfQuotes||[]).forEach(q=>items.push({type:'SteadyFlow Quote', label:q.quoteNumber+' — '+q.clientName, sub:q.status||'', go:()=>{closeModal(); navigate('sf-quotes'); openSfQuoteModal(q.id);}}));
+  (DB.sfProspects||[]).forEach(p=>items.push({type:'Prospect', label:p.business+(p.contact?' — '+p.contact:''), sub:(p.status||'')+(p.type?' · '+p.type:''), go:()=>{closeModal(); navigate('sf-acquisition'); openProspectModal(p.id);}}));
   (DB.sfInvoices||[]).forEach(i=>items.push({type:'SteadyFlow Invoice', label:i.invoiceNumber+' — '+i.clientName, sub:i.status||'', go:()=>{closeModal(); navigate('sf-invoices'); openSfInvoiceModal(i.id);}}));
   return items;
 }
@@ -1808,6 +2106,12 @@ function runGlobalSearch(q){
       ${r.sub?`<div class="small muted" style="margin-top:2px;">${esc(r.sub)}</div>`:''}
     </div>`).join('') : '<div class="empty-state small">No matches</div>';
 }
+function runConfirmedDelete(){
+  const action = window._confirmDeleteAction;
+  window._confirmDeleteAction = null;
+  closeModal();
+  if(action) action();
+}
 function confirmDelete(title, message, action){
   window._confirmDeleteAction = action;
   openModal(`
@@ -1815,7 +2119,7 @@ function confirmDelete(title, message, action){
     <div class="modal-body"><p>${esc(message)}</p></div>
     <div class="modal-foot">
       <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-danger" onclick="window._confirmDeleteAction && window._confirmDeleteAction(); window._confirmDeleteAction=null;">Yes, delete it</button>
+      <button class="btn btn-danger" onclick="runConfirmedDelete()">Yes, delete it</button>
     </div>
   `);
 }
@@ -1832,14 +2136,12 @@ function loginError(msg){
   const el = document.getElementById('login-error');
   el.textContent = msg; el.style.display = 'block';
 }
-let JUST_SIGNED_IN = false;
 async function doSignIn(){
   const email = document.getElementById('login-email').value.trim();
   const password = document.getElementById('login-password').value;
   if(!email || !password) return loginError('Enter your email and password.');
   const { error } = await sb.auth.signInWithPassword({ email, password });
   if(error) return loginError(error.message);
-  JUST_SIGNED_IN = true;
 }
 async function doSignUp(){
   const email = document.getElementById('login-email').value.trim();
@@ -1854,35 +2156,19 @@ async function doSignOut(){
   await sb.auth.signOut();
 }
 function showLogin(){
-  document.getElementById('login-screen').style.display = 'flex';
+  const ls = document.getElementById('login-screen');
+  ls.style.display = 'flex';
+  ls.classList.remove('enter'); void ls.offsetWidth; ls.classList.add('enter');
   document.getElementById('app-root').style.display = 'none';
 }
 function showApp(session){
   document.getElementById('login-screen').style.display = 'none';
-  document.getElementById('app-root').style.display = 'block';
+  const root = document.getElementById('app-root');
+  if(root.style.display!=='block'){ root.style.display = 'block'; root.classList.add('enter'); }
   const emailEl = document.getElementById('session-email');
   if(emailEl) emailEl.textContent = session.user.email;
   bootApp(session);
-  if(JUST_SIGNED_IN){
-    JUST_SIGNED_IN = false;
-    showLoginSplash();
-  }
 }
-function showLoginSplash(){
-  const splash = document.getElementById('login-splash');
-  if(!splash) return;
-  splash.style.display = 'flex';
-  splash.style.opacity = '1';
-  splash.querySelectorAll('video').forEach(v=>{
-    try{ v.currentTime = 0; v.play().catch(()=>{}); }catch(e){}
-  });
-  setTimeout(()=>{
-    splash.style.transition = 'opacity .5s ease';
-    splash.style.opacity = '0';
-    setTimeout(()=>{ splash.style.display = 'none'; }, 500);
-  }, 5000);
-}
-
 /* ---------- ROLE / ACCESS SCOPE ----------
    Most logins are full "owner" staff access (unchanged, everything visible).
    A "partner" profile (e.g. Fabs, once created) only ever sees the pages
@@ -1962,22 +2248,102 @@ async function bootApp(session){
     setInterval(async ()=>{
       if(document.getElementById('active-modal')) return;
       const got = await pullCloudState();
-      if(got){ renderNav(); renderPage(); }
+      if(!got) return;
+      renderNav();
+      const ae = document.activeElement;
+      const typing = ae && ae.closest && ae.closest('#content') && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName);
+      if(!typing) renderPage();
     }, 45000);
   }
 }
 
+/* ---------- BOOT SPLASH (CSS-driven; JS only builds the letters and waits for the bar) ---------- */
+let BOOT_SPLASH_DONE = false;
+const _afterSplash = [];
+function whenSplashDone(fn){ if(BOOT_SPLASH_DONE) fn(); else _afterSplash.push(fn); }
+function finishBootSplash(){
+  if(BOOT_SPLASH_DONE) return;
+  BOOT_SPLASH_DONE = true;
+  const el = document.getElementById('boot-splash');
+  if(el){ el.classList.add('done'); setTimeout(()=>{ el.style.display = 'none'; }, 600); }
+  _afterSplash.splice(0).forEach(fn=>{ try{ fn(); }catch(e){ console.error(e); } });
+}
+function initBootSplash(){
+  const el = document.getElementById('boot-splash');
+  if(!el){ BOOT_SPLASH_DONE = true; return; }
+  const logo = document.getElementById('boot-logo');
+  // Real brand logo; the old hand-drawn LOGO_SVG is only a fallback if the image can't load.
+  if(logo) logo.innerHTML = `<span class="glow"></span><img src="assets/steady-inc-logo.png" alt="" onerror="this.outerHTML=LOGO_SVG">`;
+  const word = document.getElementById('boot-word');
+  const text = 'STEADY INC';
+  if(word) word.innerHTML = text.split('').map((ch,i)=>`<span class="${ch===' '?'sp':''}" style="animation-delay:${(0.55+i*0.06).toFixed(2)}s">${ch===' '?'&nbsp;':ch}</span>`).join('');
+  const sub = document.getElementById('boot-sub');
+  if(sub) sub.style.animationDelay = (0.55+text.length*0.06+0.3).toFixed(2)+'s';
+  const bar = document.getElementById('boot-progress-fill');
+  if(bar) bar.addEventListener('animationend', finishBootSplash);
+  setTimeout(finishBootSplash, 2600); // safety net if animations are disabled
+}
+initBootSplash();
+
 function startApp(){
   sb.auth.getSession().then(({ data: { session } })=>{
-    if(session) showApp(session); else showLogin();
+    whenSplashDone(()=>{ if(session) showApp(session); else showLogin(); });
   });
   sb.auth.onAuthStateChange((event, session)=>{
-    if(session) showApp(session);
-    else { appBooted = false; showLogin(); }
+    whenSplashDone(()=>{
+      if(session) showApp(session);
+      else { appBooted = false; showLogin(); }
+    });
   });
 }
 
 document.addEventListener('DOMContentLoaded', startApp);
+
+
+/* ===================== MONEY RECEIVED — one definition of revenue for the whole app ===================== */
+/* Revenue = money that actually arrived, on the day it arrived (the Targets ledger).
+   Invoices paid before the ledger existed (not yet imported) still count, dated by
+   when they were paid if known, otherwise their invoice date — so nothing vanishes,
+   and nothing is counted twice once it is imported. VAT inside each amount is
+   estimated from the invoice it came from (manual / pipeline money: none known). */
+function receivedEntries(db, biz){
+  const out = [];
+  const ratio = key => {
+    const [kind, id] = String(key||'').split(':');
+    const inv = kind==='inv' ? (db.invoices||[]).find(i=>i.id===id) : kind==='sfinv' ? (db.sfInvoices||[]).find(i=>i.id===id) : null;
+    if(!inv) return 0;
+    const t = calcInvoiceTotal(inv); return t.total ? t.vat/t.total : 0;
+  };
+  tgLivePayments(db).forEach(p=>{
+    if(biz!=='all' && p.biz!==biz) return;
+    const amt = Number(p.amount)||0;
+    out.push({date:p.date, amount:amt, vat:amt*ratio(p.sourceKey), biz:p.biz});
+  });
+  const legacy = (list, kind) => (list||[]).forEach(inv=>{
+    const key = (kind==='sf'?'sfinv:':'inv:')+inv.id;
+    const missing = tgInvoiceReceived(inv) - tgLinkedTotal(db, key);
+    if(missing <= 0.009) return;
+    const t = calcInvoiceTotal(inv);
+    const lastPay = (inv.payments||[]).slice(-1)[0];
+    out.push({date: inv.paidAt || (lastPay && lastPay.date) || String(inv.createdAt||'').slice(0,10), amount:missing, vat: t.total ? missing*t.vat/t.total : 0, biz:kind, legacy:true});
+  });
+  if(biz!=='sf') legacy(db.invoices, 'sw');
+  if(biz!=='sw') legacy(db.sfInvoices, 'sf');
+  return out;
+}
+function receivedSum(biz, from, to){
+  const e = receivedEntries(DB, biz).filter(x=>x.date && (!from || x.date>=from) && (!to || x.date<=to));
+  const gross = e.reduce((s,x)=>s+x.amount,0), vat = e.reduce((s,x)=>s+x.vat,0);
+  return {gross:Math.round(gross*100)/100, vat:Math.round(vat*100)/100, net:Math.round((gross-vat)*100)/100};
+}
+function monthStartStr(d){ return localDateStr(new Date(d.getFullYear(), d.getMonth(), 1)); }
+function monthEndStr(d){ return localDateStr(new Date(d.getFullYear(), d.getMonth()+1, 0)); }
+function receivedInMonth(biz, d){ return receivedSum(biz, monthStartStr(d), monthEndStr(d)).gross; }
+function receivedTrailingAvg(biz, months){
+  const now = new Date(); let t = 0;
+  for(let i=0;i<months;i++) t += receivedInMonth(biz, new Date(now.getFullYear(), now.getMonth()-i, 1));
+  return t/months;
+}
 
 /* ===================== DASHBOARD ===================== */
 function calcInvoiceTotal(inv){
@@ -1988,6 +2354,24 @@ function calcInvoiceTotal(inv){
   const retention = total*(retentionPct/100);
   const dueNow = total-retention;
   return {sub, vat, total, retentionPct, retention, dueNow};
+}
+// Remaining balance actually owed on an invoice — subtracts amountPaid so a
+// 'partial' invoice (e.g. a deposit received) doesn't get counted as fully
+// outstanding. Never negative. Use this everywhere "Outstanding" is summed.
+// Display status: a sent/partial invoice past its due date is overdue even if
+// nobody has flipped the status by hand. Stored status is left untouched.
+function invoiceStatus(inv){
+  if(!inv) return 'draft';
+  if((inv.status==='sent' || inv.status==='partial') && inv.dueDate){
+    const dd = daysUntil(inv.dueDate);
+    if(dd!==null && dd<0) return 'overdue';
+  }
+  return inv.status || 'draft';
+}
+function invoiceOutstanding(inv){
+  const total = calcInvoiceTotal(inv).total;
+  const paid = Number(inv.amountPaid)||0;
+  return Math.max(total - paid, 0);
 }
 function calcQuoteTotal(q){
   const sub = q.items.reduce((s,i)=>s+(i.qty*i.rate),0);
@@ -2052,16 +2436,15 @@ function currentStreak(){
 function view_dashboard(){
   const now = new Date(); const thisMonth = now.getMonth(), thisYear = now.getFullYear();
 
-  const swPaid = DB.invoices.filter(i=>i.status==='paid');
-  const swMonthRevenue = swPaid.filter(i=>{ const d=new Date(i.createdAt); return d.getMonth()===thisMonth && d.getFullYear()===thisYear; }).reduce((s,i)=>s+calcInvoiceTotal(i).total,0);
-  const swYtdRevenue = swPaid.filter(i=> new Date(i.createdAt).getFullYear()===thisYear).reduce((s,i)=>s+calcInvoiceTotal(i).total,0);
-  const swOutstanding = DB.invoices.filter(i=>i.status!=='paid').reduce((s,i)=>s+calcInvoiceTotal(i).total,0);
+  const yearStart = thisYear+'-01-01';
+  const swMonthRevenue = receivedInMonth('sw', now);
+  const swYtdRevenue = receivedSum('sw', yearStart, localDateStr(now)).gross;
+  const swOutstanding = DB.invoices.filter(i=>i.status!=='paid').reduce((s,i)=>s+invoiceOutstanding(i),0);
 
-  const sfPaid = (DB.sfInvoices||[]).filter(i=>i.status==='paid');
-  const sfMonthRevenue = sfPaid.filter(i=>{ const d=new Date(i.createdAt); return d.getMonth()===thisMonth && d.getFullYear()===thisYear; }).reduce((s,i)=>s+calcInvoiceTotal(i).total,0);
-  const sfYtdRevenue = sfPaid.filter(i=> new Date(i.createdAt).getFullYear()===thisYear).reduce((s,i)=>s+calcInvoiceTotal(i).total,0);
-  const sfOutstanding = (DB.sfInvoices||[]).filter(i=>i.status!=='paid').reduce((s,i)=>s+calcInvoiceTotal(i).total,0);
-  const sfMrr = (DB.sfClients||[]).filter(c=>c.status==='active').reduce((s,c)=>s+(Number(c.mrr)||0),0);
+  const sfMonthRevenue = receivedInMonth('sf', now);
+  const sfYtdRevenue = receivedSum('sf', yearStart, localDateStr(now)).gross;
+  const sfOutstanding = (DB.sfInvoices||[]).filter(i=>i.status!=='paid').reduce((s,i)=>s+invoiceOutstanding(i),0);
+  const sfMrr = (DB.sfClients||[]).filter(c=>c.status==='active' && c.billingType!=='one-off').reduce((s,c)=>s+(Number(c.mrr)||0),0);
 
   const combinedMonthRevenue = swMonthRevenue + sfMonthRevenue;
   const combinedYtdRevenue = swYtdRevenue + sfYtdRevenue;
@@ -2106,6 +2489,7 @@ function view_dashboard(){
     </div>
   </div>
 
+  ${dashboardTargetsHtml()}
   <div class="card" style="margin-bottom:20px;">
     <div class="card-title">Revenue — Combined <span class="muted small">Last 6 months</span></div>
     <div style="position:relative;height:220px;width:100%;"><canvas id="chartCombinedRevenue"></canvas></div>
@@ -2116,17 +2500,19 @@ function view_dashboard(){
   </div>
   `;
 }
+function dashboardTargetsHtml(){
+  try{
+    const now = new Date();
+    return `<div class="grid grid-2" style="margin-bottom:20px;cursor:pointer;" onclick="setTgTab('overview')">${['sw','sf'].map(b=>{ const st = tgState(DB,b,now); return progressBarCard('🏁 '+TG_BIZ[b].name+' · Level '+st.level+' <span class="small" style="color:var(--teal);font-weight:700;">Targets →</span>', gbp(st.revenue)+' received of '+gbp(st.target)+' · '+tgPace(st,now).status, st.pct); }).join('')}</div>`;
+  }catch(e){ return ''; }
+}
 function afterRender_dashboard(){
   const months = [];
   const now = new Date();
   for(let i=5;i>=0;i--){ months.push(new Date(now.getFullYear(), now.getMonth()-i, 1)); }
   const labels = months.map(d=>d.toLocaleDateString('en-GB',{month:'short'}));
-  const swByMonth = months.map(d=> DB.invoices.filter(inv=>inv.status==='paid').filter(inv=>{
-    const id=new Date(inv.createdAt); return id.getMonth()===d.getMonth() && id.getFullYear()===d.getFullYear();
-  }).reduce((s,inv)=>s+calcInvoiceTotal(inv).total,0));
-  const sfByMonth = months.map(d=> (DB.sfInvoices||[]).filter(inv=>inv.status==='paid').filter(inv=>{
-    const id=new Date(inv.createdAt); return id.getMonth()===d.getMonth() && id.getFullYear()===d.getFullYear();
-  }).reduce((s,inv)=>s+calcInvoiceTotal(inv).total,0));
+  const swByMonth = months.map(d=>receivedInMonth('sw', d));
+  const sfByMonth = months.map(d=>receivedInMonth('sf', d));
   chartSafe('chartCombinedRevenue','bar',{
     labels, datasets:[
       {label:'SteadyWorks', data:swByMonth, backgroundColor:'#E11D2A', borderRadius:6, stack:'rev'},
@@ -2139,22 +2525,17 @@ function view_sw_dashboard(){
   const now = new Date();
   const thisMonth = now.getMonth(), thisYear = now.getFullYear();
 
-  const paidInvoices = DB.invoices.filter(i=>i.status==='paid');
-  const monthRevenue = paidInvoices.filter(i=>{
-    const d = new Date(i.createdAt); return d.getMonth()===thisMonth && d.getFullYear()===thisYear;
-  }).reduce((s,i)=>s+calcInvoiceTotal(i).total,0);
-
-  const ytdRevenue = paidInvoices.filter(i=> new Date(i.createdAt).getFullYear()===thisYear)
-    .reduce((s,i)=>s+calcInvoiceTotal(i).total,0);
+  const monthRevenue = receivedInMonth('sw', now);
+  const ytdRevenue = receivedSum('sw', thisYear+'-01-01', localDateStr(now)).gross;
 
   const target = DB.settings.monthlyTargets[thisMonth] || (DB.settings.annualTarget/12);
   const pctTarget = target? Math.round((monthRevenue/target)*100) : 0;
 
   const outstanding = DB.invoices.filter(i=>i.status!=='paid')
-    .reduce((s,i)=>s+calcInvoiceTotal(i).total,0);
+    .reduce((s,i)=>s+invoiceOutstanding(i),0);
 
-  const overdueAmt = DB.invoices.filter(i=>i.status==='overdue')
-    .reduce((s,i)=>s+calcInvoiceTotal(i).total,0);
+  const overdueAmt = DB.invoices.filter(i=>invoiceStatus(i)==='overdue')
+    .reduce((s,i)=>s+invoiceOutstanding(i),0);
 
   const totalExpenses = DB.expenses.filter(e=>{
     const d = new Date(e.date); return d.getMonth()===thisMonth && d.getFullYear()===thisYear;
@@ -2170,7 +2551,8 @@ function view_sw_dashboard(){
   const paintSwShareThisMonth = paintThisMonth.reduce((s,r)=>s+paintSplit(r).swShare,0);
   const paintReinvestThisMonth = paintThisMonth.reduce((s,r)=>s+paintSplit(r).reinvestment,0);
 
-  const profit = monthRevenue - totalExpenses + paintSwShareThisMonth;
+  // Same profit as Accounting (pipeline money is already in received revenue, so it isn't added again)
+  const profit = accountingRollup().swProfitMTD;
 
   const quotesSent = DB.quotes.filter(q=>['sent','approved','declined','expired'].includes(q.status)).length;
   const quotesWon = DB.quotes.filter(q=>q.status==='approved').length;
@@ -2222,6 +2604,7 @@ function view_sw_dashboard(){
 
   return `
   <div class="grid grid-4" style="margin-bottom:20px;">${kpiHtml}</div>
+  ${swMoneyWaitingHtml()}
 
   <div class="grid grid-3" style="margin-bottom:20px;align-items:start;">
     ${progressBarCard('Monthly Revenue Target', fmt(monthRevenue)+' of '+fmt(target)+' — '+monthLabel, pctTarget)}
@@ -2278,6 +2661,7 @@ function statusPill(status){
     'declined':'st-declined','on-hold':'st-onhold','cancelled':'st-cancelled','expired':'st-expired',
     'partial':'st-onhold'
   };
+  status = String(status||'draft');
   const cls = map[status] || 'st-draft';
   const label = status.replace(/-/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
   return `<span class="pill ${cls}"><span class="pill-dot" style="background:currentColor;"></span>${label}</span>`;
@@ -2295,16 +2679,12 @@ function afterRender_sw_dashboard(){
     months.push(d);
   }
   const labels = months.map(d=>d.toLocaleDateString('en-GB',{month:'short'}));
-  const actuals = months.map(d=>{
-    return DB.invoices.filter(inv=>inv.status==='paid').filter(inv=>{
-      const id = new Date(inv.createdAt); return id.getMonth()===d.getMonth() && id.getFullYear()===d.getFullYear();
-    }).reduce((s,inv)=>s+calcInvoiceTotal(inv).total,0);
-  });
+  const actuals = months.map(d=>receivedInMonth('sw', d));
   const targets = months.map(d=> DB.settings.monthlyTargets[d.getMonth()] || (DB.settings.annualTarget/12));
 
   chartSafe('chartTargetActual','bar',{
     labels, datasets:[
-      {label:'Target', data:targets, backgroundColor:'rgba(17,17,17,0.08)', borderRadius:6},
+      {label:'Target', data:targets, backgroundColor:'rgba(255,255,255,0.12)', borderRadius:6},
       {label:'Actual', data:actuals, backgroundColor:'#E11D2A', borderRadius:6}
     ]
   },{ plugins:{legend:{position:'bottom',labels:{boxWidth:10,font:{size:11}}}}, scales:{y:{ticks:{callback:v=>'£'+(v/1000)+'k'}}} });
@@ -2327,7 +2707,7 @@ function afterRender_sw_dashboard(){
     if(!['completed','invoiced'].includes(j.status)) return false;
     const jd = new Date(j.endDate||j.startDate); return jd.getMonth()===d.getMonth() && jd.getFullYear()===d.getFullYear();
   }).length);
-  chartSafe('chartJobs','bar',{ labels, datasets:[{label:'Jobs', data:jobsCompleted, backgroundColor:'#1A1A1A', borderRadius:6}] },
+  chartSafe('chartJobs','bar',{ labels, datasets:[{label:'Jobs', data:jobsCompleted, backgroundColor:'#00A99D', borderRadius:6}] },
     {plugins:{legend:{display:false}}});
 
   const qStatuses = ['draft','sent','approved','declined','expired'];
@@ -2340,7 +2720,7 @@ function afterRender_sw_dashboard(){
   const sources = {};
   DB.leads.forEach(l=>{ sources[l.source] = (sources[l.source]||0)+1; });
   chartSafe('chartLeadSource','pie',{
-    labels:Object.keys(sources), datasets:[{data:Object.values(sources), backgroundColor:['#E11D2A','#1A1A1A','#22C55E','#F59E0B','#7C3AED','#0EA5E9']}]
+    labels:Object.keys(sources), datasets:[{data:Object.values(sources), backgroundColor:['#E11D2A','#00A99D','#22C55E','#F59E0B','#7C3AED','#0EA5E9']}]
   },{plugins:{legend:{position:'bottom',labels:{boxWidth:10,font:{size:10}}}}});
 
   renderDashboardMap();
@@ -2443,7 +2823,8 @@ function view_leads(){
         </div>`).join('') || '<div class="muted small" style="padding:8px 4px;">No leads</div>'}
     </div>`;
   }).join('');
-  return `<div class="kanban">${cols}</div>`;
+  const hint = DB.leads.length ? '' : `<div class="card mb-10 flex-between" style="gap:10px;flex-wrap:wrap;"><span class="small muted">No leads yet — website enquiries land here automatically, or add one by hand. Drag cards between columns to move them along.</span><button class="btn btn-gold btn-sm" onclick="openLeadModal()">+ New Lead</button></div>`;
+  return `${hint}<div class="kanban">${cols}</div>`;
 }
 function afterRender_leads(){}
 
@@ -2485,6 +2866,7 @@ function openLeadModal(id){
     </div>
     <div class="modal-foot">
       ${lead?`<button class="btn btn-danger" onclick="deleteLead('${lead.id}')">Delete</button>`:''}
+      ${lead?`<button class="btn btn-ghost" onclick="convertLeadToQuote('${lead.id}')">📝 Create Quote</button>`:''}
       ${lead?`<button class="btn btn-dark" onclick="convertLeadToJob('${lead.id}')">Convert to Job</button>`:''}
       <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
       <button class="btn btn-gold" onclick="saveLead('${lead?lead.id:''}')">${lead?'Save Changes':'Create Lead'}</button>
@@ -2492,6 +2874,7 @@ function openLeadModal(id){
   `);
 }
 function saveLead(id){
+  if(!requireField('f-name','Add a name or company for this lead') || !checkEmailField('f-email')) return;
   const data = {
     name: document.getElementById('f-name').value.trim() || 'Unnamed Lead',
     stage: document.getElementById('f-stage').value,
@@ -2515,6 +2898,12 @@ function deleteLead(id){
   confirmDelete('Delete '+(l0?l0.name:'this lead')+'?', "This can't be undone.", ()=>{
     DB.leads = DB.leads.filter(l=>l.id!==id); save(); closeModal(); renderPage(); toast('Lead deleted','🗑️');
   });
+}
+function convertLeadToQuote(id){
+  const lead = DB.leads.find(l=>l.id===id);
+  if(!lead) return;
+  closeModal();
+  openQuoteModal(null, null, {leadId:lead.id, customerName:lead.name, notes:lead.notes});
 }
 function convertLeadToJob(id){
   const lead = DB.leads.find(l=>l.id===id);
@@ -2582,6 +2971,7 @@ function openFollowUpModal(id){
   `);
 }
 function saveFollowUp(id){
+  if(!checkEmailField('f-email')) return;
   const data = {
     name: document.getElementById('f-name').value.trim() || 'Unknown caller',
     status: document.getElementById('f-status').value,
@@ -2732,45 +3122,69 @@ function deleteFollowupTemplate(id){
 }
 
 /* ===================== JOBS ===================== */
+let SW_JOB_SEARCH = '', SW_JOB_FILTER = 'open';
 function view_jobs(detailId){
   if(currentParam) return view_jobDetail(currentParam);
   const mode = window._jobsViewMode || 'list';
-  const rows = DB.jobs.slice().sort((a,b)=>new Date(b.startDate)-new Date(a.startDate)).map(j=>`
-    <tr class="row-link" onclick="navigate('jobs','${j.id}')">
-      <td><strong>${esc(j.jobNumber)}</strong></td>
-      <td>${esc(j.customerName)}</td>
-      <td>${esc(j.propertyType||'—')}</td>
-      <td>${statusPill(j.status)}</td>
-      <td>${priorityPill(j.priority||'Medium')}</td>
-      <td>${esc(j.assignedTo||'—')}</td>
-      <td>${fmtDate(j.startDate)}</td>
-      <td>${fmt(j.expectedRevenue)}</td>
-      <td>${esc(j.source||'—')}</td>
-    </tr>`).join('');
-  return `
-  <div style="display:flex;gap:8px;margin-bottom:14px;">
-    <button class="btn ${mode==='list'?'btn-gold':'btn-ghost'}" onclick="toggleJobsView('list')">📋 List</button>
-    <button class="btn ${mode==='map'?'btn-gold':'btn-ghost'}" onclick="toggleJobsView('map')">🗺️ Map</button>
-  </div>
+  const count = f => DB.jobs.filter(j=>swJobMatchesFilter(j,f)).length;
+  const toolbar = `<div class="toolbar">
+    <div class="seg-toggle">${[['list','📋 List'],['schedule','🗓️ Schedule'],['map','🗺️ Map']].map(([k,l])=>`<button class="seg-btn" style="${mode===k?'background:var(--gold);color:#fff;':''}" onclick="toggleJobsView('${k}')">${l}</button>`).join('')}</div>
+    ${mode==='list'?`<div class="seg-toggle">${[['open','Open'],['scheduled','Scheduled'],['active','On site'],['completed','To invoice'],['all','All']].map(([k,l])=>`<button class="seg-btn" style="${SW_JOB_FILTER===k?'background:var(--card-alt);color:var(--text);':''}" onclick="SW_JOB_FILTER='${k}'; renderPage();">${l} <span class="muted">${count(k)}</span></button>`).join('')}</div>
+    <div class="spacer"></div><div class="search-box">🔍<input type="text" placeholder="Search jobs, customers, addresses…" value="${esc(SW_JOB_SEARCH)}" oninput="SW_JOB_SEARCH=this.value; const b=document.getElementById('sw-jobs-body'); if(b) b.innerHTML=swJobRows();"></div>`:''}
+  </div>`;
+  if(mode==='schedule') return toolbar + swScheduleBoard();
+  return `${toolbar}
   <div class="card" id="jobs-list-view" style="${mode==='map'?'display:none;':''}">
     <table>
-      <thead><tr><th>Job #</th><th>Customer</th><th>Type</th><th>Status</th><th>Priority</th><th>Engineer</th><th>Start</th><th>Value</th><th>Source</th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="9" class="muted" style="text-align:center;padding:30px;">No jobs yet — create your first job</td></tr>'}</tbody>
+      <thead><tr><th>Job #</th><th>Customer</th><th>Status</th><th>Priority</th><th>Engineer</th><th>Start</th><th>Value</th><th>Margin</th><th>Source</th></tr></thead>
+      <tbody id="sw-jobs-body">${swJobRows()}</tbody>
     </table>
   </div>
-  <div class="card" id="jobs-map-view" style="${mode==='list'?'display:none;':''}">
+  <div class="card" id="jobs-map-view" style="${mode!=='map'?'display:none;':''}">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
       <span class="small muted" id="jobs-map-count"></span>
       <span class="small muted" style="display:flex;gap:12px;flex-wrap:wrap;">
         <span><span class="pill-dot" style="background:#7DD3FC;display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;"></span>Scheduled</span>
         <span><span class="pill-dot" style="background:#E11D2A;display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;"></span>Active</span>
         <span><span class="pill-dot" style="background:#22C55E;display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;"></span>Completed</span>
-        <span><span class="pill-dot" style="background:#1A1A1A;display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;"></span>Invoiced</span>
+        <span><span class="pill-dot" style="background:#818CF8;display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;"></span>Invoiced</span>
         <span><span class="pill-dot" style="background:#9CA3AF;display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;"></span>Cancelled</span>
       </span>
     </div>
     <div id="jobs-map" style="height:520px;border-radius:10px;overflow:hidden;background:var(--card-alt);position:relative;"></div>
   </div>`;
+}
+function swJobMatchesFilter(j, f){
+  if(f==='all') return true;
+  if(f==='open') return !['completed','invoiced','cancelled'].includes(j.status);
+  if(f==='completed') return j.status==='completed' && !swJobInvoiced(j);
+  return j.status===f;
+}
+function swJobInvoiced(j){ return j.status==='invoiced' || DB.invoices.some(i=>i.jobId===j.id); }
+function swJobMargin(j){
+  const cost = (j.costLines||[]).reduce((s,c)=>s+(Number(c.actual)||Number(c.budget)||0),0);
+  const vars = (j.variations||[]).filter(v=>v.status!=='Rejected').reduce((s,v)=>s+(Number(v.amount)||0),0);
+  const value = (Number(j.expectedRevenue)||0) + vars;
+  return {value, cost, margin:value-cost, pct: value ? (value-cost)/value*100 : null};
+}
+function swJobRows(){
+  const q = SW_JOB_SEARCH.trim().toLowerCase();
+  const list = DB.jobs.filter(j=>swJobMatchesFilter(j, SW_JOB_FILTER))
+    .filter(j=>!q || [j.jobNumber,j.customerName,j.address,j.assignedTo,j.source].join(' ').toLowerCase().includes(q))
+    .sort((a,b)=>String(b.startDate||'9999').localeCompare(String(a.startDate||'9999')));
+  if(!list.length) return DB.jobs.length ? emptyRow(9,'No jobs match this view.') : emptyRow(9,'No jobs yet — create your first job, or win a quote.','+ New Job','openJobModal()');
+  return list.map(j=>{ const m = swJobMargin(j); return `
+    <tr class="row-link" onclick="navigate('jobs','${j.id}')">
+      <td><strong>${esc(j.jobNumber)}</strong></td>
+      <td>${esc(j.customerName)}<div class="small muted">${esc(j.address||'')}</div></td>
+      <td>${statusPill(j.status)}${j.status==='completed'&&!swJobInvoiced(j)?' <span class="pill st-overdue" title="Completed but not invoiced">Invoice it</span>':''}</td>
+      <td>${priorityPill(j.priority||'Medium')}</td>
+      <td>${esc(j.assignedTo||'—')}</td>
+      <td>${fmtDate(j.startDate)}</td>
+      <td>${fmt(m.value)}</td>
+      <td style="color:${m.pct==null||!m.cost?'var(--text-soft)':m.pct<20?'var(--danger)':m.pct<35?'var(--warning)':'var(--success)'};font-weight:700;">${m.cost?Math.round(m.pct)+'%':'—'}</td>
+      <td>${esc(j.source||'—')}</td>
+    </tr>`; }).join('');
 }
 function toggleJobsView(mode){
   window._jobsViewMode = mode;
@@ -2781,7 +3195,7 @@ function afterRender_jobs(){
 }
 const JOB_STATUS_COLORS = {
   scheduled:'#7DD3FC', active:'#E11D2A', 'in-progress':'#E11D2A',
-  completed:'#22C55E', invoiced:'#1A1A1A', cancelled:'#9CA3AF'
+  completed:'#22C55E', invoiced:'#818CF8', cancelled:'#9CA3AF'
 };
 async function renderJobsMap(){
   const mapEl = document.getElementById('jobs-map');
@@ -2833,22 +3247,26 @@ async function renderJobsMap(){
 function view_jobDetail(id){
   const j = DB.jobs.find(x=>x.id===id);
   if(!j) return '<div class="empty-state">Job not found. <a onclick="navigate(\'jobs\')" style="color:var(--gold);cursor:pointer;">Back to jobs</a></div>';
-  j.costLines = j.costLines||[]; j.documents = j.documents||[]; j.variations = j.variations||[]; j.phases = j.phases||[];
+  j.costLines = j.costLines||[]; j.documents = j.documents||[]; j.variations = j.variations||[]; j.phases = j.phases||[]; j.notes = j.notes||[]; j.photos = j.photos||[]; j.timeline = j.timeline||[];
   const jobQuotes = DB.quotes.filter(q=>q.jobId===j.id);
   const jobInvoices = DB.invoices.filter(inv=>inv.jobId===j.id);
   const costBudget = j.costLines.reduce((s,c)=>s+(Number(c.budget)||0),0);
   const costActual = j.costLines.reduce((s,c)=>s+(Number(c.actual)||0),0);
   const approvedVarTotal = j.variations.filter(v=>v.status!=='Rejected').reduce((s,v)=>s+(Number(v.amount)||0),0);
   const margin = (j.expectedRevenue + approvedVarTotal) - costActual;
-  setTimeout(()=>{ document.getElementById('page-title').textContent = j.jobNumber; document.getElementById('page-sub').textContent = j.customerName; },0);
+  setTimeout(()=>{
+    document.getElementById('page-title').textContent = j.jobNumber; document.getElementById('page-sub').textContent = j.customerName;
+    if(window._jobTab && window._jobTab!=='overview'){ const b = document.querySelector('#job-tabs [data-tab="'+window._jobTab+'"]'); if(b) switchJobTab(b, window._jobTab); }
+  },0);
 
   return `
   <div class="flex-between mb-10">
     <button class="btn btn-ghost btn-sm" onclick="navigate('jobs')">← All Jobs</button>
     <div class="flex gap-8">
       <button class="btn btn-ghost btn-sm" onclick="openJobModal('${j.id}')">Edit Job</button>
+      ${!['completed','invoiced','cancelled'].includes(j.status)?`<button class="btn btn-success btn-sm" onclick="swMarkJobComplete('${j.id}')">✓ Mark Complete</button>`:''}
       <button class="btn btn-dark btn-sm" onclick="openQuoteModal(null,'${j.id}')">+ Quote</button>
-      <button class="btn btn-gold btn-sm" onclick="openInvoiceModal(null,'${j.id}')">+ Invoice</button>
+      <button class="btn btn-gold btn-sm" onclick="swInvoiceFromJob('${j.id}')">+ Invoice</button>
     </div>
   </div>
 
@@ -2856,7 +3274,7 @@ function view_jobDetail(id){
     <div class="card"><div class="kpi-label">Status</div>${statusPill(j.status)}</div>
     <div class="card"><div class="kpi-label">Priority</div>${priorityPill(j.priority||'Medium')}</div>
     <div class="card"><div class="kpi-label">Revenue (+ variations)</div><div class="kpi-value">${fmt(j.expectedRevenue+approvedVarTotal)}</div></div>
-    <div class="card"><div class="kpi-label">Cost vs Margin</div><div class="kpi-value" style="color:${margin>=0?'#15803D':'#B91C1C'};">${fmt(margin)}</div><span class="small muted">${fmt(costActual)} actual cost of ${fmt(costBudget)} budget</span></div>
+    <div class="card"><div class="kpi-label">Cost vs Margin</div><div class="kpi-value" style="color:${margin>=0?'var(--success)':'var(--danger)'};">${fmt(margin)}</div><span class="small muted">${fmt(costActual)} actual cost of ${fmt(costBudget)} budget</span></div>
   </div>
   ${jobMissingDocs(j) && !['completed','invoiced','cancelled'].includes(j.status) ? `<div class="card" style="border-color:#F59E0B;background:rgba(245,158,11,.12);margin-bottom:18px;"><strong>⚠️ No valid RAMS on file for this job</strong><p class="small muted mt-10">Add a current RAMS document in the Documents tab before work proceeds.</p></div>` : ''}
 
@@ -2868,6 +3286,8 @@ function view_jobDetail(id){
     <button class="tab-btn" data-tab="quotes" onclick="switchJobTab(this,'quotes')">Quotes (${jobQuotes.length})</button>
     <button class="tab-btn" data-tab="invoices" onclick="switchJobTab(this,'invoices')">Invoices (${jobInvoices.length})</button>
     <button class="tab-btn" data-tab="documents" onclick="switchJobTab(this,'documents')">Documents (${j.documents.length})</button>
+    <button class="tab-btn" data-tab="sitesheet" onclick="switchJobTab(this,'sitesheet')">📱 Site Sheet${j.signoff?' ✓':''}</button>
+    <button class="tab-btn" data-tab="materials" onclick="switchJobTab(this,'materials')">Materials & POs (${(DB.purchaseOrders||[]).filter(po=>po.jobId===j.id).length})</button>
     <button class="tab-btn" data-tab="photos" onclick="switchJobTab(this,'photos')">Photos & Files (${j.photos.length})</button>
     <button class="tab-btn" data-tab="notes" onclick="switchJobTab(this,'notes')">Notes (${j.notes.length})</button>
     <button class="tab-btn" data-tab="timeline" onclick="switchJobTab(this,'timeline')">Timeline</button>
@@ -2923,10 +3343,10 @@ function view_jobDetail(id){
         <td>${esc(c.desc||'—')}</td>
         <td>${fmt(c.budget)}</td>
         <td>${fmt(c.actual)}</td>
-        <td style="color:${v>=0?'#15803D':'#B91C1C'};font-weight:700;">${v>=0?'+':''}${fmt(v)}</td>
+        <td style="color:${v>=0?'var(--success)':'var(--danger)'};font-weight:700;">${v>=0?'+':''}${fmt(v)}</td>
         <td><button class="icon-btn" aria-label="Edit cost line" onclick="openCostLineModal('${j.id}','${c.id}')">✎</button><button class="icon-btn" aria-label="Delete cost line" onclick="deleteCostLine('${j.id}','${c.id}')">✕</button></td>
       </tr>`}).join('') || '<tr><td colspan="6" class="muted" style="text-align:center;padding:20px;">No cost lines yet — break the job down into materials, labour, subcontractor and plant costs.</td></tr>'}</tbody>
-      <tfoot><tr><td colspan="2" style="font-weight:700;">Totals</td><td style="font-weight:700;">${fmt(costBudget)}</td><td style="font-weight:700;">${fmt(costActual)}</td><td style="font-weight:700;color:${(costBudget-costActual)>=0?'#15803D':'#B91C1C'};">${(costBudget-costActual)>=0?'+':''}${fmt(costBudget-costActual)}</td><td></td></tr></tfoot></table>
+      <tfoot><tr><td colspan="2" style="font-weight:700;">Totals</td><td style="font-weight:700;">${fmt(costBudget)}</td><td style="font-weight:700;">${fmt(costActual)}</td><td style="font-weight:700;color:${(costBudget-costActual)>=0?'var(--success)':'var(--danger)'};">${(costBudget-costActual)>=0?'+':''}${fmt(costBudget-costActual)}</td><td></td></tr></tfoot></table>
       ${DB.subcontractors.length?`<div class="divider"></div><button class="btn btn-ghost btn-sm" onclick="openSubDayModal('${j.id}')">+ Log Subcontractor Day</button>`:''}
     </div>
   </div>
@@ -2956,7 +3376,7 @@ function view_jobDetail(id){
   <div id="jobtab-invoices" class="job-tab-pane" style="display:none;">
     <div class="card">
       <table><thead><tr><th>Invoice #</th><th>Status</th><th>Total</th><th>Due</th></tr></thead>
-      <tbody>${jobInvoices.map(inv=>{const t=calcInvoiceTotal(inv);return `<tr class="row-link" onclick="openInvoiceModal('${inv.id}')"><td><strong>${esc(inv.invoiceNumber)}</strong></td><td>${statusPill(inv.status)}</td><td>${fmt(t.total)}</td><td>${fmtDate(inv.dueDate)}</td></tr>`}).join('') || '<tr><td colspan="4" class="muted" style="text-align:center;padding:20px;">No invoices linked to this job</td></tr>'}</tbody></table>
+      <tbody>${jobInvoices.map(inv=>{const t=calcInvoiceTotal(inv);return `<tr class="row-link" onclick="openInvoiceModal('${inv.id}')"><td><strong>${esc(inv.invoiceNumber)}</strong></td><td>${statusPill(invoiceStatus(inv))}</td><td>${fmt(t.total)}</td><td>${fmtDate(inv.dueDate)}</td></tr>`}).join('') || '<tr><td colspan="4" class="muted" style="text-align:center;padding:20px;">No invoices linked to this job</td></tr>'}</tbody></table>
     </div>
   </div>
 
@@ -2974,11 +3394,14 @@ function view_jobDetail(id){
     </div>
   </div>
 
+  <div id="jobtab-sitesheet" class="job-tab-pane" style="display:none;">${swSiteSheetHtml(j)}</div>
+  <div id="jobtab-materials" class="job-tab-pane" style="display:none;">${poJobPanelHtml(j)}</div>
+
   <div id="jobtab-photos" class="job-tab-pane" style="display:none;">
     <div class="card">
       <div class="flex-between mb-10"><div class="card-title" style="margin:0;">Photos, Drawings & Certificates</div><label class="btn btn-ghost btn-sm" style="cursor:pointer;">Upload <input type="file" multiple accept="image/*,.pdf" style="display:none" onchange="uploadJobPhoto('${j.id}',this.files)"></label></div>
       <div class="grid grid-4">
-        ${j.photos.map((p,i)=>`<div><div class="file-thumb">${p.data?`<img src="${p.data}">`:'📄'}</div><div class="small mt-10" style="word-break:break-all;">${esc(p.name)}</div></div>`).join('') || '<p class="muted small">No files uploaded yet.</p>'}
+        ${j.photos.map((p,i)=>`<div><div class="file-thumb" style="cursor:${p.data?'zoom-in':'default'};" ${p.data?`onclick="swViewPhoto('${j.id}',${i})"`:''}>${p.data?`<img src="${p.data}">`:'📄'}</div><div class="small mt-10" style="word-break:break-all;">${p.label?`<span class="pill ${p.label==='Before'?'st-onhold':'st-won'}" style="padding:1px 7px;">${esc(p.label)}</span> `:''}${esc(p.name)} <button class="icon-btn" title="Remove" onclick="swRemovePhoto('${j.id}',${i})">✕</button></div></div>`).join('') || '<p class="muted small">No files uploaded yet.</p>'}
       </div>
     </div>
   </div>
@@ -3007,25 +3430,46 @@ function switchJobTab(btn, tab){
   btn.classList.add('active');
   document.querySelectorAll('.job-tab-pane').forEach(p=>p.style.display='none');
   document.getElementById('jobtab-'+tab).style.display='block';
+  window._jobTab = tab;
+  if(tab==='sitesheet') swInitSignaturePad();
 }
 function addJobNote(jobId){
   const j = DB.jobs.find(x=>x.id===jobId);
   const text = document.getElementById('note-text').value.trim();
-  if(!text) return;
+  if(!text){ toast('Type a note first','⚠️'); return; }
+  j.notes = j.notes||[];
   j.notes.push({type:document.getElementById('note-type').value, text, date:new Date().toISOString().slice(0,10)});
   save(); navigate('jobs', jobId); toast('Note added');
 }
-function uploadJobPhoto(jobId, files){
+function uploadJobPhoto(jobId, files, label){
   const j = DB.jobs.find(x=>x.id===jobId);
-  let remaining = files.length;
-  Array.from(files).forEach(f=>{
+  if(!j || !files || !files.length) return;
+  toast('Processing '+files.length+' file'+(files.length===1?'':'s')+'…','⏳');
+  Promise.all(Array.from(files).map(f=> f.type.startsWith('image/') ? compressImage(f, 1280, 0.72).then(data=>({name:f.name, data})) : Promise.resolve({name:f.name, data:null})))
+    .then(list=>{
+      j.photos = j.photos||[];
+      list.forEach(p=>j.photos.push(Object.assign(p, {id:uid(), label:label||'', date:localDateStr()})));
+      save(); navigate('jobs', jobId); toast(list.length+' file'+(list.length===1?'':'s')+' added');
+      if(label) setTimeout(()=>{ const b = document.querySelector('#job-tabs [data-tab="sitesheet"]'); if(b) b.click(); }, 50);
+    });
+}
+// Shrinks phone photos (often 3–5MB) to ~150–300KB JPEGs so they fit in browser storage and sync quickly.
+function compressImage(file, maxSize, quality){
+  return new Promise(resolve=>{
     const reader = new FileReader();
     reader.onload = e=>{
-      j.photos.push({name:f.name, data: f.type.startsWith('image/')? e.target.result : null});
-      remaining--;
-      if(remaining===0){ save(); navigate('jobs', jobId); toast('Files uploaded'); }
+      const img = new Image();
+      img.onload = ()=>{
+        const scale = Math.min(1, maxSize/Math.max(img.width, img.height));
+        const c = document.createElement('canvas');
+        c.width = Math.round(img.width*scale); c.height = Math.round(img.height*scale);
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        try{ resolve(c.toDataURL('image/jpeg', quality)); }catch(err){ resolve(e.target.result); }
+      };
+      img.onerror = ()=>resolve(e.target.result);
+      img.src = e.target.result;
     };
-    reader.readAsDataURL(f);
+    reader.readAsDataURL(file);
   });
 }
 
@@ -3238,7 +3682,7 @@ function openJobModal(id, prefill){
       <div class="form-group"><label>Site Address</label><input id="f-address" type="text" value="${j?esc(j.address):''}"></div>
       <div class="form-row">
         <div class="form-group"><label>Status</label><select id="f-status">${JOB_STATUSES.map(s=>`<option value="${s}" ${j&&j.status===s?'selected':''}>${s}</option>`).join('')}</select></div>
-        <div class="form-group"><label>Priority</label><select id="f-priority">${['Low','Medium','High'].map(s=>`<option ${j&&j.priority===s?'selected':''}>${s}</option>`).join('')}</select></div>
+        <div class="form-group"><label>Priority</label><select id="f-priority">${['Low','Medium','High'].map(s=>`<option ${(j?j.priority:'Medium')===s?'selected':''}>${s}</option>`).join('')}</select></div>
       </div>
       <div class="form-row">
         <div class="form-group"><label>Assigned Engineer</label><select id="f-assignedTo"><option value="">Unassigned</option>${DB.employees.map(e=>`<option ${j&&j.assignedTo===e.name?'selected':''}>${esc(e.name)}</option>`).join('')}</select></div>
@@ -3276,13 +3720,21 @@ function saveJob(id, leadId){
     endDate: document.getElementById('f-endDate').value,
     source: document.getElementById('f-source').value
   };
+  const lead = leadId ? DB.leads.find(l=>l.id===leadId) : null;
+  const cust = swEnsureCustomer(customerNameVal, {address:data.address, propertyType:data.propertyType, phone:lead?lead.phone:'', email:lead?lead.email:'', source:data.source, from:'a job'});
   if(id){
-    Object.assign(DB.jobs.find(j=>j.id===id), data);
+    const j = DB.jobs.find(x=>x.id===id);
+    const wasStatus = j.status;
+    Object.assign(j, data);
+    if(cust && !j.customerId) j.customerId = cust.id;
+    const justCompleted = data.status==='completed' && wasStatus!=='completed';
+    if(justCompleted){ j.timeline = j.timeline||[]; j.timeline.push({e:'Job Completed', d:localDateStr()}); if(!j.endDate || j.endDate > localDateStr()) j.endDate = localDateStr(); if(j.startDate && j.startDate > j.endDate) j.startDate = j.endDate; swServiceJobCompleted(j); }
     toast('Job updated');
     save(); closeModal(); navigate('jobs', id);
+    if(justCompleted) setTimeout(()=>swJobCompleteModal(id), 200);
   } else {
     const jobNumber = nextJobNumber();
-    const job = Object.assign({id:uid(), jobNumber, customerId:null, actualRevenue:0, notes:[], photos:[],
+    const job = Object.assign({id:uid(), jobNumber, customerId:cust?cust.id:null, leadId:leadId||null, actualRevenue:0, notes:[], photos:[], costLines:[], documents:[], variations:[], phases:[],
       timeline:[{e:'Job Created', d:new Date().toISOString().slice(0,10)}]}, data);
     DB.jobs.push(job);
     if(leadId){ const lead = DB.leads.find(l=>l.id===leadId); if(lead) lead.stage='Scheduled'; }
@@ -3338,29 +3790,55 @@ function view_job_sources(){
 }
 
 /* ===================== QUOTES ===================== */
+let SW_QUOTE_FILTER = 'open';
 function view_quotes(){
-  const rows = DB.quotes.slice().sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt)).map(q=>{
+  const all = DB.quotes;
+  const open = all.filter(q=>['draft','sent'].includes(q.status));
+  const decided = all.filter(q=>['approved','declined','expired'].includes(q.status));
+  const won = all.filter(q=>q.status==='approved');
+  const chase = all.filter(swQuoteNeedsChase);
+  const expiring = open.filter(q=>{ const d = daysUntil(q.validUntil); return d!==null && d>=0 && d<=7; });
+  const val = list => list.reduce((s,q)=>s+calcQuoteTotal(q).total,0);
+  const filters = [['open','Open'],['chase','Needs chasing'],['draft','Draft'],['sent','Sent'],['approved','Won'],['declined','Lost'],['all','All']];
+  const match = q => SW_QUOTE_FILTER==='all' ? true : SW_QUOTE_FILTER==='open' ? ['draft','sent'].includes(q.status) : SW_QUOTE_FILTER==='chase' ? swQuoteNeedsChase(q) : SW_QUOTE_FILTER==='declined' ? ['declined','expired'].includes(q.status) : q.status===SW_QUOTE_FILTER;
+  const rows = all.filter(match).slice().sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt))).map(q=>{
     const t = calcQuoteTotal(q);
+    const age = swQuoteAge(q);
+    const lastChase = (q.chases||[]).slice(-1)[0];
     return `<tr class="row-link" onclick="openQuoteModal('${q.id}')">
-      <td><strong>${esc(q.quoteNumber)}</strong></td>
+      <td><strong>${esc(q.quoteNumber)}</strong>${q.leadId?'<div class="small muted">from lead</div>':''}</td>
       <td>${esc(q.customerName)}</td>
-      <td>${esc(q.type)}</td>
       <td>${statusPill(q.status)}</td>
       <td>${fmt(t.total)}</td>
-      <td>${fmtDate(q.validUntil)}</td>
+      <td class="small">${q.status==='sent'?`${age} day${age===1?'':'s'} ago${lastChase?`<div class="muted">chased ${fmtDate(lastChase.date)}</div>`:''}`:fmtDate(q.sentAt||q.createdAt)}</td>
+      <td class="small">${q.validUntil?fmtDate(q.validUntil):'—'}</td>
+      <td onclick="event.stopPropagation();" style="white-space:nowrap;">
+        ${swQuoteNeedsChase(q)?`<button class="btn btn-ghost btn-sm" onclick="swOpenChase('quote','${q.id}')">📣 Chase</button>`:''}
+        ${['draft','sent'].includes(q.status)&&!q.jobId?`<button class="btn btn-success btn-sm" onclick="convertQuoteToJob('${q.id}')">Won</button> <button class="icon-btn" title="Mark lost" onclick="swMarkQuoteLost('${q.id}')">✕</button>`:''}
+      </td>
     </tr>`;
   }).join('');
-  return `<div class="card"><table>
-    <thead><tr><th>Quote #</th><th>Customer</th><th>Type</th><th>Status</th><th>Total (inc. VAT)</th><th>Valid Until</th></tr></thead>
-    <tbody>${rows || '<tr><td colspan="6" class="muted" style="text-align:center;padding:30px;">No quotes yet — create your first quote</td></tr>'}</tbody>
-  </table></div>`;
+  return `
+  <div class="grid grid-4" style="margin-bottom:18px;">
+    <div class="card kpi-card"><div class="kpi-label">Open quotes</div><div class="kpi-value">${fmt(val(open))}</div><div class="small muted mt-10">${open.length} draft / sent</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Needs chasing</div><div class="kpi-value" style="color:${chase.length?'var(--warning)':'inherit'};">${chase.length}</div><div class="small muted mt-10">${fmt(val(chase))} waiting on a reply</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Win rate</div><div class="kpi-value">${decided.length?Math.round(won.length/decided.length*100):0}%</div><div class="small muted mt-10">${won.length} won of ${decided.length} decided</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Expiring this week</div><div class="kpi-value">${expiring.length}</div><div class="small muted mt-10">${fmt(val(expiring))}</div></div>
+  </div>
+  <div class="tabs">${filters.map(([k,l])=>`<button class="tab-btn ${SW_QUOTE_FILTER===k?'active':''}" onclick="SW_QUOTE_FILTER='${k}'; renderPage();">${l} <span class="small muted">${all.filter(q=>{ const o=SW_QUOTE_FILTER; SW_QUOTE_FILTER=k; const r=match(q); SW_QUOTE_FILTER=o; return r; }).length}</span></button>`).join('')}</div>
+  <div class="card"><table>
+    <thead><tr><th>Quote #</th><th>Customer</th><th>Status</th><th>Total (inc. VAT)</th><th>Sent</th><th>Valid until</th><th></th></tr></thead>
+    <tbody>${rows || (all.length ? emptyRow(7,'No quotes in this view.') : emptyRow(7,'No quotes yet — create one, or turn a lead into a quote from the Leads board.','+ New Quote','openQuoteModal()'))}</tbody>
+  </table></div>
+  <p class="small muted mt-10">A sent quote needs chasing after 3 days without a follow-up. Chasing logs the date so it drops off the list for another 3 days.</p>`;
 }
-
 const QUOTE_TYPES = ['Fixed Price','Itemised','Day Rate','Emergency Callout'];
 const QUOTE_STATUSES = ['draft','sent','approved','declined','expired'];
 
-function openQuoteModal(id, jobId){
+function openQuoteModal(id, jobId, prefill){
   const q = id ? DB.quotes.find(x=>x.id===id) : null;
+  prefill = prefill || {};
+  window._quoteLeadId = q ? (q.leadId||null) : (prefill.leadId||null);
   const items = q ? q.items.slice() : [{desc:'',qty:1,unit:'ea',rate:0}];
   window._editingItems = items;
   const job = jobId ? DB.jobs.find(j=>j.id===jobId) : (q&&q.jobId? DB.jobs.find(j=>j.id===q.jobId) : null);
@@ -3385,8 +3863,9 @@ function openQuoteModal(id, jobId){
             ${DB.customers.map(c=>`<option value="${c.id}" ${ (q&&q.customerId===c.id)||(job&&job.customerId===c.id) ?'selected':''}>${esc(c.name)}</option>`).join('')}
           </select>
         </div>
-        <div class="form-group"><label>Customer Name (if new)</label><input id="f-customerName" type="text" value="${q?esc(q.customerName):(job?esc(job.customerName):'')}"></div>
+        <div class="form-group"><label>Customer Name (if new)</label><input id="f-customerName" type="text" value="${q?esc(q.customerName):(job?esc(job.customerName):esc(prefill.customerName||''))}"></div>
       </div>
+      ${!q && prefill.leadId?`<p class="small" style="color:var(--teal);margin-bottom:10px;">Linked to lead — saving moves it to Quoted, approving moves it to Won.</p>`:''}
       <div class="form-row">
         <div class="form-group"><label>Quote Type</label><select id="f-type">${QUOTE_TYPES.map(t=>`<option ${q&&q.type===t?'selected':''}>${t}</option>`).join('')}</select></div>
         <div class="form-group"><label>Status</label><select id="f-status">${QUOTE_STATUSES.map(s=>`<option value="${s}" ${q&&q.status===s?'selected':''}>${s}</option>`).join('')}</select></div>
@@ -3399,7 +3878,7 @@ function openQuoteModal(id, jobId){
       <table class="line-items-table" id="line-items-table"><thead><tr><th>Description</th><th style="width:60px;">Qty</th><th style="width:70px;">Unit</th><th style="width:90px;">Rate £</th><th style="width:90px;">Total</th><th></th></tr></thead>
         <tbody id="line-items-body"></tbody>
       </table>
-      <button class="btn btn-ghost btn-sm mt-10" onclick="addLineItem()">+ Add Line Item</button>
+      ${lineItemAdders()}
       <div class="divider"></div>
       <div id="line-items-totals" style="text-align:right;"></div>
       <div class="form-group mt-10"><label>Notes / Terms</label><textarea id="f-notes">${q?esc(q.notes):DB.settings.terms}</textarea></div>
@@ -3407,7 +3886,8 @@ function openQuoteModal(id, jobId){
     <div class="modal-foot">
       ${q?`<button class="btn btn-danger" onclick="deleteQuote('${q.id}')">Delete</button>`:''}
       ${q?`<button class="btn btn-ghost" onclick="printDoc('quote','${q.id}')">PDF / Print</button>`:''}
-      ${q&&q.status!=='approved'?`<button class="btn btn-dark" onclick="convertQuoteToJob('${q.id}')">Convert to Job</button>`:''}
+      ${q&&['sent','draft'].includes(q.status)?`<button class="btn btn-ghost" onclick="closeModal(); swOpenChase('quote','${q.id}')">📣 Chase</button>`:''}
+      ${q&&!q.jobId?`<button class="btn btn-dark" onclick="convertQuoteToJob('${q.id}')">✓ Won → Create Job</button>`:''}
       ${q?`<button class="btn btn-dark" onclick="convertQuoteToInvoice('${q.id}')">Convert to Invoice</button>`:''}
       <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
       <button class="btn btn-gold" onclick="saveQuote('${q?q.id:''}','${jobId||(q?q.jobId||'':'')}')">${q?'Save Changes':'Create Quote'}</button>
@@ -3430,6 +3910,17 @@ function renderLineItems(){
   updateTotals();
 }
 function addLineItem(){ window._editingItems.push({desc:'',qty:1,unit:'ea',rate:0}); renderLineItems(); }
+// "+ Add Line Item" plus, on SteadyWorks documents, a price-book picker.
+function lineItemAdders(){
+  const sf = String(currentRoute||'').startsWith('sf-');
+  const book = (DB.priceBook||[]).slice().sort((a,b)=>String(a.category).localeCompare(String(b.category))||String(a.name).localeCompare(String(b.name)));
+  const cats = [...new Set(book.map(i=>i.category||'Other'))];
+  return `<div class="flex gap-8 mt-10" style="flex-wrap:wrap;align-items:center;">
+    <button class="btn btn-ghost btn-sm" onclick="addLineItem()">+ Add Line Item</button>
+    ${!sf ? (book.length ? `<select style="width:auto;max-width:320px;" onchange="if(this.value){ pbAddToDoc(this.value); this.value=''; }"><option value="">📒 Add from price book…</option>${cats.map(c=>`<optgroup label="${esc(c)}">${book.filter(i=>(i.category||'Other')===c).map(i=>`<option value="${i.id}">${esc(i.name)} — ${fmt(i.rate)}/${esc(i.unit||'ea')}</option>`).join('')}</optgroup>`).join('')}</select>`
+      : `<span class="small muted">Tip: set up a <a style="color:var(--teal);cursor:pointer;" onclick="closeModal(); navigate('price-book')">price book</a> to add standard jobs in one click.</span>`) : ''}
+  </div>`;
+}
 function removeLineItem(i){ window._editingItems.splice(i,1); renderLineItems(); }
 function updateLineItem(i,field,val){
   window._editingItems[i][field] = (field==='qty'||field==='rate') ? Number(val)||0 : val;
@@ -3462,7 +3953,7 @@ function updateTotals(){
   document.getElementById('line-items-totals').innerHTML = `
     <div class="small">Subtotal: <strong>${fmt(sub)}</strong></div>
     <div class="small">VAT (${vatRate}%): <strong>${fmt(vat)}</strong></div>
-    <div style="font-size:17px;font-weight:800;margin-top:4px;">Total: ${fmt(total)}</div>${retentionHtml}`;
+    <div style="font-size:17px;font-weight:800;margin-top:4px;">Total: ${fmt(total)}</div>${retentionHtml}${pbMarginHint(sub)}`;
 }
 
 function saveQuote(id, jobId){
@@ -3470,10 +3961,12 @@ function saveQuote(id, jobId){
   const customer = custSelect ? DB.customers.find(c=>c.id===custSelect) : null;
   const customerNameVal = customer ? customer.name : document.getElementById('f-customerName').value.trim();
   if(!customerNameVal){ toast('Customer is required','⚠️'); return; }
-  const validItems = window._editingItems.filter(i=>i.desc||i.qty||i.rate);
+  const validItems = window._editingItems.filter(i=>String(i.desc||'').trim() || Number(i.rate));
   if(!validItems.length){ toast('Add at least one line item','⚠️'); return; }
+  const lead = window._quoteLeadId ? DB.leads.find(l=>l.id===window._quoteLeadId) : null;
+  const linkedCustomer = customer || swEnsureCustomer(customerNameVal, {phone:lead?lead.phone:'', email:lead?lead.email:'', source:lead?lead.source:'', from:'a quote'});
   const data = {
-    customerId: customer ? customer.id : null,
+    customerId: linkedCustomer ? linkedCustomer.id : null,
     customerName: customerNameVal,
     type: document.getElementById('f-type').value,
     status: document.getElementById('f-status').value,
@@ -3481,16 +3974,21 @@ function saveQuote(id, jobId){
     validUntil: document.getElementById('f-validUntil').value,
     notes: document.getElementById('f-notes').value,
     items: validItems,
-    jobId: jobId || null
+    jobId: jobId || null,
+    leadId: lead ? lead.id : null
   };
-  if(id){ Object.assign(DB.quotes.find(q=>q.id===id), data); toast('Quote updated'); }
+  let q;
+  if(id){ q = DB.quotes.find(x=>x.id===id); swQuoteStatusChange(q, data.status); Object.assign(q, data); toast('Quote updated'); }
   else {
     const quoteNumber = nextQuoteNumber();
-    DB.quotes.push(Object.assign({id:uid(), quoteNumber, createdAt:new Date().toISOString().slice(0,10)}, data));
+    q = Object.assign({id:uid(), quoteNumber, createdAt:localDateStr()}, data);
+    swQuoteStatusChange(q, data.status, true);
+    DB.quotes.push(q);
     logActivity('Quote created', quoteNumber+' — '+data.customerName);
     toast('Quote '+quoteNumber+' created');
   }
-  save(); closeModal(); renderPage();
+  swSyncLeadFromQuote(q);
+  save(); closeModal(); renderPage(); renderNav();
 }
 function deleteQuote(id){
   const q0 = DB.quotes.find(x=>x.id===id);
@@ -3502,24 +4000,32 @@ function deleteQuote(id){
 function convertQuoteToJob(qid){
   const q = DB.quotes.find(x=>x.id===qid);
   if(!q) return;
-  q.status='approved'; 
+  swQuoteStatusChange(q, 'approved');
+  q.status='approved';
   const jobNumber = nextJobNumber();
   const t = calcQuoteTotal(q);
-  const job = {id:uid(), jobNumber, customerId:q.customerId, customerName:q.customerName, address:'', propertyType:'Residential',
-    status:'scheduled', priority:'Medium', assignedTo:'', startDate:'', endDate:'', expectedRevenue:t.total, actualRevenue:0,
-    notes:[], photos:[], timeline:[{e:'Quote Created',d:q.createdAt},{e:'Quote Accepted',d:new Date().toISOString().slice(0,10)}]};
+  const cust = q.customerId ? DB.customers.find(c=>c.id===q.customerId) : swEnsureCustomer(q.customerName, {from:'a quote'});
+  const lead = q.leadId ? DB.leads.find(l=>l.id===q.leadId) : null;
+  const job = {id:uid(), jobNumber, customerId:cust?cust.id:null, customerName:q.customerName, address:cust?cust.address||'':'', propertyType:cust?cust.propertyType||'Residential':'Residential',
+    status:'scheduled', priority:'Medium', assignedTo:'', startDate:'', endDate:'', expectedRevenue:t.total, actualRevenue:0, quoteId:q.id, leadId:q.leadId||null, source:lead?lead.source:'',
+    notes:[], photos:[], costLines:[], documents:[], variations:[], phases:[], timeline:[{e:'Quote Created',d:q.createdAt},{e:'Quote Accepted',d:localDateStr()}]};
   q.jobId = job.id;
   DB.jobs.push(job);
-  save(); closeModal();
+  swSyncLeadFromQuote(q);
+  logActivity('Quote won', q.quoteNumber+' → '+jobNumber);
+  save(); closeModal(); renderNav();
   toast('Job '+jobNumber+' created from quote');
   navigate('jobs', job.id);
 }
 function convertQuoteToInvoice(qid){
   const q = DB.quotes.find(x=>x.id===qid);
   if(!q) return;
+  // Quote already has a job: build the invoice from the job, so approved variations
+  // are included and marked invoiced, and the job moves on to Invoiced.
+  if(q.jobId && DB.jobs.some(j=>j.id===q.jobId)){ closeModal(); swInvoiceFromJob(q.jobId); return; }
   const invoiceNumber = nextInvoiceNumber();
   const due = new Date(); due.setDate(due.getDate()+14);
-  const inv = {id:uid(), invoiceNumber, jobId:q.jobId||null, customerId:q.customerId, customerName:q.customerName,
+  const inv = {id:uid(), invoiceNumber, jobId:q.jobId||null, quoteId:q.id, customerId:q.customerId, customerName:q.customerName,
     status:'draft', items: q.items.slice(), vatRate:q.vatRate, dueDate:due.toISOString().slice(0,10), amountPaid:0,
     notes:q.notes, createdAt:new Date().toISOString().slice(0,10)};
   DB.invoices.push(inv);
@@ -3533,9 +4039,9 @@ let INVOICE_SELECTED = new Set();
 function view_invoices(){
   const due7 = DB.invoices.filter(i=>{const dd=daysUntil(i.dueDate); return i.status!=='paid' && dd!==null && dd>=0 && dd<=7;}).length;
   const totals = {
-    outstanding: DB.invoices.filter(i=>i.status!=='paid').reduce((s,i)=>s+calcInvoiceTotal(i).total,0),
-    paid: DB.invoices.filter(i=>i.status==='paid').reduce((s,i)=>s+calcInvoiceTotal(i).total,0),
-    overdue: DB.invoices.filter(i=>i.status==='overdue').reduce((s,i)=>s+calcInvoiceTotal(i).total,0),
+    outstanding: DB.invoices.filter(i=>i.status!=='paid').reduce((s,i)=>s+invoiceOutstanding(i),0),
+    paid: DB.invoices.reduce((s,i)=>s+tgInvoiceReceived(i),0),
+    overdue: DB.invoices.filter(i=>invoiceStatus(i)==='overdue').reduce((s,i)=>s+invoiceOutstanding(i),0),
   };
   const retained = DB.invoices.filter(i=>(Number(i.retentionPct)||0)>0).reduce((s,i)=>s+calcInvoiceTotal(i).retention,0);
   const sorted = DB.invoices.slice().sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));
@@ -3548,17 +4054,18 @@ function view_invoices(){
       <td onclick="event.stopPropagation();"><input type="checkbox" ${INVOICE_SELECTED.has(inv.id)?'checked':''} onchange="toggleInvoiceSelect('${inv.id}')"></td>
       <td><strong>${esc(inv.invoiceNumber)}</strong></td>
       <td>${esc(inv.customerName)}</td>
-      <td>${statusPill(inv.status)}</td>
+      <td>${statusPill(invoiceStatus(inv))}</td>
       <td>${fmt(t.total)}</td>
       <td>${t.retentionPct?`${t.retentionPct}% (${fmt(t.retention)})`:'—'}</td>
       <td>${fmt(inv.amountPaid||0)}</td>
       <td>${fmtDate(inv.dueDate)}</td>
+      <td onclick="event.stopPropagation();" style="white-space:nowrap;">${inv.status!=='paid'?`<button class="icon-btn" title="Record payment" onclick="swOpenRecordPayment('${inv.id}')">💷</button>`:''}${inv.status!=='paid'&&inv.status!=='draft'?`<button class="icon-btn" title="Chase" onclick="swOpenChase('invoice','${inv.id}')">📣</button>`:''}</td>
     </tr>`;
   }).join('');
   return `
   <div class="grid grid-4" style="margin-bottom:18px;">
     <div class="card kpi-card"><div class="kpi-label">Outstanding</div><div class="kpi-value">${fmt(totals.outstanding)}</div></div>
-    <div class="card kpi-card"><div class="kpi-label">Paid (all time)</div><div class="kpi-value">${fmt(totals.paid)}</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Received (all time)</div><div class="kpi-value">${fmt(totals.paid)}</div></div>
     <div class="card kpi-card"><div class="kpi-label">Overdue</div><div class="kpi-value" style="color:var(--danger);">${fmt(totals.overdue)}</div></div>
     <div class="card kpi-card"><div class="kpi-label">Held in Retention</div><div class="kpi-value">${fmt(retained)}</div></div>
   </div>
@@ -3571,8 +4078,8 @@ function view_invoices(){
     <button class="btn btn-ghost btn-sm" style="margin-left:auto;" onclick="INVOICE_SELECTED.clear(); renderPage();">Clear</button>
   </div>`:''}
   <div class="card"><table>
-    <thead><tr><th style="width:34px;"><input type="checkbox" ${allSelected?'checked':''} onchange="toggleAllInvoicesSelect(this.checked)" aria-label="Select all invoices"></th><th>Invoice #</th><th>Customer</th><th>Status</th><th>Total</th><th>Retention</th><th>Paid</th><th>Due Date</th></tr></thead>
-    <tbody>${rows || '<tr><td colspan="8" class="muted" style="text-align:center;padding:30px;">No invoices yet</td></tr>'}</tbody>
+    <thead><tr><th style="width:34px;"><input type="checkbox" ${allSelected?'checked':''} onchange="toggleAllInvoicesSelect(this.checked)" aria-label="Select all invoices"></th><th>Invoice #</th><th>Customer</th><th>Status</th><th>Total</th><th>Retention</th><th>Paid</th><th>Due Date</th><th></th></tr></thead>
+    <tbody>${rows || emptyRow(9,'No invoices yet.','+ New Invoice','openInvoiceModal()')}</tbody>
   </table></div>`;
 }
 function toggleInvoiceSelect(id){
@@ -3586,7 +4093,7 @@ function toggleAllInvoicesSelect(checked){
 }
 function bulkMarkInvoices(status){
   const ids = [...INVOICE_SELECTED];
-  ids.forEach(id=>{ const inv = DB.invoices.find(i=>i.id===id); if(inv) inv.status = status; });
+  ids.forEach(id=>{ const inv = DB.invoices.find(i=>i.id===id); if(inv){ const prevReceived = tgInvoiceReceived(inv); inv.status = status; tgSyncInvoicePayment(DB, 'sw', inv, new Date(), {prevReceived}); } });
   logActivity('Bulk invoice update', ids.length+' invoice(s) marked '+status);
   save(); INVOICE_SELECTED.clear(); renderPage();
   toast(ids.length+' invoice(s) marked '+status);
@@ -3604,6 +4111,7 @@ function bulkDeleteInvoices(){
 const INVOICE_STATUSES = ['draft','sent','paid','partial','overdue'];
 
 function openInvoiceModal(id, jobId){
+  window._invoiceFromJobVariations = null;
   const inv = id ? DB.invoices.find(x=>x.id===id) : null;
   const items = inv ? inv.items.slice() : [{desc:'',qty:1,unit:'ea',rate:0}];
   window._editingItems = items;
@@ -3636,24 +4144,27 @@ function openInvoiceModal(id, jobId){
         <div class="form-group"><label>VAT Rate (%)</label><input id="f-vatRate" type="number" value="${inv?inv.vatRate:DB.settings.vatRate}"></div>
       </div>
       <div class="form-row">
-        <div class="form-group"><label>Due Date</label><input id="f-dueDate" type="date" value="${inv?inv.dueDate:''}"></div>
+        <div class="form-group"><label>Due Date</label><input id="f-dueDate" type="date" value="${inv?inv.dueDate:(()=>{ const d=new Date(); d.setDate(d.getDate()+(Number(DB.settings.paymentTermsDays)||14)); return localDateStr(d); })()}"></div>
         <div class="form-group"><label>Amount Paid (£)</label><input id="f-amountPaid" type="number" value="${inv?inv.amountPaid:0}"></div>
       </div>
       <div class="form-row">
         <div class="form-group"><label>Retention % (held until defects period ends)</label><input id="f-retentionPct" type="number" step="0.5" value="${inv?(Number(inv.retentionPct)||0):0}" onchange="updateTotals()"></div>
-        <div></div>
+        <div class="form-group"><label>Card payment link for this invoice (optional)</label><input id="f-payLink" type="text" placeholder="${esc(DB.settings.paymentLink||'Uses the default from Settings')}" value="${inv?esc(inv.paymentLink||''):''}"></div>
       </div>
       <label>Line Items</label>
       <table class="line-items-table" id="line-items-table"><thead><tr><th>Description</th><th style="width:60px;">Qty</th><th style="width:70px;">Unit</th><th style="width:90px;">Rate £</th><th style="width:90px;">Total</th><th></th></tr></thead>
         <tbody id="line-items-body"></tbody>
       </table>
-      <button class="btn btn-ghost btn-sm mt-10" onclick="addLineItem()">+ Add Line Item</button>
+      ${lineItemAdders()}
       <div class="divider"></div>
       <div id="line-items-totals" style="text-align:right;"></div>
       <div class="form-group mt-10"><label>Notes / Payment Terms</label><textarea id="f-notes">${inv?esc(inv.notes):DB.settings.terms}</textarea></div>
     </div>
     <div class="modal-foot">
       ${inv?`<button class="btn btn-danger" onclick="deleteInvoice('${inv.id}')">Delete</button>`:''}
+      ${inv&&inv.status!=='paid'&&inv.status!=='draft'?`<button class="btn btn-ghost" onclick="closeModal(); swOpenChase('invoice','${inv.id}')">📣 Chase</button>`:''}
+      ${inv&&inv.status!=='paid'?`<button class="btn btn-ghost" onclick="copyPayDetails('${inv.id}')">📋 Payment details</button>`:''}
+      ${inv&&inv.status!=='paid'?`<button class="btn btn-success" onclick="closeModal(); swOpenRecordPayment('${inv.id}')">💷 Record Payment</button>`:''}
       ${inv&&(Number(inv.retentionPct)||0)>0?`<button class="btn btn-ghost" onclick="releaseRetention('${inv.id}')">Release Retention</button>`:''}
       ${inv?`<button class="btn btn-ghost" onclick="printDoc('invoice','${inv.id}')">PDF / Print</button>`:''}
       <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
@@ -3667,7 +4178,7 @@ function saveInvoice(id, jobId){
   const customer = custSelect ? DB.customers.find(c=>c.id===custSelect) : null;
   const customerNameVal = customer ? customer.name : document.getElementById('f-customerName').value.trim();
   if(!customerNameVal){ toast('Customer is required','⚠️'); return; }
-  const validItems = window._editingItems.filter(i=>i.desc||i.qty||i.rate);
+  const validItems = window._editingItems.filter(i=>String(i.desc||'').trim() || Number(i.rate));
   if(!validItems.length){ toast('Add at least one line item','⚠️'); return; }
   const dueDateVal = document.getElementById('f-dueDate').value;
   if(!dueDateVal){ toast('Due date is required','⚠️'); return; }
@@ -3679,17 +4190,29 @@ function saveInvoice(id, jobId){
     dueDate: dueDateVal,
     amountPaid: Number(document.getElementById('f-amountPaid').value)||0,
     retentionPct: Number(document.getElementById('f-retentionPct').value)||0,
+    paymentLink: (document.getElementById('f-payLink')||{value:''}).value.trim(),
     notes: document.getElementById('f-notes').value,
     items: validItems,
     jobId: jobId || null
   };
-  if(id){ Object.assign(DB.invoices.find(i=>i.id===id), data); toast('Invoice updated'); }
+  if(!data.customerId){ const c = swEnsureCustomer(customerNameVal, {from:'an invoice'}); if(c) data.customerId = c.id; }
+  let inv, prevReceived = 0;
+  if(id){ inv = DB.invoices.find(i=>i.id===id); prevReceived = tgInvoiceReceived(inv); Object.assign(inv, data); toast('Invoice updated'); }
   else {
     const invoiceNumber = nextInvoiceNumber();
-    DB.invoices.push(Object.assign({id:uid(), invoiceNumber, createdAt:new Date().toISOString().slice(0,10)}, data));
+    inv = Object.assign({id:uid(), invoiceNumber, createdAt:new Date().toISOString().slice(0,10)}, data);
+    DB.invoices.push(inv);
+    // invoice built from a finished job: its approved variations are now billed
+    if(window._invoiceFromJobVariations && window._invoiceFromJobVariations===inv.jobId){
+      const j = DB.jobs.find(x=>x.id===inv.jobId);
+      if(j){ (j.variations||[]).filter(v=>v.status==='Approved').forEach(v=>v.status='Invoiced'); j.timeline = j.timeline||[]; j.timeline.push({e:'Invoice Sent', d:localDateStr()}); if(j.status==='completed') j.status='invoiced'; }
+      window._invoiceFromJobVariations = null;
+    }
     logActivity('Invoice created', invoiceNumber+' — '+data.customerName);
     toast('Invoice '+invoiceNumber+' created');
   }
+  const pay = tgSyncInvoicePayment(DB, 'sw', inv, new Date(), {prevReceived});
+  if(pay) setTimeout(()=>toast(gbp(pay.amount)+' received — counted toward SteadyWorks target','💷'), 900);
   save(); closeModal(); renderPage();
 }
 function deleteInvoice(id){
@@ -3721,7 +4244,7 @@ function applyTemplateToForm(kind, templateId){
   toast('Template applied — adjust as needed');
 }
 function saveCurrentAsTemplate(kind){
-  const items = (window._editingItems||[]).filter(i=>i.desc||i.qty||i.rate).map(i=>Object.assign({},i));
+  const items = (window._editingItems||[]).filter(i=>String(i.desc||'').trim() || Number(i.rate)).map(i=>Object.assign({},i));
   if(!items.length){ toast('Add at least one line item first'); return; }
   const name = prompt('Save this as a template called:');
   if(!name || !name.trim()) return;
@@ -3775,7 +4298,7 @@ function openTemplateEditorModal(kind, id){
       <table class="line-items-table" id="line-items-table"><thead><tr><th>Description</th><th style="width:60px;">Qty</th><th style="width:70px;">Unit</th><th style="width:90px;">Rate £</th><th style="width:90px;">Total</th><th></th></tr></thead>
         <tbody id="line-items-body"></tbody>
       </table>
-      <button class="btn btn-ghost btn-sm mt-10" onclick="addLineItem()">+ Add Line Item</button>
+      ${lineItemAdders()}
       <div class="divider"></div>
       <div id="line-items-totals" style="text-align:right;"></div>
       <div class="form-group mt-10"><label>Default Notes</label><textarea id="f-notes">${t?esc(t.notes||''):DB.settings.terms}</textarea></div>
@@ -3792,7 +4315,7 @@ function saveTemplate(kind, id){
     name: document.getElementById('f-name').value.trim()||'Untitled Template',
     vatRate: Number(document.getElementById('f-vatRate').value)||0,
     notes: document.getElementById('f-notes').value,
-    items: window._editingItems.filter(i=>i.desc||i.qty||i.rate)
+    items: window._editingItems.filter(i=>String(i.desc||'').trim() || Number(i.rate))
   };
   if(kind==='quote') data.type = document.getElementById('f-type').value;
   if(id){ Object.assign(DB.templates[kind].find(t=>t.id===id), data); toast('Template updated'); }
@@ -3863,6 +4386,7 @@ function printDoc(kind, id){
   else if(kind==='invoice') doc = DB.invoices.find(i=>i.id===id);
   else if(kind==='sf-quote') doc = (DB.sfQuotes||[]).find(q=>q.id===id);
   else doc = (DB.sfInvoices||[]).find(i=>i.id===id);
+  if(!doc){ toast('Could not find that document','⚠️'); return; }
   const t = isQuote ? calcQuoteTotal(doc) : calcInvoiceTotal(doc);
   const number = isQuote ? doc.quoteNumber : doc.invoiceNumber;
   const toName = isSf ? doc.clientName : doc.customerName;
@@ -3871,6 +4395,7 @@ function printDoc(kind, id){
   const logoSrc = isSf ? 'assets/sf-logo.svg' : 'assets/logo.png';
   const accentSoft = isSf ? '#E6F7F5' : '#FDECEC';
   const w = window.open('','_blank');
+  if(!w){ toast('Allow pop-ups for this site to print / save as PDF','⚠️'); return; }
   w.document.write(`
     <html><head><title>${number}</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -3912,7 +4437,8 @@ function printDoc(kind, id){
     <p style="margin-top:24px;font-weight:500;">To: <span class="to-line">${esc(toName)}</span></p>
     <table><thead><tr><th>Description</th><th>Qty</th><th>Unit</th><th>Rate</th><th>Total</th></tr></thead>
     <tbody>${doc.items.map(i=>`<tr><td>${esc(i.desc)}</td><td>${i.qty}</td><td>${esc(i.unit)}</td><td>${fmt(i.rate)}</td><td>${fmt(i.qty*i.rate)}</td></tr>`).join('')}</tbody></table>
-    <div class="tot">Subtotal: ${fmt(t.sub)}<br>VAT (${doc.vatRate}%): ${fmt(t.vat)}<br><strong style="font-size:19px;">Total: ${fmt(t.total)}</strong></div>
+    <div class="tot">Subtotal: ${fmt(t.sub)}<br>VAT (${doc.vatRate}%): ${fmt(t.vat)}<br><strong style="font-size:19px;">Total: ${fmt(t.total)}</strong>${!isQuote&&Number(doc.amountPaid)>0?`<br>Paid: ${fmt(doc.amountPaid)}<br><strong>Balance due: ${fmt(Math.max(0,t.total-Number(doc.amountPaid)))}</strong>`:''}${!isQuote&&doc.dueDate?`<br><span style="font-size:12.5px;">Due by ${fmtDate(doc.dueDate)}</span>`:''}</div>
+    ${!isQuote && !isSf ? payDetailsPrintHtml(doc, accent, accentSoft) : ''}
     <p style="margin-top:30px;font-size:12px;color:#666;">${esc(doc.notes||'')}</p>
     </body></html>`);
   w.document.close(); w.print();
@@ -3922,112 +4448,118 @@ function printDoc(kind, id){
 const ASSET_CATEGORIES = ['Cash & Bank','Equipment & Tools','Vehicles','Property','Investments','Other'];
 const LIABILITY_CATEGORIES = ['Loans','Credit Cards','Tax Owed','Supplier Credit','Other'];
 
+/* Cash basis, one definition across the app:
+   revenue  = money received (inc VAT) — see receivedEntries()
+   VAT      = VAT inside that money, estimated from the invoices it came from (only if VAT registered)
+   costs    = logged expenses + acquisition spend + expansion spend (log ad spend in one place only)
+   profit   = revenue ex VAT − costs
+   cash     = money received − costs − owner pay taken   (VAT you've collected is still in here, and is owed) */
 function accountingRollup(){
-  const now = new Date();
-  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-  const startOfYear = new Date(now.getFullYear(), 0, 1);
-  const sum = list => list.reduce((s,i)=>s+calcInvoiceTotal(i).total,0);
-  const sumFrom = (list, from) => list.filter(i=>new Date(i.createdAt)>=from).reduce((s,i)=>s+calcInvoiceTotal(i).total,0);
-  const expSum = (list, from) => (list||[]).filter(e=>!from || new Date(e.date)>=from).reduce((s,e)=>s+Number(e.amount||0),0);
+  const now = new Date(), today = localDateStr(now);
+  const mStart = monthStartStr(now), yStart = now.getFullYear()+'-01-01', q3 = localDateStr(new Date(now.getFullYear(), now.getMonth()-2, 1));
+  const vatReg = DB.settings.vatRegistered !== false;
+  // costs = operating costs (expenses except ads) + acquisition (ad expenses + logged acquisition) + expansion spend
+  const costsFor = (biz, from) => tgOpCosts(DB, biz, from||'1900-01-01', today) + tgAcqSpend(DB, biz, from||'1900-01-01', today) + tgExpansionSpent(DB, biz, from||'1900-01-01', today);
   const openStatuses = i => i.status!=='paid' && i.status!=='cancelled' && i.status!=='declined';
-
-  const swPaid = DB.invoices.filter(i=>i.status==='paid');
-  const sfPaid = (DB.sfInvoices||[]).filter(i=>i.status==='paid');
-
-  const swRevenueMTD = sumFrom(swPaid, startOfMonth), sfRevenueMTD = sumFrom(sfPaid, startOfMonth);
-  const swRevenueYTD = sumFrom(swPaid, startOfYear), sfRevenueYTD = sumFrom(sfPaid, startOfYear);
-  const swRevenueAll = sum(swPaid), sfRevenueAll = sum(sfPaid);
-  const swExpMTD = expSum(DB.expenses, startOfMonth), sfExpMTD = expSum(DB.sfExpenses, startOfMonth);
-  const swExpYTD = expSum(DB.expenses, startOfYear), sfExpYTD = expSum(DB.sfExpenses, startOfYear);
-  const swExpAll = expSum(DB.expenses), sfExpAll = expSum(DB.sfExpenses);
-  const sfMRR = (DB.sfClients||[]).filter(c=>c.status==='active').reduce((s,c)=>s+Number(c.mrr||0),0);
-  const swOutstanding = DB.invoices.filter(openStatuses).reduce((s,i)=>s+calcInvoiceTotal(i).total,0);
-  const sfOutstanding = (DB.sfInvoices||[]).filter(openStatuses).reduce((s,i)=>s+calcInvoiceTotal(i).total,0);
-
+  const per = (biz, from) => {
+    const rec = receivedSum(biz, from, today);
+    const costs = costsFor(biz, from);
+    const vat = vatReg ? rec.vat : 0;
+    return {revenue:rec.gross, vat, net:rec.gross-vat, costs, profit:rec.gross-vat-costs};
+  };
+  const sw = {m:per('sw',mStart), y:per('sw',yStart), a:per('sw',null)}, sf = {m:per('sf',mStart), y:per('sf',yStart), a:per('sf',null)};
+  const owner = tgOwnerPaid(DB, 'all', '1900-01-01', today);
+  const sfMRR = (DB.sfClients||[]).filter(c=>c.status==='active' && c.billingType!=='one-off').reduce((s,c)=>s+Number(c.mrr||0),0);
+  const swOutstanding = DB.invoices.filter(openStatuses).reduce((s,i)=>s+invoiceOutstanding(i),0);
+  const sfOutstanding = (DB.sfInvoices||[]).filter(openStatuses).reduce((s,i)=>s+invoiceOutstanding(i),0);
+  const legacyCount = receivedEntries(DB,'all').filter(e=>e.legacy).length;
   return {
-    swRevenueMTD, sfRevenueMTD, revenueMTD: swRevenueMTD+sfRevenueMTD,
-    swRevenueYTD, sfRevenueYTD, revenueYTD: swRevenueYTD+sfRevenueYTD,
-    swRevenueAll, sfRevenueAll, revenueAll: swRevenueAll+sfRevenueAll,
-    swExpMTD, sfExpMTD, expensesMTD: swExpMTD+sfExpMTD,
-    swExpYTD, sfExpYTD, expensesYTD: swExpYTD+sfExpYTD,
-    swExpAll, sfExpAll, expensesAll: swExpAll+sfExpAll,
+    vatRegistered: vatReg, legacyCount,
+    swRevenueMTD:sw.m.revenue, sfRevenueMTD:sf.m.revenue, revenueMTD:sw.m.revenue+sf.m.revenue,
+    swRevenueYTD:sw.y.revenue, sfRevenueYTD:sf.y.revenue, revenueYTD:sw.y.revenue+sf.y.revenue,
+    swRevenueAll:sw.a.revenue, sfRevenueAll:sf.a.revenue, revenueAll:sw.a.revenue+sf.a.revenue,
+    vatMTD:sw.m.vat+sf.m.vat, vatYTD:sw.y.vat+sf.y.vat, vatAll:sw.a.vat+sf.a.vat,
+    vatLast3m: vatReg ? receivedSum('all', q3, today).vat : 0,
+    swExpMTD:sw.m.costs, sfExpMTD:sf.m.costs, expensesMTD:sw.m.costs+sf.m.costs,
+    swExpYTD:sw.y.costs, sfExpYTD:sf.y.costs, expensesYTD:sw.y.costs+sf.y.costs,
+    swExpAll:sw.a.costs, sfExpAll:sf.a.costs, expensesAll:sw.a.costs+sf.a.costs,
+    swProfitMTD:sw.m.profit, sfProfitMTD:sf.m.profit, profitMTD:sw.m.profit+sf.m.profit,
+    swProfitYTD:sw.y.profit, sfProfitYTD:sf.y.profit, profitYTD:sw.y.profit+sf.y.profit,
+    netMTD:sw.m.net+sf.m.net, netYTD:sw.y.net+sf.y.net,
+    acqAll: tgAcqSpend(DB,'all','1900-01-01',today), expansionAll: tgExpansionSpent(DB,'all','1900-01-01',today), ownerPayAll: owner,
     sfMRR, swOutstanding, sfOutstanding, outstandingAll: swOutstanding+sfOutstanding,
-    cashPosition: (swRevenueAll+sfRevenueAll) - (swExpAll+sfExpAll)
+    cashPosition: (sw.a.revenue+sf.a.revenue) - (sw.a.costs+sf.a.costs) - owner
   };
 }
 
 function view_accounting(){
   const r = accountingRollup();
-  const profitMTD = r.revenueMTD - r.expensesMTD;
-  const profitYTD = r.revenueYTD - r.expensesYTD;
-  const marginMTD = r.revenueMTD ? Math.round((profitMTD/r.revenueMTD)*100) : 0;
-
+  const marginMTD = r.netMTD ? Math.round((r.profitMTD/r.netMTD)*100) : 0;
   return `
   <div class="card" style="background:rgba(34,197,94,.08);border-color:rgba(34,197,94,.3);margin-bottom:18px;">
-    <p class="small muted">Cash-basis figures pulled from paid invoices and logged expenses across SteadyWorks + SteadyFlow — not a live bank balance. UGC/Cookbook/Animation aren't included yet since they don't have a tracked ledger.</p>
+    <p class="small muted"><strong style="color:var(--text);">Cash basis:</strong> revenue is money actually received (deposits, part and full payments, retainers), on the day it arrived. It's the same figure Targets uses.
+    ${r.vatRegistered?'Profit is shown <strong style="color:var(--text);">ex VAT</strong>. The VAT you collect is owed to HMRC (estimated from your invoices).':'You\'re set as not VAT registered, so no VAT is taken off.'}
+    Costs are logged expenses plus acquisition and expansion spend, so log ad spend in one place only. This isn't a bank balance or formal accounts.
+    ${r.legacyCount?`<br><span style="color:var(--warning);">${r.legacyCount} older paid invoice${r.legacyCount===1?' is':'s are'} counted by invoice date because the payment date isn't known. <a style="color:var(--teal);cursor:pointer;" onclick="setTgTab('ledger'); setTimeout(tgOpenImport,200);">Import them with real dates →</a></span>`:''}</p>
   </div>
   <div class="grid grid-4" style="margin-bottom:18px;">
-    <div class="card kpi-card"><div class="kpi-label">Revenue (this month)</div><div class="kpi-value">${fmt(r.revenueMTD)}</div><div class="small muted mt-10">SW ${fmt(r.swRevenueMTD)} · SF ${fmt(r.sfRevenueMTD)}</div></div>
-    <div class="card kpi-card"><div class="kpi-label">Expenses (this month)</div><div class="kpi-value">${fmt(r.expensesMTD)}</div><div class="small muted mt-10">SW ${fmt(r.swExpMTD)} · SF ${fmt(r.sfExpMTD)}</div></div>
-    <div class="card kpi-card"><div class="kpi-label">Profit (this month)</div><div class="kpi-value" style="color:${profitMTD<0?'var(--danger)':'inherit'};">${fmt(profitMTD)}</div><div class="small muted mt-10">${marginMTD}% margin</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Money received (this month)</div><div class="kpi-value">${fmt(r.revenueMTD)}</div><div class="small muted mt-10">SW ${fmt(r.swRevenueMTD)} · SF ${fmt(r.sfRevenueMTD)}${r.vatRegistered?' · inc '+fmt(r.vatMTD)+' VAT':''}</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Costs (this month)</div><div class="kpi-value">${fmt(r.expensesMTD)}</div><div class="small muted mt-10">SW ${fmt(r.swExpMTD)} · SF ${fmt(r.sfExpMTD)}</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Profit (this month${r.vatRegistered?', ex VAT':''})</div><div class="kpi-value" style="color:${r.profitMTD<0?'var(--danger)':'inherit'};">${fmt(r.profitMTD)}</div><div class="small muted mt-10">${marginMTD}% margin · SW ${fmt(r.swProfitMTD)} · SF ${fmt(r.sfProfitMTD)}</div></div>
     <div class="card kpi-card"><div class="kpi-label">SteadyFlow MRR</div><div class="kpi-value">${fmt(r.sfMRR)}</div><div class="small muted mt-10">Active recurring clients</div></div>
   </div>
-  <div class="grid grid-3" style="margin-bottom:18px;">
-    <div class="card kpi-card"><div class="kpi-label">Revenue (YTD)</div><div class="kpi-value">${fmt(r.revenueYTD)}</div></div>
-    <div class="card kpi-card"><div class="kpi-label">Profit (YTD)</div><div class="kpi-value" style="color:${profitYTD<0?'var(--danger)':'inherit'};">${fmt(profitYTD)}</div></div>
-    <div class="card kpi-card"><div class="kpi-label">Outstanding Invoices</div><div class="kpi-value">${fmt(r.outstandingAll)}</div><div class="small muted mt-10">SW ${fmt(r.swOutstanding)} · SF ${fmt(r.sfOutstanding)}</div></div>
+  <div class="grid grid-4" style="margin-bottom:18px;">
+    <div class="card kpi-card"><div class="kpi-label">Money received (YTD)</div><div class="kpi-value">${fmt(r.revenueYTD)}</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Profit (YTD${r.vatRegistered?', ex VAT':''})</div><div class="kpi-value" style="color:${r.profitYTD<0?'var(--danger)':'inherit'};">${fmt(r.profitYTD)}</div></div>
+    <div class="card kpi-card"><div class="kpi-label">VAT collected (last 3 months)</div><div class="kpi-value">${r.vatRegistered?fmt(r.vatLast3m):'—'}</div><div class="small muted mt-10">${r.vatRegistered?'Estimate. Check against your VAT return.':'Not VAT registered'}</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Owed to you</div><div class="kpi-value">${fmt(r.outstandingAll)}</div><div class="small muted mt-10">SW ${fmt(r.swOutstanding)} · SF ${fmt(r.sfOutstanding)}</div></div>
   </div>
   <div class="grid grid-2">
-    <div class="card"><div class="card-title">Since Tracking Began</div>
-      <div class="flex-between small mb-10"><span>Total revenue collected</span><strong>${fmt(r.revenueAll)}</strong></div>
-      <div class="flex-between small mb-10"><span>Total expenses logged</span><strong>${fmt(r.expensesAll)}</strong></div>
+    <div class="card"><div class="card-title">Since tracking began</div>
+      <div class="flex-between small mb-10"><span>Money received</span><strong>${fmt(r.revenueAll)}</strong></div>
+      <div class="flex-between small mb-10"><span>Expenses, acquisition & expansion spend</span><strong>−${fmt(r.expensesAll)}</strong></div>
+      <div class="flex-between small mb-10"><span>Owner pay taken</span><strong>−${fmt(r.ownerPayAll)}</strong></div>
       <div class="divider"></div>
       <div class="flex-between"><span>Tracked cash position</span><strong style="color:${r.cashPosition<0?'var(--danger)':'var(--success)'};">${fmt(r.cashPosition)}</strong></div>
+      ${r.vatRegistered&&r.vatAll?`<div class="small muted mt-10">Includes about ${fmt(r.vatAll)} of VAT collected. Some of it may already be paid to HMRC.</div>`:''}
     </div>
     <div class="card"><div class="card-title">Jump to</div>
       <div class="mb-10"><a style="color:var(--gold);cursor:pointer;font-weight:600;" onclick="navigate('forecast')">📈 Forecast →</a></div>
       <div class="mb-10"><a style="color:var(--gold);cursor:pointer;font-weight:600;" onclick="navigate('balance-sheet')">⚖️ Balance Sheet →</a></div>
-      <div><a style="color:var(--gold);cursor:pointer;font-weight:600;" onclick="navigate('assets-liabilities')">🏦 Assets & Liabilities →</a></div>
+      <div class="mb-10"><a style="color:var(--gold);cursor:pointer;font-weight:600;" onclick="navigate('assets-liabilities')">🏦 Assets & Liabilities →</a></div>
+      <div><a style="color:var(--gold);cursor:pointer;font-weight:600;" onclick="setTgTab('ledger')">💷 Money received ledger →</a></div>
     </div>
   </div>`;
 }
 
-function view_forecast(){
+// SteadyWorks: trailing 3-month average of money received. SteadyFlow: the higher of its
+// trailing average received and current active MRR (MRR is already inside received money,
+// so the two are never added together).
+function forecastBasis(){
   const r = accountingRollup();
+  const swAvg = receivedTrailingAvg('sw', 3);
+  const sfAvg = receivedTrailingAvg('sf', 3);
+  return {r, swAvg, sfAvg, sfMRR:r.sfMRR, sf:Math.max(sfAvg, r.sfMRR)};
+}
+function view_forecast(){
   const now = new Date();
-  const monthsBack = 3;
-  const monthKey = d => d.getFullYear()+'-'+d.getMonth();
-  const trailingAvg = (list)=>{
-    const byMonth = {};
-    for(let i=0;i<monthsBack;i++){
-      const d = new Date(now.getFullYear(), now.getMonth()-i, 1);
-      byMonth[monthKey(d)] = 0;
-    }
-    list.forEach(inv=>{
-      const k = monthKey(new Date(inv.createdAt));
-      if(k in byMonth) byMonth[k] += calcInvoiceTotal(inv).total;
-    });
-    return Object.values(byMonth).reduce((a,b)=>a+b,0) / monthsBack;
-  };
-  const swAvg = trailingAvg(DB.invoices.filter(i=>i.status==='paid'));
-  const sfAvgOneOff = trailingAvg((DB.sfInvoices||[]).filter(i=>i.status==='paid'));
-  const sfMRR = r.sfMRR;
-
+  const fb = forecastBasis();
+  const swAvg = fb.swAvg;
   const monthsAhead = 6;
   const rows = [];
   for(let i=1;i<=monthsAhead;i++){
     const d = new Date(now.getFullYear(), now.getMonth()+i, 1);
-    rows.push({label: d.toLocaleString('en-GB',{month:'short',year:'numeric'}), sw: swAvg, sf: sfMRR+sfAvgOneOff, total: swAvg+sfMRR+sfAvgOneOff});
+    rows.push({label: d.toLocaleString('en-GB',{month:'short',year:'numeric'}), sw: swAvg, sf: fb.sf, total: swAvg+fb.sf});
   }
   const totalForecast = rows.reduce((s,x)=>s+x.total,0);
 
   return `
   <div class="card" style="background:rgba(34,197,94,.08);border-color:rgba(34,197,94,.3);margin-bottom:18px;">
-    <p class="small muted">A simple projection, not a sophisticated model: SteadyWorks is projected from its trailing 3-month average of paid invoices; SteadyFlow is projected from current active MRR plus its trailing 3-month average of one-off work. Treat this as a rough steer, not a guarantee.</p>
+    <p class="small muted">A simple projection, not a model: SteadyWorks uses its average money received over the last 3 months. SteadyFlow uses whichever is higher, its 3-month average received or its current active MRR. Figures include VAT. Treat this as a rough steer, not a guarantee.</p>
   </div>
   <div class="grid grid-3" style="margin-bottom:18px;">
-    <div class="card kpi-card"><div class="kpi-label">SteadyWorks (monthly run-rate)</div><div class="kpi-value">${fmt(swAvg)}</div></div>
-    <div class="card kpi-card"><div class="kpi-label">SteadyFlow MRR</div><div class="kpi-value">${fmt(sfMRR)}</div></div>
+    <div class="card kpi-card"><div class="kpi-label">SteadyWorks (monthly run-rate)</div><div class="kpi-value">${fmt(swAvg)}</div><div class="small muted mt-10">3-month average received</div></div>
+    <div class="card kpi-card"><div class="kpi-label">SteadyFlow (monthly run-rate)</div><div class="kpi-value">${fmt(fb.sf)}</div><div class="small muted mt-10">${fb.sfMRR>fb.sfAvg?'set by active MRR '+fmt(fb.sfMRR):'3-month average received · MRR '+fmt(fb.sfMRR)}</div></div>
     <div class="card kpi-card"><div class="kpi-label">Next ${monthsAhead} months (projected)</div><div class="kpi-value">${fmt(totalForecast)}</div></div>
   </div>
   <div class="card">
@@ -4038,18 +4570,32 @@ function view_forecast(){
       <tbody>${rows.map(x=>`<tr><td>${x.label}</td><td>${fmt(x.sw)}</td><td>${fmt(x.sf)}</td><td><strong>${fmt(x.total)}</strong></td></tr>`).join('')}</tbody>
     </table>
   </div>
-  <script>setTimeout(()=>{
-    const labels=${JSON.stringify(rows.map(x=>x.label))};
-    const sw=${JSON.stringify(rows.map(x=>Math.round(x.sw)))};
-    const sf=${JSON.stringify(rows.map(x=>Math.round(x.sf)))};
-    chartSafe('chartForecast','bar',{labels,datasets:[{label:'SteadyWorks',data:sw,backgroundColor:'#E11D2A'},{label:'SteadyFlow',data:sf,backgroundColor:'#00E5CC'}]},{scales:{x:{stacked:true},y:{stacked:true}},plugins:{legend:{position:'bottom'}}});
-  },0)</script>`;
+  `;
 }
+
+function afterRender_forecast(){
+  const now = new Date();
+  const fb = forecastBasis();
+  const labels=[], sw=[], sf=[];
+  for(let i=1;i<=6;i++){ labels.push(new Date(now.getFullYear(), now.getMonth()+i, 1).toLocaleString('en-GB',{month:'short',year:'numeric'})); sw.push(Math.round(fb.swAvg)); sf.push(Math.round(fb.sf)); }
+  chartSafe('chartForecast','bar',{labels,datasets:[{label:'SteadyWorks',data:sw,backgroundColor:'#E11D2A',borderRadius:6},{label:'SteadyFlow',data:sf,backgroundColor:'#00E5CC',borderRadius:6}]},{scales:{x:{stacked:true},y:{stacked:true,ticks:{callback:v=>'£'+v}}},plugins:{legend:{position:'bottom'}}});
+}
+function expenseCategoryChart(canvasId, list, firstColor){
+  const now = new Date();
+  const byCategory = {};
+  (list||[]).filter(e=>{const d=new Date(e.date); return d.getMonth()===now.getMonth() && d.getFullYear()===now.getFullYear();})
+    .forEach(e=>{ byCategory[e.category] = (byCategory[e.category]||0)+Number(e.amount||0); });
+  const cats = Object.keys(byCategory), vals = Object.values(byCategory);
+  chartSafe(canvasId,'doughnut',{labels:cats.length?cats:['No spend this month'],datasets:[{data:vals.length?vals:[1],borderWidth:0,backgroundColor:vals.length?[firstColor,'#00A99D','#22C55E','#F59E0B','#EF4444','#7C3AED','#0EA5E9','#EC4899','#84CC16']:['#262B3D']}]},{plugins:{legend:{position:'bottom',labels:{boxWidth:10,font:{size:10}}},tooltip:{enabled:vals.length>0}}});
+}
+function afterRender_expenses(){ expenseCategoryChart('chartExpenseCat', DB.expenses, '#E11D2A'); }
+function afterRender_sf_expenses(){ expenseCategoryChart('chartSfExpenseCat', DB.sfExpenses, '#00E5CC'); }
 
 function view_balance_sheet(){
   const r = accountingRollup();
   const totalAssetsManual = (DB.assets||[]).reduce((s,a)=>s+Number(a.value||0),0);
-  const totalLiabilities = (DB.liabilities||[]).reduce((s,l)=>s+Number(l.value||0),0);
+  const vatOwed = r.vatRegistered ? r.vatLast3m : 0;
+  const totalLiabilities = (DB.liabilities||[]).reduce((s,l)=>s+Number(l.value||0),0) + vatOwed;
   const totalAssets = totalAssetsManual + Math.max(r.cashPosition,0) + r.outstandingAll;
   const equity = totalAssets - totalLiabilities;
 
@@ -4072,7 +4618,8 @@ function view_balance_sheet(){
       ${assetRows ? `<table style="margin-top:10px;"><thead><tr><th>Category</th><th>Name</th><th>Value</th></tr></thead><tbody>${assetRows}</tbody></table>` : '<p class="small muted mt-10">No other assets added yet.</p>'}
     </div>
     <div class="card"><div class="card-title">Liabilities</div>
-      ${liabRows ? `<table><thead><tr><th>Category</th><th>Name</th><th>Value</th></tr></thead><tbody>${liabRows}</tbody></table>` : '<p class="small muted">No liabilities added yet — nice.</p>'}
+      ${vatOwed?`<div class="flex-between small mb-10"><span>VAT collected, last 3 months <span class="muted">(estimate, check against your VAT return)</span></span><strong>${fmt(vatOwed)}</strong></div>`:''}
+      ${liabRows ? `<table><thead><tr><th>Category</th><th>Name</th><th>Value</th></tr></thead><tbody>${liabRows}</tbody></table>` : (vatOwed?'':'<p class="small muted">No liabilities added yet — nice.</p>')}
     </div>
   </div>`;
 }
@@ -4350,24 +4897,26 @@ function printAccountingReport(kind){
   let title, bodyHtml;
 
   if(kind==='snapshot'){
-    const profitMTD = r.revenueMTD - r.expensesMTD;
-    const profitYTD = r.revenueYTD - r.expensesYTD;
+    const profitMTD = r.profitMTD, profitYTD = r.profitYTD;
     title = 'Financial Snapshot';
     bodyHtml = `
       <table><thead><tr><th>Metric</th><th>SteadyWorks</th><th>SteadyFlow</th><th>Total</th></tr></thead>
       <tbody>
-        <tr><td>Revenue (this month)</td><td>${fmt(r.swRevenueMTD)}</td><td>${fmt(r.sfRevenueMTD)}</td><td><strong>${fmt(r.revenueMTD)}</strong></td></tr>
-        <tr><td>Expenses (this month)</td><td>${fmt(r.swExpMTD)}</td><td>${fmt(r.sfExpMTD)}</td><td><strong>${fmt(r.expensesMTD)}</strong></td></tr>
-        <tr><td>Profit (this month)</td><td>${fmt(r.swRevenueMTD-r.swExpMTD)}</td><td>${fmt(r.sfRevenueMTD-r.sfExpMTD)}</td><td><strong>${fmt(profitMTD)}</strong></td></tr>
-        <tr><td>Revenue (YTD)</td><td>${fmt(r.swRevenueYTD)}</td><td>${fmt(r.sfRevenueYTD)}</td><td><strong>${fmt(r.revenueYTD)}</strong></td></tr>
-        <tr><td>Profit (YTD)</td><td></td><td></td><td><strong>${fmt(profitYTD)}</strong></td></tr>
+        <tr><td>Money received (this month)</td><td>${fmt(r.swRevenueMTD)}</td><td>${fmt(r.sfRevenueMTD)}</td><td><strong>${fmt(r.revenueMTD)}</strong></td></tr>
+        ${r.vatRegistered?`<tr><td>of which VAT (estimate)</td><td></td><td></td><td>${fmt(r.vatMTD)}</td></tr>`:''}
+        <tr><td>Costs (this month)</td><td>${fmt(r.swExpMTD)}</td><td>${fmt(r.sfExpMTD)}</td><td><strong>${fmt(r.expensesMTD)}</strong></td></tr>
+        <tr><td>Profit (this month${r.vatRegistered?', ex VAT':''})</td><td>${fmt(r.swProfitMTD)}</td><td>${fmt(r.sfProfitMTD)}</td><td><strong>${fmt(profitMTD)}</strong></td></tr>
+        <tr><td>Money received (YTD)</td><td>${fmt(r.swRevenueYTD)}</td><td>${fmt(r.sfRevenueYTD)}</td><td><strong>${fmt(r.revenueYTD)}</strong></td></tr>
+        <tr><td>Profit (YTD${r.vatRegistered?', ex VAT':''})</td><td>${fmt(r.swProfitYTD)}</td><td>${fmt(r.sfProfitYTD)}</td><td><strong>${fmt(profitYTD)}</strong></td></tr>
+        <tr><td>Owner pay taken (all time)</td><td></td><td></td><td>${fmt(r.ownerPayAll)}</td></tr>
         <tr><td>Outstanding invoices</td><td>${fmt(r.swOutstanding)}</td><td>${fmt(r.sfOutstanding)}</td><td><strong>${fmt(r.outstandingAll)}</strong></td></tr>
         <tr><td>SteadyFlow MRR</td><td></td><td></td><td><strong>${fmt(r.sfMRR)}</strong></td></tr>
         <tr><td>Tracked cash position</td><td></td><td></td><td><strong>${fmt(r.cashPosition)}</strong></td></tr>
       </tbody></table>`;
   } else if(kind==='balance-sheet'){
     const totalAssetsManual = (DB.assets||[]).reduce((s,a)=>s+Number(a.value||0),0);
-    const totalLiabilities = (DB.liabilities||[]).reduce((s,l)=>s+Number(l.value||0),0);
+    const vatOwed = r.vatRegistered ? r.vatLast3m : 0;
+    const totalLiabilities = (DB.liabilities||[]).reduce((s,l)=>s+Number(l.value||0),0) + vatOwed;
     const totalAssets = totalAssetsManual + Math.max(r.cashPosition,0) + r.outstandingAll;
     const equity = totalAssets - totalLiabilities;
     title = 'Balance Sheet';
@@ -4381,33 +4930,27 @@ function printAccountingReport(kind){
       </tbody></table>
       <h2>Liabilities</h2>
       <table><tbody>
-        ${(DB.liabilities||[]).map(l=>`<tr><td>${esc(l.name)} — ${esc(l.category)}</td><td>${fmt(l.value)}</td></tr>`).join('') || '<tr><td colspan="2">None recorded</td></tr>'}
+        ${vatOwed?`<tr><td>VAT collected, last 3 months (estimate)</td><td>${fmt(vatOwed)}</td></tr>`:''}
+        ${(DB.liabilities||[]).map(l=>`<tr><td>${esc(l.name)} — ${esc(l.category)}</td><td>${fmt(l.value)}</td></tr>`).join('') || (vatOwed?'':'<tr><td colspan="2">None recorded</td></tr>')}
         <tr><td><strong>Total Liabilities</strong></td><td><strong>${fmt(totalLiabilities)}</strong></td></tr>
       </tbody></table>
       <h2>Equity</h2>
       <table><tbody><tr><td><strong>Net Worth</strong></td><td><strong>${fmt(equity)}</strong></td></tr></tbody></table>`;
   } else {
     title = 'Revenue Forecast';
-    const monthsBack=3, monthKey=d=>d.getFullYear()+'-'+d.getMonth();
-    const trailingAvg=(list)=>{
-      const byMonth={};
-      for(let i=0;i<monthsBack;i++){ const d=new Date(now.getFullYear(),now.getMonth()-i,1); byMonth[monthKey(d)]=0; }
-      list.forEach(inv=>{ const k=monthKey(new Date(inv.createdAt)); if(k in byMonth) byMonth[k]+=calcInvoiceTotal(inv).total; });
-      return Object.values(byMonth).reduce((a,b)=>a+b,0)/monthsBack;
-    };
-    const swAvg = trailingAvg(DB.invoices.filter(i=>i.status==='paid'));
-    const sfAvgOneOff = trailingAvg((DB.sfInvoices||[]).filter(i=>i.status==='paid'));
-    const sfMRR = r.sfMRR;
+    const fb = forecastBasis();
+    const swAvg = fb.swAvg;
     const rowsHtml = [];
     for(let i=1;i<=6;i++){
       const d = new Date(now.getFullYear(), now.getMonth()+i, 1);
-      const sf = sfMRR+sfAvgOneOff;
+      const sf = fb.sf;
       rowsHtml.push(`<tr><td>${d.toLocaleString('en-GB',{month:'short',year:'numeric'})}</td><td>${fmt(swAvg)}</td><td>${fmt(sf)}</td><td><strong>${fmt(swAvg+sf)}</strong></td></tr>`);
     }
     bodyHtml = `<table><thead><tr><th>Month</th><th>SteadyWorks</th><th>SteadyFlow</th><th>Total</th></tr></thead><tbody>${rowsHtml.join('')}</tbody></table>`;
   }
 
   const w = window.open('','_blank');
+  if(!w){ toast('Allow pop-ups for this site to print / save as PDF','⚠️'); return; }
   w.document.write(`
     <html><head><title>${title}</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -4423,7 +4966,7 @@ function printAccountingReport(kind){
     </style></head><body>
     <div class="head"><h1>Steady Inc — ${title}</h1><div style="font-size:12px;color:#666;margin-top:4px;">Generated ${fmtDate(now.toISOString())}</div></div>
     ${bodyHtml}
-    <p style="margin-top:30px;font-size:11px;color:#999;">Cash-basis figures from tracked invoices and expenses — not a substitute for formal accounts.</p>
+    <p style="margin-top:30px;font-size:11px;color:#999;">Cash basis: money received (inc VAT) on the date received${r.vatRegistered?'; profit shown ex VAT, VAT figures are estimates from invoices':''}. Costs = logged expenses + acquisition + expansion spend. Not a substitute for formal accounts.</p>
     </body></html>`);
   w.document.close(); w.print();
 }
@@ -4541,7 +5084,7 @@ function view_calendar(){
     cells += `<div class="cal-cell other-month"><div class="cal-daynum">${d.getDate()}</div></div>`;
   }
   for(let day=1; day<=daysInMonth; day++){
-    const dateStr = new Date(y,m,day).toISOString().slice(0,10);
+    const dateStr = localDateStr(new Date(y,m,day));
     const isToday = today.getFullYear()===y && today.getMonth()===m && today.getDate()===day;
     const evs = allEvents.filter(e=>e.date===dateStr);
     cells += `<div class="cal-cell ${isToday?'today':''}">
@@ -4580,7 +5123,7 @@ function view_calendar(){
   </div>`;
 }
 function eventColor(type){
-  return {Job:'#E11D2A','Site Visit':'#0EA5E9',Quote:'#7C3AED',Inspection:'#EF4444','Invoice Due':'#F59E0B','Quote Expiry':'#7C3AED','Pipeline Job':'#A78BFA','Lead Scheduled':'#22C55E'}[type] || '#1A1A1A';
+  return {Job:'#E11D2A','Site Visit':'#0EA5E9',Quote:'#7C3AED',Inspection:'#EF4444','Invoice Due':'#F59E0B','Quote Expiry':'#7C3AED','Pipeline Job':'#A78BFA','Lead Scheduled':'#22C55E'}[type] || '#9CA0AE';
 }
 function calNav(dir){
   if(dir===0) calCursor = new Date();
@@ -4608,6 +5151,7 @@ function openEventModal(id){
     </div>`);
 }
 function saveEvent(id){
+  if(!requireField('f-title','Give the event a title') || !requireField('f-date','Pick a date for the event')) return;
   const data = {title:document.getElementById('f-title').value.trim()||'Untitled Event', date:document.getElementById('f-date').value, type:document.getElementById('f-evtype').value, assignedTo:document.getElementById('f-evassigned').value};
   if(id){ Object.assign(DB.events.find(e=>e.id===id), data); toast('Event updated'); }
   else { DB.events.push(Object.assign({id:uid()}, data)); toast('Event created'); }
@@ -4620,60 +5164,94 @@ function deleteEvent(id){
 }
 
 /* ===================== CUSTOMERS ===================== */
+let SW_CUST_SEARCH = '';
+function swCustomerStats(c){
+  const jobs = DB.jobs.filter(j=>j.customerId===c.id || j.customerName===c.name);
+  const invoices = DB.invoices.filter(i=>i.customerId===c.id || i.customerName===c.name);
+  const spend = invoices.reduce((s,i)=>s+tgInvoiceReceived(i),0);
+  const owed = invoices.filter(i=>i.status!=='paid').reduce((s,i)=>s+invoiceOutstanding(i),0);
+  const services = (DB.swServices||[]).filter(sv=>sv.customerId===c.id);
+  const last = jobs.map(j=>j.endDate||j.startDate).filter(Boolean).sort().pop();
+  return {jobs, invoices, spend, owed, services, last};
+}
+function swCustomerRows(){
+  const q = SW_CUST_SEARCH.trim().toLowerCase();
+  const list = DB.customers.filter(c=>!q || [c.name,c.phone,c.email,c.address].join(' ').toLowerCase().includes(q)).slice().sort((a,b)=>String(a.name).localeCompare(String(b.name)));
+  if(!list.length) return DB.customers.length ? emptyRow(7,'No customers match that search.') : emptyRow(7,'No customers yet — they\'re added automatically when you quote, book or invoice someone new, or import from your phone.','+ New Customer','openCustomerModal()');
+  return list.map(c=>{ const st = swCustomerStats(c); return `<tr class="row-link" onclick="navigate('customers','${c.id}')">
+      <td><div class="flex gap-8" style="align-items:center;"><div class="avatar">${esc(String(c.name||'?').slice(0,2).toUpperCase())}</div><div><strong>${esc(c.name)}</strong><div class="small muted">${esc(c.address||'')}</div></div></div></td>
+      <td>${esc(c.phone||'—')}</td>
+      <td>${st.jobs.length}</td>
+      <td>${st.last?fmtDate(st.last):'—'}</td>
+      <td>${fmt(st.spend)}</td>
+      <td style="color:${st.owed?'var(--warning)':'inherit'};">${st.owed?fmt(st.owed):'—'}</td>
+      <td>${st.services.length?`<span class="pill st-scheduled">🔁 ${st.services.length}</span>`:''}</td>
+    </tr>`; }).join('');
+}
 function view_customers(){
   if(currentParam) return view_customerDetail(currentParam);
-  const rows = DB.customers.map(c=>{
-    const jobs = DB.jobs.filter(j=>j.customerId===c.id || j.customerName===c.name);
-    const spend = DB.invoices.filter(i=>(i.customerId===c.id||i.customerName===c.name)&&i.status==='paid').reduce((s,i)=>s+calcInvoiceTotal(i).total,0);
-    return `<tr class="row-link" onclick="navigate('customers','${c.id}')">
-      <td><div class="flex gap-8"><div class="avatar">${esc(c.name.slice(0,2).toUpperCase())}</div><strong>${esc(c.name)}</strong></div></td>
-      <td>${esc(c.propertyType)}</td>
-      <td>${esc(c.phone)}</td>
-      <td>${esc(c.leadSource)}</td>
-      <td>${jobs.length}</td>
-      <td>${fmt(spend)}</td>
-    </tr>`;
-  }).join('');
-  return `<div class="card"><table>
-    <thead><tr><th>Customer</th><th>Type</th><th>Phone</th><th>Source</th><th>Jobs</th><th>Lifetime Spend</th></tr></thead>
-    <tbody>${rows || '<tr><td colspan="6" class="muted" style="text-align:center;padding:30px;">No customers yet</td></tr>'}</tbody>
+  const repeat = DB.customers.filter(c=>swCustomerStats(c).jobs.length>1).length;
+  return `<div class="grid grid-3" style="margin-bottom:18px;">
+    <div class="card kpi-card"><div class="kpi-label">Customers</div><div class="kpi-value">${DB.customers.length}</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Repeat customers</div><div class="kpi-value">${repeat}</div><div class="small muted mt-10">2+ jobs</div></div>
+    <div class="card kpi-card"><div class="kpi-label">On a service plan</div><div class="kpi-value">${new Set((DB.swServices||[]).filter(s=>s.status!=='paused').map(s=>s.customerId)).size}</div></div>
+  </div>
+  <div class="toolbar"><div class="search-box">🔍<input type="text" placeholder="Search name, phone, email, address…" value="${esc(SW_CUST_SEARCH)}" oninput="SW_CUST_SEARCH=this.value; const b=document.getElementById('sw-cust-body'); if(b) b.innerHTML=swCustomerRows();"></div></div>
+  <div class="card"><table>
+    <thead><tr><th>Customer</th><th>Phone</th><th>Jobs</th><th>Last job</th><th>Lifetime spend</th><th>Owed</th><th>Plans</th></tr></thead>
+    <tbody id="sw-cust-body">${swCustomerRows()}</tbody>
   </table></div>`;
 }
 function view_customerDetail(id){
   const c = DB.customers.find(x=>x.id===id);
-  if(!c) return '<div class="empty-state">Customer not found.</div>';
-  const jobs = DB.jobs.filter(j=>j.customerId===c.id || j.customerName===c.name);
+  if(!c) return '<div class="empty-state">Customer not found. <a onclick="navigate(\'customers\')" style="color:var(--gold);cursor:pointer;">Back to customers</a></div>';
+  const st = swCustomerStats(c);
   const quotes = DB.quotes.filter(q=>q.customerId===c.id || q.customerName===c.name);
-  const invoices = DB.invoices.filter(i=>i.customerId===c.id || i.customerName===c.name);
-  const spend = invoices.filter(i=>i.status==='paid').reduce((s,i)=>s+calcInvoiceTotal(i).total,0);
-  setTimeout(()=>{document.getElementById('page-title').textContent=c.name;},0);
+  setTimeout(()=>{ const t = document.getElementById('page-title'); if(t) t.textContent = c.name; },0);
+  const phoneDigits = String(c.phone||'').replace(/[^\d+]/g,'');
   return `
-  <button class="btn btn-ghost btn-sm mb-10" onclick="navigate('customers')">← All Customers</button>
-  <div class="grid grid-2" style="margin-bottom:18px;">
+  <div class="flex-between mb-10" style="flex-wrap:wrap;gap:8px;">
+    <button class="btn btn-ghost btn-sm" onclick="navigate('customers')">← All Customers</button>
+    <div class="flex gap-8" style="flex-wrap:wrap;">
+      ${c.phone?`<a class="btn btn-ghost btn-sm" href="tel:${esc(phoneDigits)}">📞 Call</a><a class="btn btn-ghost btn-sm" href="sms:${esc(phoneDigits)}">💬 Text</a>`:''}
+      ${c.email?`<a class="btn btn-ghost btn-sm" href="mailto:${esc(c.email)}">✉️ Email</a>`:''}
+      <button class="btn btn-ghost btn-sm" onclick="swOpenService(null,'${c.id}')">🔁 Service plan</button>
+      <button class="btn btn-dark btn-sm" onclick="swQuoteForCustomer('${c.id}')">+ Quote</button>
+      <button class="btn btn-gold btn-sm" onclick="openJobModal(null,{customerName:'${esc(String(c.name).replace(/'/g,"\\'"))}'})">+ Job</button>
+    </div>
+  </div>
+  <div class="grid grid-4" style="margin-bottom:18px;">
+    <div class="card kpi-card"><div class="kpi-label">Lifetime spend</div><div class="kpi-value">${fmt(st.spend)}</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Owed</div><div class="kpi-value" style="color:${st.owed?'var(--warning)':'inherit'};">${fmt(st.owed)}</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Jobs</div><div class="kpi-value">${st.jobs.length}</div><div class="small muted mt-10">${st.last?'last '+fmtDate(st.last):'none yet'}</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Quotes</div><div class="kpi-value">${quotes.length}</div><div class="small muted mt-10">${quotes.filter(q=>q.status==='approved').length} won</div></div>
+  </div>
+  <div class="grid grid-2" style="margin-bottom:18px;align-items:start;">
     <div class="card">
-      <div class="card-title">Contact Info <button class="icon-btn" aria-label="Edit customer" onclick="openCustomerModal('${c.id}')">✎</button></div>
-      <p class="small"><strong>Phone:</strong> ${esc(c.phone)}</p>
-      <p class="small mt-10"><strong>Email:</strong> ${esc(c.email)}</p>
-      <p class="small mt-10"><strong>Address:</strong> ${esc(c.address)}</p>
-      <p class="small mt-10"><strong>Property Type:</strong> ${esc(c.propertyType)}</p>
-      <p class="small mt-10"><strong>Lead Source:</strong> ${esc(c.leadSource)}</p>
+      <div class="card-title">Contact <button class="icon-btn" aria-label="Edit customer" onclick="openCustomerModal('${c.id}')">✎</button></div>
+      <p class="small"><strong>Phone:</strong> ${esc(c.phone||'—')}</p>
+      <p class="small mt-10"><strong>Email:</strong> ${esc(c.email||'—')}</p>
+      <p class="small mt-10"><strong>Address:</strong> ${esc(c.address||'—')}</p>
+      <p class="small mt-10"><strong>Property:</strong> ${esc(c.propertyType||'—')} · <strong>Source:</strong> ${esc(c.leadSource||'—')}</p>
       ${c.notes?`<div class="divider"></div><p class="small">${esc(c.notes)}</p>`:''}
     </div>
     <div class="card">
-      <div class="card-title">Summary</div>
-      <div class="flex-between small"><span class="muted">Lifetime Spend</span><strong>${fmt(spend)}</strong></div>
-      <div class="divider"></div>
-      <div class="flex-between small"><span class="muted">Total Jobs</span><strong>${jobs.length}</strong></div>
-      <div class="divider"></div>
-      <div class="flex-between small"><span class="muted">Quotes Sent</span><strong>${quotes.length}</strong></div>
-      <div class="divider"></div>
-      <div class="flex-between small"><span class="muted">Invoices</span><strong>${invoices.length}</strong></div>
+      <div class="card-title">Service plans</div>
+      ${st.services.length ? st.services.map(sv=>{ const ss = swServiceStatus(sv); return `<div class="flex-between" style="padding:8px 0;border-bottom:1px solid var(--border);gap:8px;"><div><strong class="small">${esc(sv.type)}</strong><div class="small muted">next due ${fmtDate(sv.nextDue)} · ${fmt(sv.price)}</div></div><span class="pill ${ss.cls}">${ss.label}</span></div>`; }).join('') : `<p class="small muted">No service plan. Boiler services and landlord gas-safety checks come back every year, so set one up and it'll remind you when they're due.</p><button class="btn btn-ghost btn-sm mt-10" onclick="swOpenService(null,'${c.id}')">+ Add service plan</button>`}
     </div>
   </div>
-  <div class="card">
-    <div class="card-title">Job History</div>
+  <div class="card mb-10">
+    <div class="card-title">Jobs</div>
     <table><thead><tr><th>Job #</th><th>Status</th><th>Start</th><th>Value</th></tr></thead>
-    <tbody>${jobs.map(j=>`<tr class="row-link" onclick="navigate('jobs','${j.id}')"><td><strong>${esc(j.jobNumber)}</strong></td><td>${statusPill(j.status)}</td><td>${fmtDate(j.startDate)}</td><td>${fmt(j.expectedRevenue)}</td></tr>`).join('') || '<tr><td colspan="4" class="muted" style="text-align:center;padding:20px;">No job history</td></tr>'}</tbody></table>
+    <tbody>${st.jobs.map(j=>`<tr class="row-link" onclick="navigate('jobs','${j.id}')"><td><strong>${esc(j.jobNumber)}</strong></td><td>${statusPill(j.status)}</td><td>${fmtDate(j.startDate)}</td><td>${fmt(j.expectedRevenue)}</td></tr>`).join('') || emptyRow(4,'No jobs yet')}</tbody></table>
+  </div>
+  <div class="grid grid-2" style="align-items:start;">
+    <div class="card"><div class="card-title">Quotes</div>
+      <table><thead><tr><th>Quote #</th><th>Status</th><th>Total</th></tr></thead>
+      <tbody>${quotes.map(q=>`<tr class="row-link" onclick="openQuoteModal('${q.id}')"><td><strong>${esc(q.quoteNumber)}</strong></td><td>${statusPill(q.status)}</td><td>${fmt(calcQuoteTotal(q).total)}</td></tr>`).join('') || emptyRow(3,'No quotes')}</tbody></table></div>
+    <div class="card"><div class="card-title">Invoices</div>
+      <table><thead><tr><th>Invoice #</th><th>Status</th><th>Total</th><th>Owed</th></tr></thead>
+      <tbody>${st.invoices.map(i=>`<tr class="row-link" onclick="openInvoiceModal('${i.id}')"><td><strong>${esc(i.invoiceNumber)}</strong></td><td>${statusPill(invoiceStatus(i))}</td><td>${fmt(calcInvoiceTotal(i).total)}</td><td>${i.status==='paid'?'—':fmt(invoiceOutstanding(i))}</td></tr>`).join('') || emptyRow(4,'No invoices')}</tbody></table></div>
   </div>`;
 }
 function openCustomerModal(id){
@@ -4702,6 +5280,7 @@ function openCustomerModal(id){
 function saveCustomer(id){
   const nameVal = document.getElementById('f-name').value.trim();
   if(!nameVal){ toast('Customer name is required','⚠️'); document.getElementById('f-name').focus(); return; }
+  if(!checkEmailField('f-email')) return;
   const data = {name:nameVal, phone:document.getElementById('f-phone').value, email:document.getElementById('f-email').value,
     address:document.getElementById('f-address').value, propertyType:document.getElementById('f-propertyType').value, leadSource:document.getElementById('f-leadSource').value, notes:document.getElementById('f-notes').value};
   if(id){ Object.assign(DB.customers.find(c=>c.id===id), data); toast('Customer updated'); }
@@ -4730,9 +5309,9 @@ function view_team(){
       <div class="divider"></div>
       <div class="flex-between small mb-10"><span>Availability</span><span class="pill ${e.availability==='Available'?'st-won':e.availability==='On Site'?'st-active':'st-onhold'}">${esc(e.availability)}</span></div>
       <div class="small muted mb-10">Holiday used: ${e.holidaysUsed} / ${e.holidaysTotal} days</div>
-      <div class="progress-bar"><div class="progress-bar-fill" style="width:${Math.min(100,(e.holidaysUsed/e.holidaysTotal)*100)}%"></div></div>
+      <div class="progress-bar"><div class="progress-bar-fill" style="width:${e.holidaysTotal?Math.min(100,(e.holidaysUsed/e.holidaysTotal)*100):0}%"></div></div>
     </div>`).join('');
-  return `<div class="grid grid-3">${cards || '<div class="empty-state">No team members yet</div>'}</div>`;
+  return `<div class="grid grid-3">${cards || emptyBlock('No team members yet.','+ Add Team Member','openEmployeeModal()','👷')}</div>`;
 }
 function openEmployeeModal(id){
   const e = id ? DB.employees.find(x=>x.id===id) : null;
@@ -4762,6 +5341,7 @@ function openEmployeeModal(id){
     </div>`);
 }
 function saveEmployee(id){
+  if(!requireField('f-name','Team member name is required') || !checkEmailField('f-email')) return;
   const data = {name:document.getElementById('f-name').value.trim()||'Unnamed', role:document.getElementById('f-role').value, phone:document.getElementById('f-phone').value,
     email:document.getElementById('f-email').value, quals:document.getElementById('f-quals').value, vehicle:document.getElementById('f-vehicle').value,
     holidaysUsed:Number(document.getElementById('f-holidaysUsed').value)||0, holidaysTotal:Number(document.getElementById('f-holidaysTotal').value)||25,
@@ -4814,7 +5394,7 @@ function view_timesheets(){
   return `
     <div class="card">
       <table><thead><tr><th>Team Member</th><th>Week</th><th>Total Hours</th><th>Status</th><th></th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="5" class="empty-state">No timesheets yet — add one, print a blank sheet, or import a filled one.</td></tr>'}</tbody>
+      <tbody>${rows || emptyRow(5,'No timesheets yet — add one, print a blank sheet, or import a filled one.','+ New Timesheet','openTimesheetModal()')}</tbody>
       </table>
     </div>`;
 }
@@ -4906,6 +5486,7 @@ function printBlankTimesheet(){
   const dayNames = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
   const accent = '#00E5CC';
   const w = window.open('','_blank');
+  if(!w){ toast('Allow pop-ups for this site to print / save as PDF','⚠️'); return; }
   w.document.write(`
     <html><head><title>Timesheet — ${employee?esc(employee.name):''}</title>
     <style>
@@ -4938,6 +5519,7 @@ function printTimesheet(id){
   const accent = '#00E5CC';
   const total = timesheetTotal(ts);
   const w = window.open('','_blank');
+  if(!w){ toast('Allow pop-ups for this site to print / save as PDF','⚠️'); return; }
   w.document.write(`
     <html><head><title>Timesheet — ${esc(ts.employeeName)}</title>
     <style>
@@ -5054,7 +5636,7 @@ function view_subcontractors(){
       <div class="small muted">Used on ${jobsUsing} job${jobsUsing!==1?'s':''}</div>
     </div>`;
   }).join('');
-  return `<div class="grid grid-3">${cards || '<div class="empty-state">No subcontractors yet</div>'}</div>`;
+  return `<div class="grid grid-3">${cards || emptyBlock('No subcontractors yet.','+ Add Subcontractor','openSubcontractorModal()','🦺')}</div>`;
 }
 function openSubcontractorModal(id){
   const s = id ? DB.subcontractors.find(x=>x.id===id) : null;
@@ -5082,6 +5664,7 @@ function openSubcontractorModal(id){
     </div>`);
 }
 function saveSubcontractor(id){
+  if(!requireField('f-name','Subcontractor name is required') || !checkEmailField('f-email')) return;
   const data = {name:document.getElementById('f-name').value.trim()||'Unnamed', trade:document.getElementById('f-trade').value,
     phone:document.getElementById('f-phone').value, email:document.getElementById('f-email').value,
     dayRate:Number(document.getElementById('f-dayRate').value)||0, insuranceExpiry:document.getElementById('f-insuranceExpiry').value||null,
@@ -5199,8 +5782,7 @@ function view_budget(){
   monthExpenses.forEach(e=>{ spentByCat[e.category] = (spentByCat[e.category]||0) + Number(e.amount); });
 
   const target = DB.settings.monthlyTargets[thisMonth] || (DB.settings.annualTarget/12);
-  const paidInvoices = DB.invoices.filter(i=>i.status==='paid');
-  const monthRevenue = paidInvoices.filter(i=>{const d=new Date(i.createdAt); return d.getMonth()===thisMonth && d.getFullYear()===thisYear;}).reduce((s,i)=>s+calcInvoiceTotal(i).total,0);
+  const monthRevenue = receivedInMonth('sw', now);
   const pctTarget = target? Math.round((monthRevenue/target)*100) : 0;
 
   const totalBudget = EXPENSE_CATEGORIES.reduce((s,c)=>s+Number(DB.budgets[c]||0),0);
@@ -5218,7 +5800,7 @@ function view_budget(){
       <td><input type="number" value="${budget||''}" placeholder="0" style="width:100px;" onchange="setBudget('${cat}', this.value)"></td>
       <td>${fmt(spent)}</td>
       <td>
-        <div style="background:#eee;border-radius:6px;height:8px;width:100%;max-width:160px;overflow:hidden;">
+        <div style="background:var(--card-alt);border-radius:6px;height:8px;width:100%;max-width:160px;overflow:hidden;">
           <div style="background:${barColor};height:100%;width:${Math.min(pct,100)}%;"></div>
         </div>
         <span class="small muted">${budget? pct+'%' : 'no budget set'}</span>
@@ -5244,15 +5826,17 @@ function view_budget(){
 }
 function setBudget(cat, value){
   DB.budgets[cat] = Number(value)||0;
-  save(); renderPage();
+  save(); renderPage(); toast(cat+' budget saved');
 }
 
 function view_expenses(){
   const now = new Date();
   const monthExpenses = DB.expenses.filter(e=>{const d=new Date(e.date); return d.getMonth()===now.getMonth() && d.getFullYear()===now.getFullYear();});
   const total = monthExpenses.reduce((s,e)=>s+Number(e.amount),0);
-  const monthRevenue = DB.invoices.filter(i=>i.status==='paid').filter(i=>{const d=new Date(i.createdAt); return d.getMonth()===now.getMonth() && d.getFullYear()===now.getFullYear();}).reduce((s,i)=>s+calcInvoiceTotal(i).total,0);
-  const margin = monthRevenue ? Math.round(((monthRevenue-total)/monthRevenue)*100) : 0;
+  const monthRevenue = receivedInMonth('sw', now);
+  const acc = accountingRollup();
+  const monthProfit = acc.swProfitMTD;
+  const margin = monthRevenue ? Math.round(monthProfit/monthRevenue*100) : 0;
 
   const byCategory = {};
   monthExpenses.forEach(e=>{byCategory[e.category]=(byCategory[e.category]||0)+Number(e.amount);});
@@ -5269,7 +5853,7 @@ function view_expenses(){
   return `
   <div class="grid grid-3" style="margin-bottom:18px;">
     <div class="card kpi-card"><div class="kpi-label">Monthly Expenses</div><div class="kpi-value">${fmt(total)}</div></div>
-    <div class="card kpi-card"><div class="kpi-label">Net Profit (this month)</div><div class="kpi-value">${fmt(monthRevenue-total)}</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Profit (this month${acc.vatRegistered?', ex VAT':''})</div><div class="kpi-value" style="color:${monthProfit<0?'var(--danger)':'inherit'};">${fmt(monthProfit)}</div><div class="small muted mt-10">same figure as Accounting</div></div>
     <div class="card kpi-card"><div class="kpi-label">Profit Margin</div><div class="kpi-value">${margin}%</div></div>
   </div>
   <div class="grid grid-2" style="margin-bottom:18px;">
@@ -5281,12 +5865,9 @@ function view_expenses(){
   </div>
   <div class="card"><table>
     <thead><tr><th>Category</th><th>Description</th><th>Date</th><th>Amount</th><th></th></tr></thead>
-    <tbody>${rows || '<tr><td colspan="5" class="muted" style="text-align:center;padding:30px;">No expenses logged yet</td></tr>'}</tbody>
+    <tbody>${rows || emptyRow(5,'No expenses logged yet.','+ New Expense','openExpenseModal()')}</tbody>
   </table></div>
-  <script>setTimeout(()=>{
-    const cats=${JSON.stringify(Object.keys(byCategory))}; const vals=${JSON.stringify(Object.values(byCategory))};
-    chartSafe('chartExpenseCat','doughnut',{labels:cats.length?cats:['No data'],datasets:[{data:vals.length?vals:[1],backgroundColor:['#E11D2A','#1A1A1A','#22C55E','#F59E0B','#EF4444','#7C3AED','#0EA5E9','#EC4899','#84CC16']}]},{plugins:{legend:{position:'bottom',labels:{boxWidth:10,font:{size:10}}}}});
-  },0)</script>`;
+  `;
 }
 function openExpenseModal(id){
   const e = id ? DB.expenses.find(x=>x.id===id) : null;
@@ -5308,6 +5889,7 @@ function openExpenseModal(id){
 function saveExpense(id){
   const amountVal = Number(document.getElementById('f-amount').value)||0;
   if(amountVal<=0){ toast('Enter an amount greater than £0','⚠️'); document.getElementById('f-amount').focus(); return; }
+  if(!requireField('f-date','Pick a date for the expense')) return;
   const data = {category:document.getElementById('f-category').value, amount:amountVal, desc:document.getElementById('f-desc').value, date:document.getElementById('f-date').value};
   if(id){ Object.assign(DB.expenses.find(e=>e.id===id), data); toast('Expense updated'); }
   else { DB.expenses.push(Object.assign({id:uid()}, data)); toast('Expense added'); }
@@ -5348,7 +5930,7 @@ function view_compliance(){
   </div>`:''}
   <div class="card"><table>
     <thead><tr><th>Document</th><th>Category</th><th>Issuer</th><th>Expiry</th><th>Status</th><th></th></tr></thead>
-    <tbody>${rows || '<tr><td colspan="6" class="muted" style="text-align:center;padding:30px;">No compliance documents stored yet</td></tr>'}</tbody>
+    <tbody>${rows || emptyRow(6,'No compliance documents stored yet.','+ Add Document','openComplianceModal()')}</tbody>
   </table></div>`;
 }
 function openComplianceModal(id){
@@ -5392,8 +5974,10 @@ function view_sf_expenses(){
   const now = new Date();
   const monthExpenses = DB.sfExpenses.filter(e=>{const d=new Date(e.date); return d.getMonth()===now.getMonth() && d.getFullYear()===now.getFullYear();});
   const total = monthExpenses.reduce((s,e)=>s+Number(e.amount),0);
-  const monthRevenue = (DB.sfInvoices||[]).filter(i=>i.status==='paid').filter(i=>{const d=new Date(i.createdAt); return d.getMonth()===now.getMonth() && d.getFullYear()===now.getFullYear();}).reduce((s,i)=>s+calcInvoiceTotal(i).total,0);
-  const margin = monthRevenue ? Math.round(((monthRevenue-total)/monthRevenue)*100) : 0;
+  const monthRevenue = receivedInMonth('sf', now);
+  const acc = accountingRollup();
+  const monthProfit = acc.sfProfitMTD;
+  const margin = monthRevenue ? Math.round(monthProfit/monthRevenue*100) : 0;
 
   const byCategory = {};
   monthExpenses.forEach(e=>{byCategory[e.category]=(byCategory[e.category]||0)+Number(e.amount);});
@@ -5410,7 +5994,7 @@ function view_sf_expenses(){
   return `
   <div class="grid grid-3" style="margin-bottom:18px;">
     <div class="card kpi-card"><div class="kpi-label">Monthly Expenses</div><div class="kpi-value">${fmt(total)}</div></div>
-    <div class="card kpi-card"><div class="kpi-label">Net Profit (this month)</div><div class="kpi-value">${fmt(monthRevenue-total)}</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Profit (this month${acc.vatRegistered?', ex VAT':''})</div><div class="kpi-value" style="color:${monthProfit<0?'var(--danger)':'inherit'};">${fmt(monthProfit)}</div><div class="small muted mt-10">same figure as Accounting</div></div>
     <div class="card kpi-card"><div class="kpi-label">Profit Margin</div><div class="kpi-value">${margin}%</div></div>
   </div>
   <div class="grid grid-2" style="margin-bottom:18px;">
@@ -5422,12 +6006,9 @@ function view_sf_expenses(){
   </div>
   <div class="card"><table>
     <thead><tr><th>Category</th><th>Description</th><th>Date</th><th>Amount</th><th></th></tr></thead>
-    <tbody>${rows || '<tr><td colspan="5" class="muted" style="text-align:center;padding:30px;">No expenses logged yet</td></tr>'}</tbody>
+    <tbody>${rows || emptyRow(5,'No SteadyFlow expenses logged yet.','+ New Expense','openSfExpenseModal()')}</tbody>
   </table></div>
-  <script>setTimeout(()=>{
-    const cats=${JSON.stringify(Object.keys(byCategory))}; const vals=${JSON.stringify(Object.values(byCategory))};
-    chartSafe('chartSfExpenseCat','doughnut',{labels:cats.length?cats:['No data'],datasets:[{data:vals.length?vals:[1],backgroundColor:['#00A99D','#1A1A1A','#22C55E','#F59E0B','#EF4444','#7C3AED','#0EA5E9','#EC4899','#84CC16']}]},{plugins:{legend:{position:'bottom',labels:{boxWidth:10,font:{size:10}}}}});
-  },0)</script>`;
+  `;
 }
 function openSfExpenseModal(id){
   const e = id ? DB.sfExpenses.find(x=>x.id===id) : null;
@@ -5450,6 +6031,7 @@ function openSfExpenseModal(id){
 function saveSfExpense(id){
   const amountVal = Number(document.getElementById('f-amount').value)||0;
   if(amountVal<=0){ toast('Enter an amount greater than £0','⚠️'); document.getElementById('f-amount').focus(); return; }
+  if(!requireField('f-date','Pick a date for the expense')) return;
   const data = {category:document.getElementById('f-category').value, amount:amountVal, desc:document.getElementById('f-desc').value, date:document.getElementById('f-date').value};
   DB.sfExpenses = DB.sfExpenses||[];
   if(id){ Object.assign(DB.sfExpenses.find(e=>e.id===id), data); toast('Expense updated'); }
@@ -5485,7 +6067,7 @@ function view_sf_compliance(){
   </div>`:''}
   <div class="card"><table>
     <thead><tr><th>Document</th><th>Category</th><th>Issuer</th><th>Expiry</th><th>Status</th><th></th></tr></thead>
-    <tbody>${rows || '<tr><td colspan="6" class="muted" style="text-align:center;padding:30px;">No compliance documents stored yet</td></tr>'}</tbody>
+    <tbody>${rows || emptyRow(6,'No contracts or renewals stored yet.','+ Add Document','openSfComplianceModal()')}</tbody>
   </table></div>`;
 }
 function openSfComplianceModal(id){
@@ -5569,36 +6151,36 @@ function afterRender_reports(){
   const now = new Date(); const months=[];
   for(let i=11;i>=0;i--){ months.push(new Date(now.getFullYear(), now.getMonth()-i,1)); }
   const labels = months.map(d=>d.toLocaleDateString('en-GB',{month:'short'}));
-  const rev = months.map(d=>DB.invoices.filter(i=>i.status==='paid').filter(i=>{const id=new Date(i.createdAt);return id.getMonth()===d.getMonth()&&id.getFullYear()===d.getFullYear();}).reduce((s,i)=>s+calcInvoiceTotal(i).total,0));
+  const rev = months.map(d=>receivedInMonth('sw', d));
   chartSafe('repRevenue','bar',{labels,datasets:[{label:'Revenue',data:rev,backgroundColor:'#E11D2A',borderRadius:6}]},{plugins:{legend:{display:false}}});
 
   const engPerf = {};
   DB.jobs.forEach(j=>{ if(j.assignedTo) engPerf[j.assignedTo]=(engPerf[j.assignedTo]||0)+(j.actualRevenue||j.expectedRevenue||0); });
-  chartSafe('repEngineer','bar',{labels:Object.keys(engPerf),datasets:[{label:'Revenue',data:Object.values(engPerf),backgroundColor:'#1A1A1A',borderRadius:6}]},{indexAxis:'y',plugins:{legend:{display:false}}});
+  chartSafe('repEngineer','bar',{labels:Object.keys(engPerf),datasets:[{label:'Revenue',data:Object.values(engPerf),backgroundColor:'#00A99D',borderRadius:6}]},{indexAxis:'y',plugins:{legend:{display:false}}});
 
   const srcWin = {}; const srcTotal = {};
   DB.leads.forEach(l=>{ srcTotal[l.source]=(srcTotal[l.source]||0)+1; if(l.stage==='Won'||l.stage==='Paid') srcWin[l.source]=(srcWin[l.source]||0)+1; });
   const srcLabels = Object.keys(srcTotal);
   chartSafe('repLeadSrc','bar',{labels:srcLabels,datasets:[
-    {label:'Total Leads',data:srcLabels.map(s=>srcTotal[s]),backgroundColor:'#E8E6E1',borderRadius:6},
+    {label:'Total Leads',data:srcLabels.map(s=>srcTotal[s]),backgroundColor:'#3A4058',borderRadius:6},
     {label:'Won',data:srcLabels.map(s=>srcWin[s]||0),backgroundColor:'#22C55E',borderRadius:6}
   ]},{plugins:{legend:{position:'bottom'}}});
 
   const typeRev = {Residential:0,Commercial:0};
   DB.jobs.forEach(j=>{ typeRev[j.propertyType] = (typeRev[j.propertyType]||0)+(j.actualRevenue||j.expectedRevenue||0); });
-  chartSafe('repJobType','doughnut',{labels:Object.keys(typeRev),datasets:[{data:Object.values(typeRev),backgroundColor:['#E11D2A','#1A1A1A']}]},{plugins:{legend:{position:'bottom'}}});
+  chartSafe('repJobType','doughnut',{labels:Object.keys(typeRev),datasets:[{data:Object.values(typeRev),backgroundColor:['#E11D2A','#00A99D'],borderWidth:0}]},{plugins:{legend:{position:'bottom'}}});
 }
 function generateMonthlyReport(){
   const now = new Date();
-  const rev = DB.invoices.filter(i=>i.status==='paid').filter(i=>{const d=new Date(i.createdAt);return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear();}).reduce((s,i)=>s+calcInvoiceTotal(i).total,0);
+  const rev = receivedInMonth('sw', now);
   const exp = DB.expenses.filter(e=>{const d=new Date(e.date);return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear();}).reduce((s,e)=>s+Number(e.amount),0);
   const jobsCompleted = DB.jobs.filter(j=>['completed','invoiced'].includes(j.status)).length;
   const newLeads = DB.leads.length;
-  const outstanding = DB.invoices.filter(i=>i.status!=='paid').reduce((s,i)=>s+calcInvoiceTotal(i).total,0);
+  const outstanding = DB.invoices.filter(i=>i.status!=='paid').reduce((s,i)=>s+invoiceOutstanding(i),0);
   document.getElementById('monthly-report-output').innerHTML = `
     <div class="divider"></div>
     <h3 style="font-size:15px;margin-bottom:10px;">${now.toLocaleDateString('en-GB',{month:'long',year:'numeric'})} Summary</h3>
-    <p class="small">Revenue collected: <strong>${fmt(rev)}</strong> &nbsp;|&nbsp; Expenses: <strong>${fmt(exp)}</strong> &nbsp;|&nbsp; Net profit: <strong>${fmt(rev-exp)}</strong></p>
+    <p class="small">Money received: <strong>${fmt(rev)}</strong> &nbsp;|&nbsp; Costs: <strong>${fmt(accountingRollup().swExpMTD)}</strong> &nbsp;|&nbsp; Profit${accountingRollup().vatRegistered?' (ex VAT)':''}: <strong>${fmt(accountingRollup().swProfitMTD)}</strong></p>
     <p class="small mt-10">Jobs completed to date: <strong>${jobsCompleted}</strong> &nbsp;|&nbsp; Active leads in pipeline: <strong>${newLeads}</strong> &nbsp;|&nbsp; Outstanding invoices: <strong>${fmt(outstanding)}</strong></p>
     <p class="small mt-10 muted">Report generated ${fmtDate(now.toISOString())} for SteadyWorks Ltd.</p>`;
   toast('Report generated');
@@ -5622,7 +6204,10 @@ function view_settings(){
     <div class="card">
       <div class="card-title">Tax & Default Rates</div>
       <div class="form-row">
+        <div class="form-group"><label>VAT registered?</label><select id="s-vatRegistered"><option value="yes" ${s.vatRegistered!==false?'selected':''}>Yes — show profit ex VAT</option><option value="no" ${s.vatRegistered===false?'selected':''}>No</option></select></div>
         <div class="form-group"><label>VAT Rate (%)</label><input id="s-vatRate" type="number" value="${s.vatRate}"></div>
+      </div>
+      <div class="form-row">
         <div class="form-group"><label>Annual Revenue Target (£)</label><input id="s-annualTarget" type="number" value="${s.annualTarget}"></div>
       </div>
       <div class="form-row">
@@ -5645,6 +6230,22 @@ function view_settings(){
     </div>
   </div>
   <div class="card mt-10">
+    <div class="card-title">Getting paid <span class="small muted">shown on SteadyWorks invoices and payment reminders</span></div>
+    <div class="form-row">
+      <div class="form-group"><label>Account name</label><input id="s-bankAccountName" type="text" value="${esc((s.bank||{}).accountName||'')}"></div>
+      <div class="form-group"><label>Bank</label><input id="s-bankName" type="text" value="${esc((s.bank||{}).bankName||'')}"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Sort code</label><input id="s-bankSort" type="text" inputmode="numeric" placeholder="00-00-00" value="${esc((s.bank||{}).sortCode||'')}"></div>
+      <div class="form-group"><label>Account number</label><input id="s-bankAcc" type="text" inputmode="numeric" placeholder="8 digits" value="${esc((s.bank||{}).accountNumber||'')}"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Card payment link (optional)</label><input id="s-payLink" type="text" placeholder="e.g. your Stripe, SumUp or Square payment link" value="${esc(s.paymentLink||'')}"></div>
+      <div class="form-group"><label>Default payment terms (days)</label><input id="s-payDays" type="number" min="0" value="${s.paymentTermsDays!=null?s.paymentTermsDays:14}"></div>
+    </div>
+    <p class="small muted">The app doesn't take card payments itself. Paste a payment link from your card provider and it's added to invoices and reminders so customers can pay in one tap.</p>
+  </div>
+  <div class="card mt-10">
     <div class="card-title">Default Quote / Invoice Terms</div>
     <textarea id="s-terms" style="min-height:90px;">${esc(s.terms)}</textarea>
   </div>
@@ -5653,6 +6254,11 @@ function view_settings(){
   </div>`;
 }
 function saveSettings(){
+  const sort = document.getElementById('s-bankSort').value.replace(/\D/g,''), acc = document.getElementById('s-bankAcc').value.replace(/\D/g,'');
+  if(sort && sort.length!==6){ toast('Sort code should be 6 digits','⚠️'); document.getElementById('s-bankSort').classList.add('invalid'); return; }
+  if(acc && acc.length!==8){ toast('Account number should be 8 digits','⚠️'); document.getElementById('s-bankAcc').classList.add('invalid'); return; }
+  const link = document.getElementById('s-payLink').value.trim();
+  if(link && !/^https:\/\//i.test(link)){ toast('Payment link should start with https://','⚠️'); document.getElementById('s-payLink').classList.add('invalid'); return; }
   Object.assign(DB.settings, {
     businessName: document.getElementById('s-businessName').value,
     regNo: document.getElementById('s-regNo').value,
@@ -5660,11 +6266,20 @@ function saveSettings(){
     phone: document.getElementById('s-phone').value,
     email: document.getElementById('s-email').value,
     vatRate: Number(document.getElementById('s-vatRate').value)||0,
+    vatRegistered: document.getElementById('s-vatRegistered').value!=='no',
     annualTarget: Number(document.getElementById('s-annualTarget').value)||0,
     sfMonthlyTarget: Number(document.getElementById('s-sfMonthlyTarget').value)||0,
     sfWeeklyEmailTarget: Number(document.getElementById('s-sfWeeklyEmailTarget').value)||0,
     sfWeeklyCallTarget: Number(document.getElementById('s-sfWeeklyCallTarget').value)||0,
     terms: document.getElementById('s-terms').value,
+    bank: {
+      accountName: document.getElementById('s-bankAccountName').value.trim(),
+      bankName: document.getElementById('s-bankName').value.trim(),
+      sortCode: document.getElementById('s-bankSort').value.trim(),
+      accountNumber: document.getElementById('s-bankAcc').value.trim()
+    },
+    paymentLink: document.getElementById('s-payLink').value.trim(),
+    paymentTermsDays: Math.max(0, Number(document.getElementById('s-payDays').value)||0),
     rates: {
       labour: Number(document.getElementById('s-labour').value)||0,
       callout: Number(document.getElementById('s-callout').value)||0,
@@ -5859,6 +6474,7 @@ async function postPaintNote(){
   if(!PAINT_NOTES_CACHE.find(n=>n.id===data.id)) PAINT_NOTES_CACHE.unshift(data);
   box.value = '';
   renderPage();
+  toast('Note posted');
 }
 async function deletePaintNote(id){
   confirmDelete('Delete this note?', "This can't be undone.", async ()=>{
@@ -6215,6 +6831,7 @@ async function dropPaint(ev, stageId){
   if(rec.dateAccepted!==before.dateAccepted) patch.date_accepted = rec.dateAccepted || null;
   if(rec.completedDate!==before.completedDate) patch.completed_date = rec.completedDate || null;
   if(rec.depositStatus!==before.depositStatus) patch.deposit_status = rec.depositStatus;
+  if(tgSyncPaintPayment(DB, rec, new Date(), before.depositStatus).length) save();
   const {error} = await sb.from('paint_pipeline_jobs').update(patch).eq('id', rec.id);
   if(error){ toast('Could not save that move — check your connection'); }
 }
@@ -6390,6 +7007,7 @@ async function savePaintRecord(id){
   const rec = paintRecords().find(r=>r.id===id);
   if(!rec) return;
   const newStage = document.getElementById('pf-stage').value;
+  const prevDepositStatus = rec.depositStatus;
   Object.assign(rec, {
     clientName: document.getElementById('pf-name').value.trim() || 'Unnamed',
     quoteValue: Number(document.getElementById('pf-quoteValue').value)||0,
@@ -6406,6 +7024,7 @@ async function savePaintRecord(id){
     jobType: document.getElementById('pf-jobtype').value || 'joint'
   });
   if(newStage !== rec.stage) applyPaintStageTransition(rec, newStage); else rec.stage = newStage;
+  if(tgSyncPaintPayment(DB, rec, new Date(), prevDepositStatus).length) save();
   closeModal(); renderPage();
   toast('Saved');
   const {error} = await sb.from('paint_pipeline_jobs').update({
@@ -6487,4 +7106,3341 @@ async function savePipelineSettings(){
     updated_at: new Date().toISOString()
   }).eq('id', 1);
   if(error) toast('Saved locally, but the cloud sync failed — check your connection');
+}
+
+/* ===================== STEADYFLOW — CLIENT ACQUISITION ===================== */
+/* Lewis's daily tool for winning website/marketing clients (estate agents + trades).
+   Data lives in the shared DB blob: DB.sfProspects (array, merged by id like every
+   other list) and DB.sfAcquisitionWeekly (this week's planner ticks + counts). */
+const ACQ_WEEKLY_TARGET = 4;
+const ACQ_TYPES = ['Estate Agent','Plumber','Electrician','Roofer','Builder','Other'];
+const ACQ_SOURCES = ['Cold Email','Cold Call','Facebook','Referral','LinkedIn','Lead Engine','Other'];
+const ACQ_STATUSES = ['Not Contacted','Emailed','Called','Replied','Call Booked','Proposal Sent','Negotiating','Won','Lost','On Hold'];
+const ACQ_CONTACT_STATUSES = ['Emailed','Called','Replied','Call Booked','Proposal Sent','Negotiating'];
+const ACQ_COLUMNS = [
+  {id:'prospect', label:'Prospect', statuses:['Not Contacted','On Hold'], set:'Not Contacted'},
+  {id:'contacted', label:'Contacted', statuses:['Emailed','Called'], set:'Emailed'},
+  {id:'replied', label:'Replied', statuses:['Replied'], set:'Replied'},
+  {id:'booked', label:'Call Booked', statuses:['Call Booked'], set:'Call Booked'},
+  {id:'proposal', label:'Proposal Sent', statuses:['Proposal Sent','Negotiating'], set:'Proposal Sent'},
+  {id:'won', label:'Won', statuses:['Won'], set:'Won'},
+  {id:'lost', label:'Lost', statuses:['Lost'], set:'Lost'}
+];
+// "Interested In" options. Business OS spans £690–£1,395 so pipeline value uses the middle tier.
+const ACQ_PACKAGES = [
+  {id:'starter', label:'Starter Website', oneOff:555, monthly:0, display:'£555'},
+  {id:'growth-web', label:'Growth Website', oneOff:780, monthly:0, display:'£780'},
+  {id:'pro-web', label:'Professional Website', oneOff:1200, monthly:0, display:'£1,200'},
+  {id:'bos', label:'Business OS', oneOff:990, monthly:0, display:'£690–£1,395'},
+  {id:'essentials', label:'Essentials Retainer', oneOff:0, monthly:300, display:'£300/mo'},
+  {id:'growth-ret', label:'Growth Retainer', oneOff:0, monthly:900, display:'£900/mo'},
+  {id:'full', label:'Full Marketing', oneOff:0, monthly:1500, display:'£1,500/mo'}
+];
+const ACQ_PLANNER = [
+  {key:'emails', label:'Cold emails', target:30, icon:'✉️'},
+  {key:'dms', label:'DMs', target:20, icon:'💬'},
+  {key:'calls', label:'Calls', target:10, icon:'📞'}
+];
+const ACQ_DAYS = [['mon','Monday'],['tue','Tuesday'],['wed','Wednesday'],['thu','Thursday'],['fri','Friday']];
+
+function acqPkg(id){ return ACQ_PACKAGES.find(p=>p.id===id) || null; }
+// What a prospect is worth: {oneOff, monthly}. An edited Value overrides the package price.
+function acqValue(p){
+  const pkg = acqPkg(p.package);
+  const v = Number(p.value);
+  if(!pkg) return {oneOff: v>0?v:0, monthly:0};
+  if(pkg.monthly) return {oneOff:0, monthly: v>0 ? v : pkg.monthly};
+  return {oneOff: v>0 ? v : pkg.oneOff, monthly:0};
+}
+function acqValueLabel(p){
+  const pkg = acqPkg(p.package), v = acqValue(p);
+  if(v.monthly) return fmt(v.monthly).replace('.00','')+'/mo';
+  if(pkg && pkg.id==='bos' && !(Number(p.value)>0)) return pkg.display;
+  return v.oneOff ? fmt(v.oneOff).replace('.00','') : '—';
+}
+function acqWeekStart(d){ const x = new Date(d||new Date()); x.setHours(0,0,0,0); x.setDate(x.getDate()-((x.getDay()+6)%7)); return x; }
+function acqWeekKey(){ return localDateStr(acqWeekStart()); }
+function acqInThisWeek(dateStr){ if(!dateStr) return false; const d = new Date(dateStr+'T12:00:00'); return d>=acqWeekStart() && d < new Date(acqWeekStart().getTime()+7*86400000); }
+function acqDaysSince(dateStr){ if(!dateStr) return null; const d = daysUntil(String(dateStr).slice(0,10)); return d===null ? null : -d; }
+function acqProspects(){ DB.sfProspects = DB.sfProspects||[]; return DB.sfProspects; }
+function acqActiveProspects(){ return acqProspects().filter(p=>p.status!=='Won' && p.status!=='Lost'); }
+function acqWonThisWeek(){ return acqProspects().filter(p=>p.status==='Won' && acqInThisWeek(p.wonAt)); }
+function acqIsStale(p){
+  if(p.status==='Won' || p.status==='Lost') return false;
+  const since = acqDaysSince(p.statusChangedAt || p.createdAt);
+  return since!==null && since>7;
+}
+function acqColumnFor(p){ return ACQ_COLUMNS.find(c=>c.statuses.includes(p.status)) || ACQ_COLUMNS[0]; }
+function acqSetStatus(p, status){
+  if(!p || !ACQ_STATUSES.includes(status) || p.status===status) return false;
+  const today = localDateStr();
+  p.status = status;
+  p.statusChangedAt = new Date().toISOString();
+  p.updatedAt = p.statusChangedAt;
+  if(ACQ_CONTACT_STATUSES.includes(status)) p.lastContacted = today;
+  if(status==='Call Booked') p.callBookedAt = today;
+  if(status==='Won'){ p.wonAt = p.wonAt || today; } else { p.wonAt = null; }
+  return true;
+}
+// This week's planner state — rolls over to a fresh week automatically every Monday.
+function acqWeekly(){
+  const key = acqWeekKey();
+  let w = DB.sfAcquisitionWeekly;
+  if(!w || w.weekKey!==key){
+    w = DB.sfAcquisitionWeekly = {weekKey:key, clientsWon:0, emailsDone:0, callsDone:0, dmsDone:0, days:{}, updatedAt:new Date().toISOString()};
+  }
+  w.days = w.days || {};
+  w.clientsWon = acqWonThisWeek().length;
+  const ticked = k => ACQ_DAYS.filter(([d])=>w.days[d] && w.days[d][k]).length;
+  w.emailsDone = ticked('emails')*30; w.dmsDone = ticked('dms')*20; w.callsDone = ticked('calls')*10;
+  return w;
+}
+
+/* ---------- PAGE SHELL ---------- */
+let ACQ_TAB = 'pipeline';
+try{ ACQ_TAB = localStorage.getItem('steadyworks_acq_tab') || 'pipeline'; }catch(e){}
+const ACQ_TABS = [['pipeline','Pipeline'],['email','Email Drafts'],['list','Prospects List'],['offer','Offer Builder'],['planner','Weekly Planner']];
+function setAcqTab(t){ ACQ_TAB = t; try{ localStorage.setItem('steadyworks_acq_tab', t); }catch(e){} renderPage(); }
+function view_sf_acquisition(){
+  if(!ACQ_TABS.some(([k])=>k===ACQ_TAB)) ACQ_TAB = 'pipeline';
+  const tabs = `<div class="tabs">${ACQ_TABS.map(([k,l])=>`<button class="tab-btn ${ACQ_TAB===k?'active':''}" onclick="setAcqTab('${k}')">${l}${k==='list'?` <span class="small muted">${acqProspects().length}</span>`:''}</button>`).join('')}</div>`;
+  const body = {pipeline:acqPipelineView, email:acqEmailView, list:acqListView, offer:acqOfferView, planner:acqPlannerView}[ACQ_TAB]();
+  return tabs + body;
+}
+function afterRender_sf_acquisition(){
+  if(ACQ_TAB==='list') renderAcqTable();
+  if(ACQ_TAB==='email' && window._acqOut) acqRenderOutput();
+  if(ACQ_TAB==='offer' && window._acqPitch) acqRenderPitch();
+}
+
+/* ---------- TAB: PIPELINE ---------- */
+function acqStatsBar(){
+  const now = new Date();
+  const active = acqActiveProspects().length;
+  const booked = acqProspects().filter(p=>acqInThisWeek(p.callBookedAt)).length;
+  const wonMonth = acqProspects().filter(p=>{ if(p.status!=='Won' || !p.wonAt) return false; const d=new Date(p.wonAt+'T12:00:00'); return d.getMonth()===now.getMonth() && d.getFullYear()===now.getFullYear(); }).length;
+  const mrr = acqProspects().filter(p=>p.status==='Won').reduce((s,p)=>s+acqValue(p).monthly,0);
+  const card = (label, value, sub, icon) => `<div class="card kpi-card"><div class="kpi-icon">${icon}</div><div class="kpi-label">${label}</div><div class="kpi-value">${value}</div>${sub?`<div class="small muted mt-10">${sub}</div>`:''}</div>`;
+  return `<div class="acq-stats">
+    ${card('Total Active Prospects', active, acqProspects().filter(acqIsStale).length+' need a nudge', '🎯')}
+    ${card('Calls Booked This Week', booked, '', '📞')}
+    ${card('Won This Month', wonMonth, '', '🏆')}
+    ${card('MRR from Won', fmt(mrr).replace('.00',''), 'Retainer clients', '💰')}
+  </div>`;
+}
+function acqTargetCard(){
+  const won = acqWonThisWeek().length;
+  const pct = Math.min(100, won/ACQ_WEEKLY_TARGET*100);
+  const dow = (new Date().getDay()+6)%7; // 0 = Monday
+  const daysLeft = Math.max(0, 4-dow);
+  const leftLabel = dow>=5 ? 'weekend — fresh count on Monday' : daysLeft>0 ? daysLeft+' working day'+(daysLeft===1?'':'s')+' left' : 'last working day';
+  return `<div class="card mb-10">
+    <div class="card-title">Weekly Target — ${ACQ_WEEKLY_TARGET} new clients <span class="small muted">Resets every Monday · ${leftLabel}</span></div>
+    <div class="acq-target">
+      <div class="acq-target-count" style="color:${won>=ACQ_WEEKLY_TARGET?'var(--success)':'var(--text)'};">${won} / ${ACQ_WEEKLY_TARGET}</div>
+      <div class="progress-bar"><div class="progress-bar-fill" style="width:${pct}%;${won>=ACQ_WEEKLY_TARGET?'background:var(--success);':''}"></div></div>
+      <span class="small muted">${won>=ACQ_WEEKLY_TARGET?'Target hit 🔥':(ACQ_WEEKLY_TARGET-won)+' to go'}</span>
+    </div>
+  </div>`;
+}
+function acqPipelineView(){
+  const list = acqProspects();
+  const cols = ACQ_COLUMNS.map(col=>{
+    const items = list.filter(p=>acqColumnFor(p).id===col.id).sort((a,b)=>String(b.statusChangedAt||b.createdAt).localeCompare(String(a.statusChangedAt||a.createdAt)));
+    const monthly = items.reduce((s,p)=>s+acqValue(p).monthly,0), oneOff = items.reduce((s,p)=>s+acqValue(p).oneOff,0);
+    const total = [oneOff?fmt(oneOff).replace('.00',''):'', monthly?fmt(monthly).replace('.00','')+'/mo':''].filter(Boolean).join(' + ') || '';
+    return `<div class="kanban-col acq-col-${col.id}" ondragover="event.preventDefault();this.classList.add('drag-over')" ondragleave="this.classList.remove('drag-over')" ondrop="dropProspect(event,'${col.id}')">
+      <div class="kanban-col-head"><span>${col.label} (${items.length})</span><span>${total}</span></div>
+      ${items.map(p=>{
+        const since = acqDaysSince(p.lastContacted);
+        return `<div class="kanban-card acq-card" draggable="true" ondragstart="dragProspect(event,'${p.id}')" onclick="openProspectModal('${p.id}')">
+          ${acqIsStale(p)?'<span class="acq-stale-dot" title="No status change for over 7 days"></span>':''}
+          <div class="kc-name" style="padding-right:14px;">${esc(p.business)}</div>
+          <div class="kc-meta">${esc(p.contact||'No contact name')}</div>
+          <div class="kc-row"><span class="pill st-draft" style="padding:2px 8px;font-size:10.5px;">${esc(p.type||'Other')}</span><strong style="font-size:12px;">${acqValueLabel(p)}</strong></div>
+          <div class="kc-meta" style="margin-top:6px;">${since===null?'Not contacted yet':since===0?'Contacted today':since+' day'+(since===1?'':'s')+' since contact'}${p.status==='On Hold'?' · <span style="color:var(--warning);">On hold</span>':''}</div>
+        </div>`;
+      }).join('') || '<div class="muted small" style="padding:8px 4px;">—</div>'}
+    </div>`;
+  }).join('');
+  return `${acqStatsBar()}${acqTargetCard()}
+  ${list.length ? `<div class="kanban acq-kanban">${cols}</div><p class="small muted mt-10">Drag cards between columns to update status. <span style="color:var(--warning);">●</span> = no status change for 7+ days.</p>`
+    : `<div class="card">${emptyBlock('No prospects yet. Add the first business you want to win, then work it across the board.','+ Add Prospect','openProspectModal()','🎯')}</div>`}`;
+}
+let _dragProspectId = null;
+function dragProspect(ev,id){ _dragProspectId = id; ev.target.classList.add('dragging'); }
+function dropProspect(ev, colId){
+  ev.currentTarget.classList.remove('drag-over');
+  const p = acqProspects().find(x=>x.id===_dragProspectId);
+  _dragProspectId = null;
+  const col = ACQ_COLUMNS.find(c=>c.id===colId);
+  if(!p || !col || col.statuses.includes(p.status)) return;
+  acqSetStatus(p, col.set);
+  if(p.status==='Won') logActivity('Prospect won', p.business);
+  save(); renderPage(); renderNav();
+  toast(p.status==='Won' ? p.business+' won 🎉' : 'Moved to '+col.label);
+}
+
+/* ---------- PROSPECT MODAL ---------- */
+function openProspectModal(id){
+  const p = id ? acqProspects().find(x=>x.id===id) : null;
+  const pkgId = p ? p.package : 'starter';
+  openModal(`
+    <div class="modal-head"><h2>${p?esc(p.business):'Add Prospect'}</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group"><label>Business Name *</label><input id="ap-business" type="text" value="${p?esc(p.business):''}" placeholder="e.g. Hartley & Co Estate Agents"></div>
+        <div class="form-group"><label>Contact Name</label><input id="ap-contact" type="text" value="${p?esc(p.contact||''):''}"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Type</label><select id="ap-type">${ACQ_TYPES.map(t=>`<option ${(p?p.type:'Estate Agent')===t?'selected':''}>${t}</option>`).join('')}</select></div>
+        <div class="form-group"><label>Source</label><select id="ap-source">${ACQ_SOURCES.map(t=>`<option ${(p?p.source:'Cold Email')===t?'selected':''}>${t}</option>`).join('')}</select></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Phone</label><input id="ap-phone" type="tel" value="${p?esc(p.phone||''):''}"></div>
+        <div class="form-group"><label>Email</label><input id="ap-email" type="email" value="${p?esc(p.email||''):''}"></div>
+      </div>
+      <div class="form-group"><label>Website URL</label><input id="ap-website" type="text" value="${p?esc(p.website||''):''}" placeholder="example.co.uk"></div>
+      <div class="form-row">
+        <div class="form-group"><label>Interested In</label><select id="ap-package" onchange="acqPackageChanged()">${ACQ_PACKAGES.map(k=>`<option value="${k.id}" ${pkgId===k.id?'selected':''}>${k.label} ${k.display}</option>`).join('')}</select></div>
+        <div class="form-group"><label id="ap-value-label">Value (£${acqPkg(pkgId)&&acqPkg(pkgId).monthly?' / month':''})</label><input id="ap-value" type="number" min="0" value="${p&&Number(p.value)>0?p.value:''}" placeholder="${acqPkg(pkgId)?(acqPkg(pkgId).monthly||acqPkg(pkgId).oneOff):''}"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Status</label><select id="ap-status">${ACQ_STATUSES.map(st=>`<option ${(p?p.status:'Not Contacted')===st?'selected':''}>${st}</option>`).join('')}</select></div>
+        <div class="form-group"><label>Last Contacted</label><input id="ap-lastContacted" type="date" value="${p&&p.lastContacted?p.lastContacted:''}"></div>
+      </div>
+      <div class="form-group"><label>Notes</label><textarea id="ap-notes" placeholder="Anything worth remembering — what you noticed, who you spoke to, objections…">${p?esc(p.notes||''):''}</textarea></div>
+      <p class="small muted">Leave Value blank to use the package price. Status changes stamp "last contacted" automatically.</p>
+    </div>
+    <div class="modal-foot">
+      ${p?`<button class="btn btn-danger" onclick="deleteProspect('${p.id}')">Delete</button>`:''}
+      ${p?`<button class="btn btn-ghost" onclick="acqDraftFromProspect('${p.id}')">✉️ Draft Email</button>`:''}
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-gold" onclick="saveProspect('${p?p.id:''}')">${p?'Save Changes':'Add Prospect'}</button>
+    </div>`);
+}
+function acqPackageChanged(){
+  const pkg = acqPkg(document.getElementById('ap-package').value);
+  const lbl = document.getElementById('ap-value-label'), inp = document.getElementById('ap-value');
+  if(lbl) lbl.textContent = 'Value (£'+(pkg&&pkg.monthly?' / month':'')+')';
+  if(inp){ inp.placeholder = pkg ? (pkg.monthly||pkg.oneOff) : ''; inp.value = ''; }
+}
+function saveProspect(id){
+  if(!requireField('ap-business','Business name is required') || !checkEmailField('ap-email')) return;
+  const val = id => document.getElementById(id).value;
+  const website = val('ap-website').trim();
+  const data = {
+    business: val('ap-business').trim(),
+    contact: val('ap-contact').trim(),
+    type: val('ap-type'),
+    source: val('ap-source'),
+    phone: val('ap-phone').trim(),
+    email: val('ap-email').trim(),
+    website: website && !/^https?:\/\//i.test(website) ? 'https://'+website : website,
+    package: val('ap-package'),
+    value: Number(val('ap-value'))>0 ? Number(val('ap-value')) : null,
+    notes: val('ap-notes').trim()
+  };
+  const status = val('ap-status');
+  const lastContacted = val('ap-lastContacted');
+  let p;
+  if(id){
+    p = acqProspects().find(x=>x.id===id);
+    if(!p) return;
+    Object.assign(p, data);
+  } else {
+    p = Object.assign({id:uid(), status:'Not Contacted', createdAt:localDateStr(), statusChangedAt:new Date().toISOString(), lastContacted:null, wonAt:null, callBookedAt:null}, data);
+    acqProspects().push(p);
+    logActivity('Prospect added', p.business);
+  }
+  const wasWon = p.status==='Won';
+  acqSetStatus(p, status);
+  if(lastContacted) p.lastContacted = lastContacted;
+  p.updatedAt = new Date().toISOString();
+  if(!wasWon && p.status==='Won') logActivity('Prospect won', p.business);
+  save(); closeModal(); renderPage(); renderNav();
+  toast(id ? (p.status==='Won'&&!wasWon ? p.business+' won 🎉' : 'Prospect updated') : 'Prospect added');
+}
+function deleteProspect(id){
+  const p = acqProspects().find(x=>x.id===id);
+  confirmDelete('Delete '+(p?p.business:'this prospect')+'?', "This can't be undone.", ()=>{
+    DB.sfProspects = acqProspects().filter(x=>x.id!==id);
+    save(); renderPage(); renderNav(); toast('Prospect deleted','🗑️');
+  });
+}
+
+/* ---------- TAB: PROSPECTS LIST ---------- */
+let ACQ_SEARCH = '';
+let ACQ_SORT = {key:'updated', dir:-1};
+const ACQ_TABLE_COLS = [
+  ['business','Business'],['contact','Contact'],['type','Type'],['phone','Phone'],['email','Email'],['status','Status'],
+  ['package','Package Interested In'],['source','Source'],['lastContacted','Last Contacted'],['value','Value'],['notes','Notes']
+];
+function acqListView(){
+  return `
+  <div class="toolbar">
+    <div class="search-box">🔍<input type="text" placeholder="Search business, contact, notes…" value="${esc(ACQ_SEARCH)}" oninput="ACQ_SEARCH=this.value; renderAcqTable();"></div>
+    <span class="small muted" id="acq-list-count"></span>
+    <div class="spacer"></div>
+    <button class="btn btn-ghost btn-sm" onclick="exportProspectsCSV()">⬇️ Export CSV</button>
+    <button class="btn btn-gold btn-sm" onclick="openProspectModal()">+ Add Prospect</button>
+  </div>
+  <div class="card"><table class="acq-table">
+    <thead><tr>${ACQ_TABLE_COLS.map(([k,l])=>`<th class="sortable ${ACQ_SORT.key===k?'sorted':''}" onclick="acqSortBy('${k}')">${l}${ACQ_SORT.key===k?(ACQ_SORT.dir>0?' ▲':' ▼'):''}</th>`).join('')}<th></th></tr></thead>
+    <tbody id="acq-table-body"></tbody>
+  </table></div>
+  <p class="small muted mt-10">Row colours: <span style="color:#4ADE80;">won</span> · <span style="color:#FBBF24;">call booked</span> · <span style="color:#FCA5A5;">lost</span> · orange left edge = no update for 7+ days.</p>`;
+}
+function acqSortBy(k){ ACQ_SORT = {key:k, dir: ACQ_SORT.key===k ? -ACQ_SORT.dir : 1}; renderPage(); }
+function acqSortValue(p, k){
+  if(k==='value'){ const v = acqValue(p); return v.oneOff + v.monthly*12; }
+  if(k==='status') return ACQ_STATUSES.indexOf(p.status);
+  if(k==='package'){ const pkg = acqPkg(p.package); return pkg?pkg.label:''; }
+  if(k==='updated') return p.updatedAt || p.statusChangedAt || p.createdAt || '';
+  if(k==='lastContacted') return p.lastContacted || '';
+  return String(p[k]||'').toLowerCase();
+}
+function acqFilteredSorted(){
+  const q = ACQ_SEARCH.trim().toLowerCase();
+  return acqProspects()
+    .filter(p=>!q || [p.business,p.contact,p.type,p.email,p.phone,p.notes,p.source,p.status].join(' ').toLowerCase().includes(q))
+    .slice().sort((a,b)=>{ const x=acqSortValue(a,ACQ_SORT.key), y=acqSortValue(b,ACQ_SORT.key); return (x>y?1:x<y?-1:0)*ACQ_SORT.dir; });
+}
+function renderAcqTable(){
+  const body = document.getElementById('acq-table-body');
+  if(!body) return;
+  const rows = acqFilteredSorted();
+  const countEl = document.getElementById('acq-list-count');
+  if(countEl) countEl.textContent = rows.length+' of '+acqProspects().length;
+  if(!rows.length){
+    body.innerHTML = acqProspects().length ? emptyRow(12,'No prospects match that search.') : emptyRow(12,'No prospects yet.','+ Add Prospect','openProspectModal()');
+    return;
+  }
+  body.innerHTML = rows.map(p=>{
+    const cls = [p.status==='Won'?'acq-won':'', p.status==='Lost'?'acq-lost':'', p.status==='Call Booked'?'acq-booked':'', acqIsStale(p)?'acq-overdue':''].join(' ');
+    const pkg = acqPkg(p.package);
+    return `<tr class="${cls}">
+      <td><strong>${esc(p.business)}</strong>${p.website?`<div class="small"><a href="${esc(p.website)}" target="_blank" rel="noopener" style="color:var(--teal);">${esc(p.website.replace(/^https?:\/\//i,'').replace(/\/$/,''))}</a></div>`:''}</td>
+      <td>${esc(p.contact||'—')}</td>
+      <td>${esc(p.type||'—')}</td>
+      <td>${p.phone?`<a href="tel:${esc(p.phone)}" style="color:inherit;">${esc(p.phone)}</a>`:'—'}</td>
+      <td>${p.email?`<a href="mailto:${esc(p.email)}" style="color:inherit;">${esc(p.email)}</a>`:'—'}</td>
+      <td><select onchange="acqInlineStatus('${p.id}', this.value)">${ACQ_STATUSES.map(st=>`<option ${p.status===st?'selected':''}>${st}</option>`).join('')}</select></td>
+      <td class="small">${pkg?esc(pkg.label):'—'}</td>
+      <td class="small">${esc(p.source||'—')}</td>
+      <td class="small">${p.lastContacted?fmtDate(p.lastContacted):'—'}</td>
+      <td><strong>${acqValueLabel(p)}</strong></td>
+      <td class="small muted"><div class="acq-notes" title="${esc(p.notes||'')}">${esc(p.notes||'—')}</div></td>
+      <td><button class="icon-btn" aria-label="Edit prospect" onclick="openProspectModal('${p.id}')">✎</button><button class="icon-btn" aria-label="Delete prospect" onclick="deleteProspect('${p.id}')">✕</button></td>
+    </tr>`;
+  }).join('');
+}
+function acqInlineStatus(id, status){
+  const p = acqProspects().find(x=>x.id===id);
+  if(!p) return;
+  const was = p.status;
+  if(!acqSetStatus(p, status)) return;
+  if(status==='Won' && was!=='Won') logActivity('Prospect won', p.business);
+  save(); renderAcqTable(); renderNav();
+  toast(status==='Won' ? p.business+' won 🎉' : p.business+' → '+status);
+}
+function csvCell(v){ v = v==null ? '' : String(v); return /[",\n\r]/.test(v) ? '"'+v.replace(/"/g,'""')+'"' : v; }
+function exportProspectsCSV(){
+  const rows = acqProspects();
+  if(!rows.length){ toast('No prospects to export yet','⚠️'); return; }
+  const head = ['Business','Contact','Type','Phone','Email','Website','Status','Package Interested In','Source','Last Contacted','Value (one-off £)','Value (monthly £)','Created','Won On','Notes'];
+  const lines = [head.join(',')].concat(rows.map(p=>{
+    const v = acqValue(p), pkg = acqPkg(p.package);
+    return [p.business,p.contact,p.type,p.phone,p.email,p.website,p.status,pkg?pkg.label:'',p.source,p.lastContacted,v.oneOff||'',v.monthly||'',p.createdAt,p.wonAt,p.notes].map(csvCell).join(',');
+  }));
+  const blob = new Blob(['﻿'+lines.join('\r\n')], {type:'text/csv;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'steadyflow-prospects-'+localDateStr()+'.csv';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 2000);
+  toast('Exported '+rows.length+' prospect'+(rows.length===1?'':'s'));
+}
+
+/* ---------- TAB: EMAIL DRAFTS (template logic, no AI) ---------- */
+const ACQ_GOALS = [
+  ['cold','First cold outreach'],['noreply','Follow-up — no reply'],['aftercall','Follow-up after call'],
+  ['proposal','Send proposal'],['proposalfu','Proposal follow-up'],['upsell','Upsell to retainer']
+];
+// Words/phrases the emails must never contain — swapped for plain English, including in typed input.
+const ACQ_BANNED = [
+  [/i hope this (e-?mail|message) finds you well[.,!]?\s*/gi,''],
+  [/bespoke solutions?/gi,'custom work'],[/streamlined/gi,'simpler'],[/streamlining/gi,'simplifying'],[/streamline/gi,'simplify'],
+  [/leveraging/gi,'using'],[/leverage/gi,'use'],[/seamlessly/gi,'smoothly'],[/seamless/gi,'smooth'],
+  [/unlocking/gi,'opening up'],[/unlock/gi,'open up'],[/synergy|synergies/gi,'fit'],
+  [/partnering with/gi,'working with'],[/partner with/gi,'work with'],[/excited to/gi,'keen to'],[/passionate/gi,'keen']
+];
+function acqClean(text){ let t = String(text||''); ACQ_BANNED.forEach(([re,sub])=>{ t = t.replace(re, sub); }); return t; }
+// "Mills Plumbing's" but "Hartley & Co Estate Agents'"
+function poss(name){ return /s$/i.test(name) ? name+"'" : name+"'s"; }
+function acqWords(text){ return (String(text).match(/[A-Za-z0-9£'’&%-]+/g)||[]).length; }
+const ACQ_SCENARIOS = [
+  {title:'Cold email to estate agent with bad website', d:{name:'Sarah Hartley', business:'Hartley & Co Estate Agents', type:'Estate Agent', goal:'cold', noticed:'your property search is really hard to use on a phone and the valuation form is buried at the bottom of the page'}},
+  {title:'Cold email to plumber with no website', d:{name:'Dave Mills', business:'Mills Plumbing & Heating', type:'Plumber', goal:'cold', noticed:'you have brilliant Google reviews but no website, just a Facebook page that was last updated in the spring'}},
+  {title:'Follow-up after no reply', d:{name:'James Cole', business:'Cole Electrical', type:'Electrician', goal:'noreply', noticed:'your site takes about eight seconds to load on a phone and the call button doesn\'t work'}},
+  {title:'Follow-up after discovery call', d:{name:'Priya Shah', business:'Shah Residential Lettings & Sales', type:'Estate Agent', goal:'aftercall', noticed:'most of your valuation requests still come in by phone because the online form keeps failing'}},
+  {title:'Proposal follow-up', d:{name:'Mark Turner', business:'Turner Roofing', type:'Roofer', goal:'proposalfu', noticed:'there\'s still no way for someone to send photos of their roof when they ask for a quote'}},
+  {title:'Upsell existing client to retainer', d:{name:'Lucy Grant', business:'Grant Building Services', type:'Builder', goal:'upsell', noticed:'the new project gallery is getting visits but your Google Business profile hasn\'t had a post since launch'}}
+];
+function acqDraftState(){
+  if(!window._acqDraft) window._acqDraft = {prospectId:'', name:'', business:'', type:'Estate Agent', noticed:'', goal:'cold'};
+  return window._acqDraft;
+}
+function acqDraftSet(k, v){ acqDraftState()[k] = v; }
+function acqDraftFromProspect(id){
+  const p = acqProspects().find(x=>x.id===id);
+  if(!p) return;
+  const goal = p.status==='Not Contacted' ? 'cold' : p.status==='Emailed'||p.status==='Called' ? 'noreply' : p.status==='Call Booked'||p.status==='Replied' ? 'aftercall' : (p.status==='Proposal Sent'||p.status==='Negotiating') ? 'proposalfu' : p.status==='Won' ? 'upsell' : 'cold';
+  window._acqDraft = Object.assign(acqDraftState(), {prospectId:p.id, name:p.contact||'', business:p.business, type:ACQ_TYPES.includes(p.type)?p.type:'Other', goal});
+  window._acqOut = null;
+  closeModal();
+  if(currentRoute!=='sf-acquisition'){ ACQ_TAB='email'; navigate('sf-acquisition'); } else setAcqTab('email');
+  try{ localStorage.setItem('steadyworks_acq_tab','email'); }catch(e){}
+}
+function acqLoadScenario(i){
+  const sc = ACQ_SCENARIOS[i]; if(!sc) return;
+  window._acqDraft = Object.assign({prospectId:''}, sc.d);
+  renderPage();
+  acqGenerate(true);
+}
+function acqEmailView(){
+  const d = acqDraftState();
+  return `
+  <div class="card-title">Ready-made scenarios <span class="small muted">Click to load and generate</span></div>
+  <div class="acq-scenarios">
+    ${ACQ_SCENARIOS.map((sc,i)=>`<button class="acq-scenario" onclick="acqLoadScenario(${i})"><div class="n">SCENARIO ${i+1}</div><div class="t">${esc(sc.title)}</div></button>`).join('')}
+  </div>
+  <div class="grid grid-2" style="align-items:start;">
+    <div class="card">
+      <div class="card-title">Email details</div>
+      ${acqProspects().length?`<div class="form-group"><label>Load from a prospect (optional)</label><select onchange="if(this.value) acqDraftFromProspect(this.value)"><option value="">— Pick a prospect —</option>${acqProspects().slice().sort((a,b)=>String(a.business).localeCompare(String(b.business))).map(p=>`<option value="${p.id}" ${d.prospectId===p.id?'selected':''}>${esc(p.business)}${p.contact?' — '+esc(p.contact):''}</option>`).join('')}</select></div>`:''}
+      <div class="form-row">
+        <div class="form-group"><label>Prospect Name *</label><input id="ae-name" type="text" value="${esc(d.name)}" oninput="acqDraftSet('name',this.value)" placeholder="e.g. Sarah Hartley"></div>
+        <div class="form-group"><label>Business Name *</label><input id="ae-business" type="text" value="${esc(d.business)}" oninput="acqDraftSet('business',this.value)"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Business Type</label><select id="ae-type" onchange="acqDraftSet('type',this.value)">${ACQ_TYPES.map(t=>`<option ${d.type===t?'selected':''}>${t}</option>`).join('')}</select></div>
+        <div class="form-group"><label>Email Goal</label><select id="ae-goal" onchange="acqDraftSet('goal',this.value)">${ACQ_GOALS.map(([k,l])=>`<option value="${k}" ${d.goal===k?'selected':''}>${l}</option>`).join('')}</select></div>
+      </div>
+      <div class="form-group"><label>One thing I noticed about their business *</label><textarea id="ae-noticed" oninput="acqDraftSet('noticed',this.value)" placeholder="e.g. your property search doesn't work properly on a phone">${esc(d.noticed)}</textarea></div>
+      <div class="flex gap-8" style="flex-wrap:wrap;">
+        <button class="btn btn-gold" onclick="acqGenerate()">✨ Generate Email</button>
+        <button class="btn btn-ghost" onclick="acqGenerateSms()">💬 Generate SMS Version</button>
+      </div>
+      <p class="small muted mt-10">Rules baked in: 120–180 words, opens with your observation, one line on what we do, a practical problem, a low-pressure ask. Buzzwords are swapped out automatically.</p>
+    </div>
+    <div class="card" id="acq-output">${emptyBlock('Fill in the details (or pick a scenario) and hit Generate.','','', '✉️')}</div>
+  </div>`;
+}
+function acqObservation(raw){
+  let t = acqClean(raw).trim().replace(/\s+/g,' ').replace(/[.!\s]+$/,'');
+  t = t.replace(/^(i (just )?noticed( that)?|i saw( that)?|noticed( that)?|that)\s+/i,'');
+  const first = t.split(' ')[0]||'';
+  if(/^(your|you|you're|the|there|there's|it|it's|a|an|on|when|most|some|all|no|only|how|this|that|their|they|they're|nobody|none|every|its)$/i.test(first)) t = t.charAt(0).toLowerCase()+t.slice(1);
+  return t;
+}
+function acqContext(type){
+  const ea = type==='Estate Agent';
+  const trade = {
+    Plumber:{job:'a burst pipe', who:'plumbers'}, Electrician:{job:'a fuse board that keeps tripping', who:'electricians'},
+    Roofer:{job:'a leak after a storm', who:'roofers'}, Builder:{job:'an extension they want quoting', who:'builders'},
+    Other:{job:'a job that needs doing this week', who:'local businesses'}
+  }[type] || {job:'a job that needs doing this week', who:'local businesses'};
+  return {
+    ea,
+    audience: ea ? 'independent estate agents and local trades' : 'local '+trade.who+' and trades businesses',
+    peers: ea ? 'independent agents' : trade.who,
+    enquiry: ea ? 'valuation requests' : 'calls and quote requests',
+    job: trade.job
+  };
+}
+function acqProblem(ctx, noSite, short){
+  if(ctx.ea){
+    if(noSite) return short ? 'Without a site of your own, you sit next to every competitor on the portals.' : 'Most vendors look an agent up before they book a valuation, and without a site of your own you\'re relying on the portals, where you sit right next to every competitor in town.';
+    return short ? 'Vendors check your site before booking a valuation, and a clunky one sends them elsewhere.' : 'Most vendors look you up before they book a valuation, and if the site feels slow or awkward on a phone, plenty of them quietly book the agent down the road instead. That\'s usually a quick fix: a faster site with a clear valuation form that lands straight in your inbox.';
+  }
+  if(noSite) return short ? 'People with '+ctx.job+' ring whoever looks established online first.' : 'When someone has '+ctx.job+', they search on their phone and ring the first business that looks established. Without a website, a lot of those calls go to whoever shows up first, even when your reviews are better.';
+  return short ? 'People with '+ctx.job+' ring the first site that works on their phone.' : 'When someone has '+ctx.job+', they search on their phone, tap the first site that looks trustworthy and ring that number. If your site is slow or fiddly on a phone, that call goes to someone else, even when your reviews are better.';
+}
+function acqBuildEmail(d){
+  const first = (d.name||'').trim().split(/\s+/)[0] || 'there';
+  const biz = acqClean(d.business).trim();
+  const obs = acqObservation(d.noticed);
+  const ctx = acqContext(d.type);
+  const noSite = /\b(no|don'?t have a|without a|haven'?t got a)\s+(website|site)\b|only (have )?a facebook|just a facebook/i.test(d.noticed||'');
+  const P = {}; // paragraphs: opener, what we do + problem, optional extras, CTA
+  const extras = [
+    'We keep it simple: fixed prices, no long contracts, and you own everything we build.',
+    'Happy to send over a couple of examples of work for similar '+ctx.peers+' first, if that\'s easier.',
+    'It\'s usually a smaller job than people expect, and most of it can be done without taking up much of your time.'
+  ];
+  if(d.goal==='noreply'){
+    P.open = `I had another look at ${biz} this morning, and the thing I mentioned last week still stands out: ${obs}.`;
+    P.what = `As a quick reminder, I run Steadyflow, and we build websites and handle marketing for ${ctx.audience}.`;
+    P.problem = acqProblem(ctx, noSite, false);
+    P.cta = 'If it helps, I can record a two-minute video showing exactly what I\'d change, with no call needed. Just reply "yes" and I\'ll put it together. If now isn\'t the right time, no worries at all.';
+  } else if(d.goal==='aftercall'){
+    P.open = `Thanks for the chat earlier. I've been thinking about what we covered, especially that ${obs}.`;
+    P.what = 'Just so it\'s all in one place: Steadyflow builds the site, sets up the enquiry forms and keeps the marketing ticking over, so it\'s one less job for you.';
+    P.problem = acqProblem(ctx, noSite, false);
+    P.cta = 'I\'ll put a short proposal together with fixed prices. Is there anything you\'d like me to include or leave out before I send it over?';
+  } else if(d.goal==='proposal'){
+    P.open = `While putting this together I had another look at ${biz}, and ${obs} is the first thing I'd fix.`;
+    P.what = 'Attached is the proposal from Steadyflow covering the new website and the marketing to get it in front of the right people.';
+    P.problem = `The aim is simple: more ${ctx.enquiry} coming straight to you, rather than going to whoever happens to rank above you this week.`;
+    P.cta = 'Have a read when you get a minute. If anything doesn\'t fit, tell me and I\'ll adjust it, and I\'m happy to talk it through on a quick call if that\'s easier.';
+  } else if(d.goal==='proposalfu'){
+    P.open = `I was back on ${poss(biz)} site today, and the point I flagged is still there: ${obs}.`;
+    P.what = 'Just checking the Steadyflow proposal landed okay. It covers the new site and the marketing to keep the enquiries coming in.';
+    P.problem = `I know these things slip down the list when you're busy, but every month it stays as it is, ${ctx.enquiry} keep going to competitors who are easier to find.`;
+    P.cta = 'Would a 10-minute call help to go through any questions? Or if the timing\'s wrong, just say so and I\'ll check back in a couple of months.';
+  } else if(d.goal==='upsell'){
+    P.open = `I was looking at ${poss(biz)} site this week and noticed ${obs}.`;
+    P.what = 'Alongside building sites, Steadyflow runs monthly marketing for clients: regular posts, Google Business updates, review requests and a simple monthly report.';
+    P.problem = 'A good site does its job when people can find it, but without regular activity it slowly slips down the search results and the enquiries tail off.';
+    P.cta = 'Our Essentials plan is £300 a month on a rolling basis, with no long contract. Would you be open to a quick call to see whether it\'s worth it for you?';
+    extras[0] = 'You\'d get one clear monthly update showing what was posted and how many enquiries came through.';
+  } else {
+    P.open = `I was looking at ${biz} this week and noticed ${obs}.`;
+    P.what = `I run Steadyflow, a small studio that builds websites and handles marketing for ${ctx.audience}.`;
+    P.problem = acqProblem(ctx, noSite, false);
+    P.cta = 'Would a quick 10-minute call next week be useful? If it\'s not a priority right now, no problem at all, and I won\'t keep chasing.';
+  }
+  const greeting = `Hi ${first},`;
+  const assemble = list => [greeting, P.open, P.what+' '+P.problem].concat(list.length?[list.join(' ')]:[]).concat([P.cta]).join('\n\n');
+  const used = [];
+  let text = assemble(used);
+  for(const ex of extras){
+    if(acqWords(text) >= 135) break;
+    if(acqWords(assemble(used.concat([ex]))) <= 180){ used.push(ex); text = assemble(used); }
+  }
+  text = acqClean(text);
+  const words = acqWords(text);
+  const body = text + '\n\nCheers,\nLewis\nSteadyflow · l.thomas@steadyflowmarketing.agency';
+  const subj = {
+    cold:[`Quick question about ${biz}`, `${poss(biz)} website`, `Noticed something on ${poss(biz)} site`, `More ${ctx.ea?'valuations':'calls'} for ${biz}?`, `${first}, a quick idea`],
+    noreply:[`Re: ${poss(biz)} website`, `Following up, ${first}`, `Worth a 2-minute video?`, `Still worth a look?`, `${biz}: one quick thing`],
+    aftercall:[`Good to speak, ${first}`, `Next steps for ${biz}`, `Following up on our call`, `Proposal on its way`, `${biz}: what we covered`],
+    proposal:[`Proposal for ${biz}`, `${biz}: your proposal from Steadyflow`, `Here's the plan for ${biz}`, `Proposal attached, ${first}`, `Website and marketing for ${biz}`],
+    proposalfu:[`Did the proposal land okay?`, `${biz} proposal: any questions?`, `Quick check-in, ${first}`, `Re: Proposal for ${biz}`, `Still on your list?`],
+    upsell:[`Keeping ${poss(biz)} site busy`, `A small idea for ${biz}`, `Getting more from your new website`, `${first}, quick thought on marketing`, `What's next for ${biz}`]
+  }[d.goal] || [];
+  return {body, words, subjects: subj.map(acqClean), cleaned: acqClean(d.noticed)!==String(d.noticed||'')};
+}
+function acqBuildSms(d){
+  const first = (d.name||'').trim().split(/\s+/)[0] || 'there';
+  const biz = acqClean(d.business).trim();
+  const ctx = acqContext(d.type);
+  const noSite = /\b(no|don'?t have a|without a)\s+(website|site)\b|facebook/i.test(d.noticed||'');
+  let obs = acqObservation(d.noticed);
+  const ask = {cold:'Worth a quick 10-min chat this week? No worries if not.', noreply:'Want me to send a 2-min video of what I\'d change? No worries if not.',
+    aftercall:'Thanks for the chat. Proposal coming shortly, anything to add?', proposal:'Proposal\'s in your inbox. Happy to talk it through.',
+    proposalfu:'Did the proposal land okay? Happy to answer any questions.', upsell:'Fancy a quick chat about keeping it busy each month? No pressure.'}[d.goal] || 'Worth a quick chat? No worries if not.';
+  const build = (o, withProblem) => acqClean(`Hi ${first}, Lewis from Steadyflow. I noticed ${o} at ${biz}. ${withProblem?acqProblem(ctx,noSite,true)+' ':''}${ask}`);
+  let sms = build(obs, true);
+  if(acqWords(sms)>50) sms = build(obs, false);
+  if(acqWords(sms)>50){ obs = obs.split(' ').slice(0,10).join(' ')+'…'; sms = build(obs, false); }
+  return sms;
+}
+function acqGenerate(silent){
+  const d = acqDraftState();
+  const ok = requireField('ae-name','Add the prospect\'s name') && requireField('ae-business','Add the business name') && requireField('ae-noticed','Add one thing you noticed — the email opens with it');
+  if(!ok) return;
+  const out = acqBuildEmail(d);
+  window._acqOut = Object.assign(window._acqOut||{}, out, {sms: window._acqOut && window._acqOut.forBiz===d.business ? window._acqOut.sms : null, forBiz:d.business});
+  acqRenderOutput();
+  if(!silent) toast('Email generated — '+out.words+' words');
+}
+function acqGenerateSms(){
+  const d = acqDraftState();
+  if(!requireField('ae-name','Add the prospect\'s name') || !requireField('ae-business','Add the business name') || !requireField('ae-noticed','Add one thing you noticed')) return;
+  if(!window._acqOut || window._acqOut.forBiz!==d.business) window._acqOut = Object.assign(acqBuildEmail(d), {forBiz:d.business});
+  window._acqOut.sms = acqBuildSms(d);
+  acqRenderOutput();
+  toast('SMS generated — '+acqWords(window._acqOut.sms)+' words');
+}
+function acqRenderOutput(){
+  const box = document.getElementById('acq-output');
+  const o = window._acqOut;
+  if(!box || !o) return;
+  const d = acqDraftState();
+  const ok = o.words>=120 && o.words<=180;
+  const prospect = d.prospectId ? acqProspects().find(p=>p.id===d.prospectId) : null;
+  box.innerHTML = `
+    <div class="card-title">Your email <span class="acq-wordcount ${ok?'ok':'bad'}">${o.words} words ${ok?'✓':'· aim for 120–180'}</span></div>
+    ${o.cleaned?'<p class="small" style="color:var(--warning);margin-bottom:8px;">Swapped a buzzword out of your observation to keep it plain.</p>':''}
+    <textarea id="acq-email-text" class="acq-email-out" oninput="window._acqOut.body=this.value">${esc(o.body)}</textarea>
+    <div class="flex gap-8 mt-10" style="flex-wrap:wrap;">
+      <button class="btn btn-gold btn-sm" onclick="acqCopy(document.getElementById('acq-email-text').value,'Email')">📋 Copy to Clipboard</button>
+      ${prospect && prospect.email?`<a class="btn btn-ghost btn-sm" href="mailto:${esc(prospect.email)}?subject=${encodeURIComponent(o.subjects[0]||'')}&body=${encodeURIComponent(o.body)}">✉️ Open in Mail</a>`:''}
+      ${prospect && ['Not Contacted','On Hold'].includes(prospect.status)?`<button class="btn btn-ghost btn-sm" onclick="acqMarkEmailed('${prospect.id}')">✓ Mark ${esc(prospect.business)} as Emailed</button>`:''}
+    </div>
+    <div class="divider"></div>
+    <div class="card-title" style="margin-bottom:8px;">Subject line ideas</div>
+    <ul class="acq-subjects" style="padding:0;">${o.subjects.map(sub=>`<li><span>${esc(sub)}</span><button class="icon-btn" title="Copy" onclick="acqCopy(${esc(JSON.stringify(sub))},'Subject line')">📋</button></li>`).join('')}</ul>
+    ${o.sms?`<div class="divider"></div>
+    <div class="card-title" style="margin-bottom:8px;">SMS version <span class="acq-wordcount ${acqWords(o.sms)<=50?'ok':'bad'}">${acqWords(o.sms)} words</span></div>
+    <textarea id="acq-sms-text" style="min-height:90px;" oninput="window._acqOut.sms=this.value">${esc(o.sms)}</textarea>
+    <button class="btn btn-ghost btn-sm mt-10" onclick="acqCopy(document.getElementById('acq-sms-text').value,'SMS')">📋 Copy SMS</button>`:''}`;
+}
+function acqCopy(text, label){
+  const done = ()=>toast((label||'Text')+' copied to clipboard');
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(done).catch(()=>acqCopyFallback(text, done));
+  } else acqCopyFallback(text, done);
+}
+function acqCopyFallback(text, done){
+  const ta = document.createElement('textarea'); ta.value = text; ta.style.position='fixed'; ta.style.opacity='0';
+  document.body.appendChild(ta); ta.select();
+  try{ document.execCommand('copy'); done(); }catch(e){ toast('Copy failed — select the text and copy manually','⚠️'); }
+  ta.remove();
+}
+function acqMarkEmailed(id){
+  const p = acqProspects().find(x=>x.id===id);
+  if(!p || !acqSetStatus(p,'Emailed')) return;
+  save(); acqRenderOutput(); renderNav();
+  toast(p.business+' marked as Emailed');
+}
+
+/* ---------- TAB: OFFER BUILDER (decision tree) ---------- */
+const ACQ_OFFER_PKGS = {
+  'starter':{label:'Starter Website', oneOff:555}, 'growth-web':{label:'Growth Website', oneOff:780}, 'pro-web':{label:'Professional Website', oneOff:1200},
+  'bos-essential':{label:'Business OS — Essential', oneOff:690}, 'bos-manager':{label:'Business OS — Business Manager', oneOff:990}, 'bos-ai':{label:'Business OS — AI Automation', oneOff:1395},
+  'essentials':{label:'Essentials Retainer', monthly:300}, 'growth-ret':{label:'Growth Retainer', monthly:900}, 'full':{label:'Full Marketing', monthly:1500}
+};
+const ACQ_PROBLEMS = [['leads','Not enough leads'],['presence','Poor online presence'],['time','No time to market'],['competitors','Losing to competitors'],['starting','Just starting out'],['automate','Want to automate']];
+function acqRecommend(i){
+  const ea = i.type==='Estate Agent';
+  const why = [];
+  let pkgs;
+  if(i.problem==='automate' && i.website==='decent'){
+    pkgs = [ea ? 'bos-ai' : 'bos-manager'];
+    why.push('Their website already does its job, so another site would be a hard sell. The real cost is time lost to admin and manual follow-up.');
+    why.push(ea ? 'Agents juggle valuations, viewings and vendor updates, which is exactly what the AI Automation tier takes off their plate.' : 'Business Manager handles quotes, job tracking and follow-ups, which is where a busy trade loses hours every week.');
+  } else if(i.website==='none'){
+    const site = ea ? 'growth-web' : 'starter';
+    const needsTraffic = i.social!=='decent' || i.problem==='leads' || i.problem==='competitors';
+    pkgs = needsTraffic ? [site,'essentials'] : [site];
+    why.push(ea ? 'With no website, vendors only find them on the portals, side by side with every competitor. Growth Website gives them listings and a proper valuation form, which Starter doesn\'t cover well enough for an agent.' : 'With no website, anyone searching for them finds competitors first. Starter Website is the quickest, lowest-risk way to fix that.');
+    if(needsTraffic) why.push(i.social==='none' ? 'They\'ve got no social presence either, so a site on its own would sit there unseen. Bundling Essentials gets it posted about and found on Google from day one.' : 'Their social is weak, so pairing the site with Essentials means people actually see it.');
+    else why.push('Their social is already decent, so they have an audience. They just need somewhere proper to send it. Keep it to the site and offer a retainer later.');
+    if(i.problem==='automate'){ pkgs.push('bos-essential'); why.push('They want to automate, so add Business OS Essential to catch and follow up enquiries automatically.'); }
+  } else if(i.website==='poor'){
+    let site = ea ? ((i.problem==='competitors'||i.problem==='leads') ? 'pro-web' : 'growth-web') : (i.problem==='starting' ? 'starter' : 'growth-web');
+    pkgs = [site];
+    why.push(ea ? (site==='pro-web' ? (i.problem==='competitors' ? 'They\'re losing ground to competitors, and a poor site means vendors judge them on it.' : 'They need more instructions, and a poor site means vendors judge them on it before they ever book a valuation.')+' Professional Website gives them a polished site that can stand next to the big chains.' : 'Their current site is letting them down. Growth Website fixes the basics with fast listings and a clear valuation form.')
+               : (site==='starter' ? 'They\'re just getting going, so keep the rebuild lean with Starter Website.' : 'Their site is putting customers off. Growth Website rebuilds it to load fast and get people ringing.'));
+    if(i.social!=='decent'){ pkgs.push('essentials'); why.push('Their social is '+(i.social==='none'?'non-existent':'weak')+', so Essentials keeps the new site active and visible.'); }
+    if(i.problem==='automate'){ pkgs.push('bos-essential'); why.push('Add Business OS Essential for the automation they asked about.'); }
+  } else {
+    if(i.social==='decent'){
+      if(i.problem==='leads' || i.problem==='competitors'){ pkgs = [ea ? 'full' : 'growth-ret']; why.push('Site and social are both decent, so the gap is reach and consistency. '+(ea?'Full Marketing gives an agent the volume needed to win more valuations than the competition.':'Growth Retainer adds the regular activity and Google presence to turn a decent setup into steady enquiries.')); }
+      else if(i.problem==='time'){ pkgs = ['growth-ret']; why.push('Their setup is fine. They just don\'t have time to run it. Growth Retainer hands the marketing over completely.'); }
+      else { pkgs = ['essentials']; why.push('Things are in decent shape already, so lead with the lightest retainer and build trust before upselling.'); }
+    } else {
+      pkgs = [i.problem==='starting' ? 'essentials' : (ea && i.problem==='competitors' ? 'full' : 'growth-ret')];
+      why.push('They already have a decent website, so don\'t pitch another one. The weak link is '+(i.social==='none'?'having no':'their weak')+' social presence, and nobody is being sent to the site.');
+      why.push(pkgs[0]==='essentials' ? 'They\'re just starting out, so Essentials is the easy yes at £300/mo.' : pkgs[0]==='full' ? 'Agents losing to competitors need the full push, so lead with Full Marketing.' : 'Growth Retainer on its own is the right lead. It fixes the actual gap without asking them to rebuild anything.');
+    }
+  }
+  return {pkgs, why};
+}
+function acqObjections(rec, i){
+  const kinds = rec.pkgs.map(id=>id.startsWith('bos')?'bos':ACQ_OFFER_PKGS[id].monthly?'retainer':'site');
+  const ea = i.type==='Estate Agent';
+  const bank = {
+    site:[
+      ea ? ['"We get our instructions through Rightmove and Zoopla."','The portals show your properties, but vendors choose the agent. Most of them look you up before booking a valuation, and that\'s the moment your own site wins or loses it.']
+         : ['"We get most of our work from word of mouth."','That\'s great, and it\'s exactly why the site matters. Even a referral googles you before ringing. A good site makes that recommendation stick instead of sending them to a competitor.'],
+      ['"We can\'t afford it right now."', `It\'s a fixed one-off price${rec.pkgs.includes('starter')?' from £555':''}, no surprises. One extra ${ea?'instruction':'job'} usually covers it, and after that it\'s working for you every day.`],
+      ['"I\'ve been burned by a web designer before."','Totally fair. Fixed price agreed upfront, live in a couple of weeks, and you own the site and domain outright. If you leave, everything goes with you.']
+    ],
+    retainer:[
+      ['"We tried social media, it didn\'t do anything."','Usually that\'s because it was sporadic. Posting now and then won\'t do much. This is consistent, every week, tied to Google and your reviews, and you see the enquiries in a monthly report.'],
+      ['"I don\'t want to be tied into a contract."','You\'re not. It\'s rolling monthly. If it isn\'t paying for itself you can stop, so the burden is on us to earn it every month.'],
+      ['"How will I know it\'s working?"','You get one clear monthly update covering what went out, how many people found you and how many enquiries came through. No jargon.']
+    ],
+    bos:[
+      ['"We\'ve got our own way of doing things."','Good, we build around it rather than replacing it. We map how you work now and automate the repetitive bits, nothing more.'],
+      ['"My team won\'t use new software."','It\'s set up for them, we train them, and most of it runs in the background. Enquiries get answered and followed up without anyone remembering to do it.'],
+      ['"Is it really worth the cost?"','Add up the hours spent chasing enquiries and admin each week. At even a few hours, it pays for itself within a couple of months, and it doesn\'t forget a follow-up.']
+    ]
+  };
+  const order = Array.from(new Set(kinds));
+  const out = [];
+  bank[order[0]].forEach(x=>out.push(x));
+  if(order[1]){ out[2] = bank[order[1]][0]; }
+  return out.slice(0,3);
+}
+function acqBuildPitch(i){
+  const rec = acqRecommend(i);
+  const ea = i.type==='Estate Agent';
+  const who = ea ? 'independent estate agents' : (i.type==='Other' ? 'local businesses' : 'local '+i.type.toLowerCase()+'s');
+  const oneOff = rec.pkgs.reduce((s,id)=>s+(ACQ_OFFER_PKGS[id].oneOff||0),0);
+  const monthly = rec.pkgs.reduce((s,id)=>s+(ACQ_OFFER_PKGS[id].monthly||0),0);
+  const siteLine = {none:'your Google listing and socials', poor:'your website', decent:'your website, which is genuinely solid'}[i.website];
+  const hook = {leads:'it isn\'t bringing many new enquiries in', presence:'you\'re quite hard to find when someone searches locally', time:'marketing looks like something you squeeze in when you can',
+    competitors:'a couple of competitors nearby are showing up above you', starting:'you\'re just getting going, which is the best time to get this right', automate:'a lot of the enquiry follow-up looks manual'}[i.problem];
+  const outcome = ea ? 'more valuation requests coming to you directly' : 'more calls and quote requests coming straight to your phone';
+  const pkgNames = rec.pkgs.map(id=>ACQ_OFFER_PKGS[id].label);
+  const priceLine = [oneOff?fmt(oneOff).replace('.00','')+' one-off':'', monthly?fmt(monthly).replace('.00','')+' a month':''].filter(Boolean).join(' plus ');
+  return {
+    rec, oneOff, monthly, total12: oneOff + monthly*12,
+    opener: `"Hi [Name], it's Lewis from Steadyflow. I'll be quick, I know you're busy. I was looking at ${siteLine} and noticed ${hook}. I help ${who} with exactly that. Have you got two minutes, or is there a better time to call back?"`,
+    objections: acqObjections(rec, i),
+    pitch: `Most ${who} I speak to are great at the work itself but don't have the time to keep their online presence pulling its weight, and that's where enquiries leak away. What I'd suggest for you is ${pkgNames.join(' together with ')}. ${rec.pkgs.some(id=>!ACQ_OFFER_PKGS[id].monthly&&!id.startsWith('bos'))?'We build the site, get it fast and easy to use on a phone, and make sure every enquiry lands straight with you. ':''}${monthly?'Then each month we keep it active, posting, updating Google and asking happy customers for reviews, so people keep finding you. ':''}${rec.pkgs.some(id=>id.startsWith('bos'))?'We also automate the admin, so enquiries get answered and followed up without you chasing them. ':''}It's ${priceLine}, fixed, with no long contract, and the goal is simple: ${outcome}. Would it make sense to put a short proposal together for you?`
+  };
+}
+function acqOfferState(){ if(!window._acqOffer) window._acqOffer = {type:'Estate Agent', website:'poor', social:'weak', problem:'leads'}; return window._acqOffer; }
+function acqOfferView(){
+  const o = acqOfferState();
+  const sel = (id, opts, key) => `<select id="${id}" onchange="acqOfferState()['${key}']=this.value">${opts.map(([v,l])=>`<option value="${v}" ${o[key]===v?'selected':''}>${l}</option>`).join('')}</select>`;
+  const priceRow = (l, p) => `<div class="row"><span>${l}</span><strong>${p}</strong></div>`;
+  return `
+  <div class="grid grid-2" style="align-items:start;">
+    <div class="card">
+      <div class="card-title">About the prospect</div>
+      <div class="form-row">
+        <div class="form-group"><label>Business type</label>${sel('ob-type', ACQ_TYPES.map(t=>[t,t]), 'type')}</div>
+        <div class="form-group"><label>Do they have a website?</label>${sel('ob-website', [['none','No'],['poor','Yes, but poor'],['decent','Yes, decent']], 'website')}</div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Social media presence</label>${sel('ob-social', [['none','None'],['weak','Weak'],['decent','Decent']], 'social')}</div>
+        <div class="form-group"><label>Their biggest problem</label>${sel('ob-problem', ACQ_PROBLEMS, 'problem')}</div>
+      </div>
+      <button class="btn btn-gold" onclick="acqBuildPitchClick()">🧭 Build My Pitch</button>
+    </div>
+    <div class="card acq-pitch" id="acq-pitch-out">${emptyBlock('Describe the prospect and hit Build My Pitch. You\'ll get the package to lead with, an opening line, objection handling and the 12-month value.','','','🧭')}</div>
+  </div>
+  <div class="card mt-10">
+    <div class="card-title">Steadyflow pricing <span class="small muted">For reference on calls</span></div>
+    <div class="acq-price-grid">
+      <div><div class="small muted mb-10" style="font-weight:700;letter-spacing:.5px;">WEBSITES</div>${priceRow('Starter','£555')}${priceRow('Growth','£780')}${priceRow('Professional','£1,200')}</div>
+      <div><div class="small muted mb-10" style="font-weight:700;letter-spacing:.5px;">BUSINESS OS</div>${priceRow('Essential','£690')}${priceRow('Business Manager','£990')}${priceRow('AI Automation','£1,395')}</div>
+      <div><div class="small muted mb-10" style="font-weight:700;letter-spacing:.5px;">MONTHLY</div>${priceRow('Essentials','£300/mo')}${priceRow('Growth','£900/mo')}${priceRow('Full Marketing','£1,500/mo')}</div>
+    </div>
+  </div>`;
+}
+function acqBuildPitchClick(){
+  window._acqPitch = acqBuildPitch(Object.assign({}, acqOfferState()));
+  acqRenderPitch();
+  toast('Pitch built');
+}
+function acqRenderPitch(){
+  const box = document.getElementById('acq-pitch-out');
+  const p = window._acqPitch;
+  if(!box || !p) return;
+  box.innerHTML = `
+    <h4>Lead with</h4>
+    <div>${p.rec.pkgs.map(id=>{ const k=ACQ_OFFER_PKGS[id]; return `<span class="acq-pkg">${esc(k.label)} · ${k.monthly?fmt(k.monthly).replace('.00','')+'/mo':fmt(k.oneOff).replace('.00','')}</span>`; }).join('')}</div>
+    <h4>Why</h4>
+    <ul style="padding-left:18px;">${p.rec.why.map(w=>`<li>${esc(w)}</li>`).join('')}</ul>
+    <h4>First 30 seconds of the call</h4>
+    <p>${esc(p.opener)}</p>
+    <h4>Top 3 objections</h4>
+    <ol>${p.objections.map(([q,a])=>`<li><strong>${esc(q)}</strong><br><span class="muted">${esc(a)}</span></li>`).join('')}</ol>
+    <h4>The pitch <span style="text-transform:none;letter-spacing:0;font-weight:500;">(read it out on the phone or in a meeting)</span></h4>
+    <p>${esc(p.pitch)}</p>
+    <div class="flex gap-8 mt-10"><button class="btn btn-ghost btn-sm" onclick="acqCopy(window._acqPitch.pitch,'Pitch')">📋 Copy pitch</button></div>
+    <h4>12-month value to Steadyflow</h4>
+    <div class="flex-between" style="flex-wrap:wrap;gap:8px;">
+      <span class="small muted">${[p.oneOff?fmt(p.oneOff).replace('.00','')+' one-off':'', p.monthly?fmt(p.monthly).replace('.00','')+'/mo × 12 = '+fmt(p.monthly*12).replace('.00',''):''].filter(Boolean).join(' + ')}</span>
+      <span style="font-size:24px;font-weight:800;color:var(--success);">${fmt(p.total12).replace('.00','')}</span>
+    </div>`;
+}
+
+/* ---------- TAB: WEEKLY PLANNER ---------- */
+function acqTogglePlanner(day, key){
+  const w = acqWeekly();
+  w.days[day] = w.days[day] || {};
+  w.days[day][key] = !w.days[day][key];
+  w.updatedAt = new Date().toISOString();
+  acqWeekly();
+  save(); renderPage();
+  const act = ACQ_PLANNER.find(a=>a.key===key);
+  toast(w.days[day][key] ? act.label+' done for '+ACQ_DAYS.find(d=>d[0]===day)[1] : act.label+' un-ticked', w.days[day][key]?'✓':'↺');
+}
+function acqPlannerMessage(won, dow, ticks){
+  if(won>=ACQ_WEEKLY_TARGET) return ['good', `🔥 ${won} clients won this week — target smashed. Bank it, then line up next week's prospects.`];
+  if(dow>=4 && won===0) return ['push', `🚨 It's Friday and no clients are signed yet. Stop prospecting new names: ring every Replied, Call Booked and Proposal Sent lead today and ask for the decision.`];
+  if(dow>=2 && won===0) return ['warn', `⚠️ It's ${['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'][dow]} with 0 clients won. Prioritise follow-ups on warm leads before sending more cold emails.`];
+  if(won>0) return ['', `${won} down, ${ACQ_WEEKLY_TARGET-won} to go. ${ticks>=dow*3+3?'Activity is on track, so keep the calls going.':'Keep the daily activity up. Calls convert fastest.'}`];
+  return ['', ticks ? 'Good start. Activity creates the wins, so keep ticking the days off.' : 'New week, clean slate. 30 emails, 20 DMs and 10 calls a day gets you to 4 clients.'];
+}
+function acqPlannerView(){
+  const w = acqWeekly();
+  const dow = (new Date().getDay()+6)%7;
+  const won = w.clientsWon;
+  let ticks = 0;
+  const days = ACQ_DAYS.map(([key,label],i)=>{
+    const st = w.days[key] || {};
+    const date = new Date(acqWeekStart().getTime()+i*86400000);
+    const doneCt = ACQ_PLANNER.filter(a=>st[a.key]).length;
+    ticks += doneCt;
+    return `<div class="acq-day ${i===dow?'today':''} ${i<dow?'past':''}">
+      <div class="flex-between"><h3>${label}</h3><span class="small muted">${date.toLocaleDateString('en-GB',{day:'numeric',month:'short'})}</span></div>
+      <div class="small muted">${doneCt}/3 done${i===dow?' · today':''}</div>
+      ${ACQ_PLANNER.map(a=>`<label class="acq-task ${st[a.key]?'done':''}"><input type="checkbox" ${st[a.key]?'checked':''} onchange="acqTogglePlanner('${key}','${a.key}')"><span>${a.icon} ${a.target} ${a.key==='dms'?'DMs':a.label.toLowerCase()}</span></label>`).join('')}
+    </div>`;
+  }).join('');
+  const [tone, msg] = acqPlannerMessage(won, Math.min(dow,4), ticks);
+  const summary = ACQ_PLANNER.map(a=>{ const n = ACQ_DAYS.filter(([d])=>w.days[d]&&w.days[d][a.key]).length; return `<span class="tag-chip">${a.icon} ${a.label}: ${n}/5 days · ${n*a.target} sent</span>`; }).join('');
+  return `
+  <div class="card mb-10 flex-between" style="flex-wrap:wrap;gap:10px;">
+    <div><div class="card-title" style="margin-bottom:4px;">Week of ${acqWeekStart().toLocaleDateString('en-GB',{day:'numeric',month:'long'})}</div><div class="small muted">Tick each activity once the day's target is done. Resets automatically every Monday.</div></div>
+    <div>${summary}</div>
+  </div>
+  <div class="acq-week">${days}</div>
+  <div class="card mt-10">
+    <div class="card-title">Clients won this week</div>
+    <div class="acq-target mb-10">
+      <div class="acq-target-count" style="color:${won>=ACQ_WEEKLY_TARGET?'var(--success)':'var(--text)'};">${won} / ${ACQ_WEEKLY_TARGET}</div>
+      <div class="progress-bar"><div class="progress-bar-fill" style="width:${Math.min(100,won/ACQ_WEEKLY_TARGET*100)}%;${won>=ACQ_WEEKLY_TARGET?'background:var(--success);':''}"></div></div>
+    </div>
+    <div class="acq-banner ${tone}">${msg}</div>
+    <p class="small muted mt-10">Counts prospects moved to <strong>Won</strong> since Monday — update them on the Pipeline or Prospects List tabs.</p>
+  </div>`;
+}
+
+/* ===================== TARGETS — GROWTH & EXECUTION SYSTEM ===================== */
+/* ENGINE. Every function below is pure: it takes the data (db) and the moment
+   it is evaluated (now) as arguments and never touches the DOM, so results are
+   deterministic and covered by tests/targets.test.html.
+
+   Model (all arrays merge by id like the rest of the app):
+     tgPayments   money actually received — the ONLY thing that counts as revenue
+     tgCycles     closed weekly cycles — immutable snapshots (corrections are logged)
+     tgOverrides  manual target overrides (calculated target is always kept too)
+     tgAcqSpend   customer-acquisition spend
+     tgOwnerPay   owner pay records (never revenue)
+     tgExpansion  expansion investments + reward money moved into the pot
+     tgRewards    personal rewards attached to levels / gates
+     tgMissions   weekly missions
+     tgReviews    expansion reviews
+     tgDecisions  approve/dismiss decisions on recommendations
+     tgAudit      audit trail for ledger edits and history corrections
+   Settings live in db.targets. */
+
+const TG_BIZ = {
+  sw:{key:'sw', name:'SteadyWorks', short:'SW', color:'#E11D2A', unit:'job', units:'jobs', desc:'Plumbing, maintenance, property services & trade work'},
+  sf:{key:'sf', name:'SteadyFlow', short:'SF', color:'#00E5CC', unit:'client', units:'clients', desc:'Web design, marketing, automation & digital services'}
+};
+const TG_PAYMENT_TYPES = [['deposit','Deposit'],['stage','Stage payment'],['final','Final payment'],['retainer','Retainer'],['other','Other income'],['refund','Refund / reversal']];
+const TG_EXP_CATEGORIES = ['Marketing','Tools','Equipment','Vehicle','Software','Automation','Staff','Subcontractors','Freelancers','Training','Systems','Stock/materials','Other'];
+const TG_ACQ_CHANNELS = ['Google Ads','Facebook / Instagram','Checkatrade / MyJobQuote','Cold email','Cold calling','LinkedIn','Leaflets / print','Referral reward','Directory listing','Other'];
+// Expense categories already covered by acquisition spend — left out of operating costs so ad money isn't counted twice.
+const TG_ACQ_EXPENSE_CATS = ['Advertising','Ad Spend'];
+
+function tgDefaults(){
+  return {
+    weekStartDay:1, ownerPayWeekly:250, acqPct:20, growthPct:50, levelsPerGate:2, expansionPct:10,
+    startTargets:{sw:500, sf:1000}, startedWeek:'', objective:'gross', road50kGoal:50000,
+    capacity:{
+      sw:{avgJobValue:'', conversion:'', jobsPerDay:1, workingDays:5, subcontractorJobs:0, adminHours:5, notes:''},
+      sf:{avgClientValue:'', conversion:'', buildsPerWeek:2, hoursPerBuild:12, hoursPerWeek:40, freelancerBuilds:0, notes:''}
+    },
+    dailyDone:{}
+  };
+}
+function tgSettings(db){
+  const d = tgDefaults();
+  const t = Object.assign(d, db.targets||{});
+  t.startTargets = Object.assign({}, d.startTargets, (db.targets||{}).startTargets||{});
+  const cap = (db.targets||{}).capacity||{};
+  t.capacity = {sw:Object.assign({}, d.capacity.sw, cap.sw||{}), sf:Object.assign({}, d.capacity.sf, cap.sf||{})};
+  t.dailyDone = t.dailyDone || {};
+  db.targets = t;
+  return t;
+}
+function tgArr(db, k){ if(!Array.isArray(db[k])) db[k] = []; return db[k]; }
+function tgRound(n){ return Math.round((Number(n)||0)*100)/100; }
+
+/* ---------- dates (local, 'YYYY-MM-DD') ---------- */
+function tgDate(ds){ const [y,m,d] = String(ds).split('-').map(Number); return new Date(y, (m||1)-1, d||1, 12); }
+function tgAddDays(ds, n){ const d = tgDate(ds); d.setDate(d.getDate()+n); return localDateStr(d); }
+function tgToday(now){ return localDateStr(now||new Date()); }
+function tgWeekStart(ds, startDay){ const d = tgDate(ds); const diff = (d.getDay() - (startDay==null?1:startDay) + 7) % 7; d.setDate(d.getDate()-diff); return localDateStr(d); }
+function tgDaysBetween(a, b){ return Math.round((tgDate(b)-tgDate(a))/86400000); }
+function tgInRange(ds, start, end){ return !!ds && ds>=start && ds<=end; }
+
+/* ---------- revenue (received money only) ---------- */
+function tgLivePayments(db){ return tgArr(db,'tgPayments').filter(p=>!p.removed); }
+function tgRevenue(db, biz, start, end){
+  return tgRound(tgLivePayments(db).filter(p=>(biz==='all'||p.biz===biz) && tgInRange(p.date,start,end)).reduce((s,p)=>s+(Number(p.amount)||0),0));
+}
+function tgRevenueByType(db, biz, start, end, type){
+  return tgRound(tgLivePayments(db).filter(p=>(biz==='all'||p.biz===biz) && p.type===type && tgInRange(p.date,start,end)).reduce((s,p)=>s+(Number(p.amount)||0),0));
+}
+// Money already linked to one source record (invoice / pipeline job) — used to stop double counting.
+function tgLinkedTotal(db, sourceKey, exceptId){
+  return tgRound(tgLivePayments(db).filter(p=>p.sourceKey===sourceKey && p.id!==exceptId).reduce((s,p)=>s+(Number(p.amount)||0),0));
+}
+// How much an invoice has actually been paid: a 'paid' invoice counts as its full total.
+function tgInvoiceReceived(inv){
+  const total = calcInvoiceTotal(inv).total;
+  const paid = Number(inv.amountPaid)||0;
+  return tgRound(inv.status==='paid' ? Math.max(total, paid) : Math.min(paid, Math.max(total, paid)));
+}
+/* Creates (at most) one payment for the newly-received part of an invoice. The id
+   encodes the cumulative amount received, so two devices syncing the same change
+   produce the same record instead of a duplicate. */
+function tgSyncInvoicePayment(db, kind, inv, now, opts){
+  if(!inv || !inv.id) return null;
+  opts = opts||{};
+  const biz = kind==='sf' ? 'sf' : 'sw';
+  const sourceKey = (kind==='sf'?'sfinv:':'inv:')+inv.id;
+  const received = tgInvoiceReceived(inv);
+  const linked = tgLinkedTotal(db, sourceKey);
+  // With prevReceived (normal saves) only the change made in this save is new money —
+  // anything paid before the ledger existed is left for the dated import instead.
+  let delta = opts.prevReceived!=null ? tgRound(received - opts.prevReceived) : tgRound(received - linked);
+  if(delta<0) delta = -Math.min(-delta, linked); // can only reverse money we've recorded
+  if(Math.abs(delta) < 0.01) return null;
+  const total = calcInvoiceTotal(inv).total;
+  const id = 'pay-'+sourceKey.replace(':','-')+'-'+Math.round(received*100)+(opts.estimated?'-imp':'')+(delta<0?'-rev':'');
+  if(tgArr(db,'tgPayments').some(p=>p.id===id)) return null;
+  let type;
+  if(delta<0) type = 'refund';
+  else if(kind==='sf'){ const c = (db.sfClients||[]).find(x=>x.id===inv.clientId); type = c && c.billingType!=='one-off' ? 'retainer' : (received>=total-0.01 ? (linked>0?'final':'final') : (linked>0?'stage':'deposit')); }
+  else type = received>=total-0.01 ? 'final' : (linked>0 ? 'stage' : 'deposit');
+  const job = inv.jobId ? (db.jobs||[]).find(j=>j.id===inv.jobId) : null;
+  const pay = {id, biz, amount:delta, date: opts.date || tgToday(now), type,
+    customer: kind==='sf' ? (inv.clientName||'') : (inv.customerName||''),
+    job: job ? job.jobNumber : (inv.invoiceNumber||''), sourceType: kind==='sf'?'SteadyFlow invoice':'Invoice', sourceKey,
+    sourceLabel: inv.invoiceNumber||'', manual:false, estimated: !!opts.estimated, channel:'', notes: opts.note||'',
+    createdAt: (now||new Date()).toISOString()};
+  db.tgPayments.push(pay);
+  return pay;
+}
+// Quote-to-Job Pipeline: deposit when marked taken, balance when marked paid. Fixed ids — never duplicated.
+function tgSyncPaintPayment(db, rec, now, prevStatus){
+  if(!rec || !rec.id) return [];
+  // Only react to a status change made now — deposits taken before the ledger existed aren't re-dated to today.
+  if(prevStatus===rec.depositStatus) return [];
+  const made = [];
+  const value = Number(rec.quoteValue)||0;
+  const depAmt = tgRound(value*(Number(rec.depositPct)||0)/100);
+  const sourceKey = 'paint:'+rec.id;
+  const list = tgArr(db,'tgPayments');
+  const add = (suffix, amount, type)=>{
+    const id = 'pay-paint-'+suffix+'-'+rec.id;
+    if(list.some(p=>p.id===id) || amount<=0) return;
+    const p = {id, biz:'sw', amount:tgRound(amount), date:tgToday(now), type, customer:rec.clientName||'', job:'Pipeline — '+(rec.clientName||''),
+      sourceType:'Quote-to-Job Pipeline', sourceKey, sourceLabel:rec.clientName||'', manual:false, estimated:false, channel:rec.leadSource||'',
+      notes:(rec.jobType||'joint')==='joint'?'Joint job with Fabs — full amount received by SteadyWorks':'', createdAt:(now||new Date()).toISOString()};
+    list.push(p); made.push(p);
+  };
+  const hadDeposit = prevStatus==='taken' || prevStatus==='balance_paid';
+  if((rec.depositStatus==='taken' || rec.depositStatus==='balance_paid') && !hadDeposit) add('dep', depAmt, 'deposit');
+  if(rec.depositStatus==='balance_paid' && prevStatus!=='balance_paid') add('fin', value - Math.max(tgLinkedTotal(db, sourceKey), hadDeposit?depAmt:0), 'final');
+  return made;
+}
+// Validates a manual / edited payment. Returns an error string or ''.
+function tgValidatePayment(db, p, editingId){
+  const amt = Number(p.amount);
+  if(!p.biz || !TG_BIZ[p.biz]) return 'Pick which business received this money';
+  if(!p.date) return 'Add the date the money was received';
+  if(!isFinite(amt) || amt===0) return 'Enter an amount';
+  if(amt<0 && p.type!=='refund') return 'Negative amounts are only allowed for refunds / reversals';
+  if(amt>0 && p.type==='refund') return 'Refunds should be entered as a negative amount';
+  if(p.sourceKey){
+    const cap = tgSourceCap(db, p.sourceKey);
+    if(cap!=null && tgLinkedTotal(db, p.sourceKey, editingId) + amt > cap + 0.01) return 'That would count more than '+gbp(cap)+' against '+(p.sourceLabel||'this record')+' — it\'s already been recorded';
+  }
+  return '';
+}
+function tgSourceCap(db, sourceKey){
+  const [kind, id] = String(sourceKey).split(':');
+  if(kind==='inv'){ const inv = (db.invoices||[]).find(i=>i.id===id); return inv ? calcInvoiceTotal(inv).total : null; }
+  if(kind==='sfinv'){ const inv = (db.sfInvoices||[]).find(i=>i.id===id); return inv ? calcInvoiceTotal(inv).total : null; }
+  return null;
+}
+
+/* ---------- costs, owner pay ---------- */
+// Acquisition spend = entries logged in Targets + any Expense in an advertising category.
+// (Ad expenses are left out of operating costs, so nothing is counted twice.)
+function tgAcqSpend(db, biz, start, end){
+  const logged = tgArr(db,'tgAcqSpend').filter(a=>(biz==='all'||a.biz===biz) && tgInRange(a.date,start,end)).reduce((s,a)=>s+(Number(a.amount)||0),0);
+  const ads = list => (list||[]).filter(e=>TG_ACQ_EXPENSE_CATS.includes(e.category) && tgInRange(String(e.date||'').slice(0,10),start,end)).reduce((s,e)=>s+(Number(e.amount)||0),0);
+  return tgRound(logged + (biz==='sf'?0:ads(db.expenses)) + (biz==='sw'?0:ads(db.sfExpenses)));
+}
+function tgOpCosts(db, biz, start, end){
+  const sum = list => (list||[]).filter(e=>tgInRange(String(e.date||'').slice(0,10),start,end) && !TG_ACQ_EXPENSE_CATS.includes(e.category)).reduce((s,e)=>s+(Number(e.amount)||0),0);
+  return tgRound((biz==='sf'?0:sum(db.expenses)) + (biz==='sw'?0:sum(db.sfExpenses)));
+}
+function tgOwnerPaid(db, biz, start, end, statuses){
+  statuses = statuses || ['taken','partial'];
+  return tgRound(tgArr(db,'tgOwnerPay').filter(o=>(biz==='all'||o.biz===biz||(!o.biz&&biz==='all')) && statuses.includes(o.status) && tgInRange(o.date,start,end)).reduce((s,o)=>s+(Number(o.amount)||0),0));
+}
+function tgOwnerPayWeek(db, weekStart){
+  const s = tgSettings(db);
+  const end = tgAddDays(weekStart, 6);
+  const taken = tgOwnerPaid(db, 'all', weekStart, end, ['taken','partial']);
+  const scheduled = tgOwnerPaid(db, 'all', weekStart, end, ['scheduled']);
+  const req = Number(s.ownerPayWeekly)||0;
+  const status = taken>=req-0.01 && req>0 ? 'Taken' : taken>0 ? 'Partially taken' : scheduled>0 ? 'Scheduled' : 'Not taken';
+  return {requirement:req, taken, scheduled, remaining:tgRound(Math.max(0, req-taken)), status};
+}
+function tgExpansionSpent(db, biz, start, end){ return tgRound(tgArr(db,'tgExpansion').filter(x=>x.kind!=='topup' && x.status==='spent' && (biz==='all'||x.biz===biz) && tgInRange(x.date,start,end)).reduce((s,x)=>s+(Number(x.amount)||0),0)); }
+function tgRewardsClaimed(db, biz, start, end){ return tgRound(tgArr(db,'tgRewards').filter(r=>r.status==='claimed' && (biz==='all'||r.biz===biz||r.biz==='combined') && tgInRange(r.claimedAt,start,end)).reduce((s,r)=>s+(Number(r.cost)||0),0)); }
+
+/* ---------- acquisition budget (20% is a ceiling, not an instruction) ---------- */
+function tgAcquisition(db, biz, start, end){
+  const s = tgSettings(db);
+  const revenue = tgRevenue(db, biz, start, end);
+  const spend = tgAcqSpend(db, biz, start, end);
+  const entries = tgArr(db,'tgAcqSpend').filter(a=>(biz==='all'||a.biz===biz) && tgInRange(a.date,start,end));
+  const leads = entries.reduce((x,a)=>x+(Number(a.leads)||0),0);
+  const sales = entries.reduce((x,a)=>x+(Number(a.sales)||0),0);
+  const channels = new Set(entries.map(a=>a.channel).filter(Boolean));
+  const attributed = tgRound(tgLivePayments(db).filter(p=>(biz==='all'||p.biz===biz) && tgInRange(p.date,start,end) && p.channel && channels.has(p.channel)).reduce((x,p)=>x+(Number(p.amount)||0),0));
+  const max = tgRound(Math.max(0,revenue) * (Number(s.acqPct)||0)/100);
+  return {revenue, max, spend, unused:tgRound(Math.max(0, max-spend)), over:tgRound(Math.max(0, spend-max)),
+    pct: revenue>0 ? spend/revenue*100 : null, leads, sales,
+    costPerLead: leads ? tgRound(spend/leads) : null, costPerSale: sales ? tgRound(spend/sales) : null,
+    attributed, roas: spend>0 && attributed>0 ? attributed/spend : null};
+}
+
+/* ---------- levels, targets, overrides ---------- */
+function tgCyclesFor(db, biz){ return tgArr(db,'tgCycles').filter(c=>c.biz===biz).sort((a,b)=>a.startDate.localeCompare(b.startDate)); }
+function tgLevelsCompleted(db, biz){ return tgCyclesFor(db, biz).filter(c=>c.levelCompleted).length; }
+function tgCalcTarget(db, biz, level){
+  const s = tgSettings(db);
+  return tgRound((Number(s.startTargets[biz])||0) * Math.pow(1+(Number(s.growthPct)||0)/100, Math.max(0, level-1)));
+}
+function tgActiveOverride(db, biz, weekKey){
+  return tgArr(db,'tgOverrides').filter(o=>o.biz===biz && o.active!==false && o.effectiveWeek<=weekKey && (!o.expires || o.expires>=weekKey))
+    .sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)))[0] || null;
+}
+function tgStartedWeek(db, now){
+  const s = tgSettings(db);
+  if(!s.startedWeek) s.startedWeek = tgWeekStart(tgToday(now), s.weekStartDay);
+  return s.startedWeek;
+}
+/* The open cycle runs from the day after the last closed cycle to the end of that
+   week. After an early close (mid-week) it runs to the end of the FOLLOWING week,
+   so no received money ever falls between two cycles or into two cycles. */
+function tgOpenBounds(db, biz, now){
+  const s = tgSettings(db);
+  const closed = tgCyclesFor(db, biz);
+  const last = closed[closed.length-1];
+  const start = last ? tgAddDays(last.endDate, 1) : tgStartedWeek(db, now);
+  const ws = tgWeekStart(start, s.weekStartDay);
+  let end = tgAddDays(ws, 6);
+  if(start!==ws) end = tgAddDays(end, 7);
+  return {startDate:start, endDate:end, weekKey:ws};
+}
+function tgState(db, biz, now){
+  const s = tgSettings(db);
+  const b = tgOpenBounds(db, biz, now);
+  const levelsDone = tgLevelsCompleted(db, biz);
+  const level = levelsDone + 1;
+  const calcTarget = tgCalcTarget(db, biz, level);
+  const ov = tgActiveOverride(db, biz, b.weekKey);
+  const target = ov ? tgRound(ov.amount) : calcTarget;
+  const revenue = tgRevenue(db, biz, b.startDate, b.endDate);
+  const per = Number(s.levelsPerGate)||2;
+  return {biz, level, levelsDone, calcTarget, override:ov, target, revenue, ...b,
+    pct: target>0 ? revenue/target*100 : 0, remaining: tgRound(Math.max(0, target-revenue)), surplus: tgRound(Math.max(0, revenue-target)),
+    achieved: target>0 && revenue>=target-0.005, nextTarget: tgCalcTarget(db, biz, level+1),
+    gatesUnlocked: Math.floor(levelsDone/per), levelsToGate: per - (levelsDone % per)};
+}
+// Where you should roughly be by now (calendar days, inclusive of today).
+function tgPace(state, now){
+  const today = tgToday(now);
+  const total = tgDaysBetween(state.startDate, state.endDate) + 1;
+  if(today < state.startDate) return {status:'NOT STARTED', daysLeft:total, expected:0, requiredDaily: tgRound(state.target/total)};
+  const elapsed = Math.min(total, tgDaysBetween(state.startDate, today) + 1);
+  const daysLeft = Math.max(0, total - elapsed + 1); // today still counts
+  const expected = state.target * (elapsed/total);
+  let status;
+  if(state.achieved) status = 'TARGET ACHIEVED';
+  else if(today > state.endDate) status = 'MISSED';
+  else if(state.revenue >= expected*1.1) status = 'AHEAD';
+  else if(state.revenue >= expected*0.85 || elapsed===1) status = 'ON PACE';
+  else status = 'BEHIND';
+  return {status, daysLeft, elapsed, total, expected:tgRound(expected), requiredDaily: daysLeft ? tgRound(state.remaining/daysLeft) : state.remaining};
+}
+function tgCycleSnapshot(db, biz, b, now, extra){
+  const s = tgSettings(db);
+  const levelsDone = tgLevelsCompleted(db, biz);
+  const level = levelsDone + 1;
+  const calcTarget = tgCalcTarget(db, biz, level);
+  const ov = tgActiveOverride(db, biz, b.weekKey || tgWeekStart(b.startDate, s.weekStartDay));
+  const target = ov ? tgRound(ov.amount) : calcTarget;
+  const revenue = tgRevenue(db, biz, b.startDate, b.endDate);
+  const acq = tgAcqSpend(db, biz, b.startDate, b.endDate);
+  const ops = tgOpCosts(db, biz, b.startDate, b.endDate);
+  const owner = tgOwnerPaid(db, biz, b.startDate, b.endDate);
+  const exp = tgExpansionSpent(db, biz, b.startDate, b.endDate);
+  const achieved = target>0 && revenue >= target-0.005;
+  const per = Number(s.levelsPerGate)||2;
+  const missions = tgArr(db,'tgMissions').filter(m=>m.biz===biz && m.weekKey>=tgWeekStart(b.startDate,s.weekStartDay) && m.weekKey<=b.endDate && !m.removed);
+  const paymentsCt = tgLivePayments(db).filter(p=>p.biz===biz && tgInRange(p.date,b.startDate,b.endDate) && p.amount>0).length;
+  return Object.assign({
+    id:'cyc-'+biz+'-'+b.startDate, biz, startDate:b.startDate, endDate:b.endDate, level,
+    calcTarget, overrideTarget: ov ? tgRound(ov.amount) : null, overrideId: ov ? ov.id : null, overrideReason: ov ? ov.reason : '',
+    target, revenue, deposits: tgRevenueByType(db,biz,b.startDate,b.endDate,'deposit'), finals: tgRevenueByType(db,biz,b.startDate,b.endDate,'final'),
+    acqSpend:acq, acqMax: tgRound(Math.max(0,revenue)*(Number(s.acqPct)||0)/100), opCosts:ops, ownerPay:owner, expansionSpend:exp,
+    retained: tgRound(revenue - acq - ops - owner - exp), avgSale: paymentsCt ? tgRound(revenue/paymentsCt) : 0,
+    missionsDone: missions.filter(m=>m.done).length, missionsTotal: missions.length,
+    achieved, levelCompleted: achieved, nextTarget: achieved ? tgCalcTarget(db, biz, level+1) : calcTarget,
+    gateUnlocked: achieved && ((levelsDone+1) % per === 0), gateNumber: achieved && ((levelsDone+1) % per === 0) ? (levelsDone+1)/per : null,
+    expansionAccrued: tgRound(Math.max(0,revenue) * (Number(s.expansionPct)||0)/100),
+    earlyClose:false, closedAt:(now||new Date()).toISOString(), ack: !achieved, corrections:[], notes:''
+  }, extra||{});
+}
+// Closes every cycle whose end date has passed. Safe to call any number of times.
+function tgCloseDueCycles(db, now){
+  const closedNow = [];
+  ['sw','sf'].forEach(biz=>{
+    let guard = 0;
+    while(guard++ < 520){
+      const b = tgOpenBounds(db, biz, now);
+      if(tgToday(now) <= b.endDate) break;
+      const snap = tgCycleSnapshot(db, biz, b, now);
+      if(tgArr(db,'tgCycles').some(c=>c.id===snap.id)) break; // already closed elsewhere
+      db.tgCycles.push(snap); closedNow.push(snap);
+    }
+  });
+  if(closedNow.length) tgUnlockRewards(db, now);
+  return closedNow;
+}
+// Completing early is only offered once the target is actually hit.
+function tgCloseEarly(db, biz, now){
+  const st = tgState(db, biz, now);
+  if(!st.achieved) return {error:'The target hasn\'t been reached yet'};
+  const today = tgToday(now);
+  const b = {startDate:st.startDate, endDate: today < st.endDate ? today : st.endDate, weekKey:st.weekKey};
+  const snap = tgCycleSnapshot(db, biz, b, now, {earlyClose: today < st.endDate});
+  if(tgArr(db,'tgCycles').some(c=>c.id===snap.id)) return {error:'This cycle is already closed'};
+  db.tgCycles.push(snap);
+  tgUnlockRewards(db, now);
+  return {cycle:snap};
+}
+
+/* ---------- expansion pot ---------- */
+function tgExpansionPot(db, biz){
+  const s = tgSettings(db);
+  const per = Number(s.levelsPerGate)||2;
+  const cycles = biz==='all' ? tgArr(db,'tgCycles').slice() : tgCyclesFor(db, biz);
+  // Money accrues every cycle but only becomes spendable once a gate is unlocked.
+  let unlocked = 0, pending = 0;
+  ['sw','sf'].filter(k=>biz==='all'||k===biz).forEach(k=>{
+    const cs = tgCyclesFor(db,k);
+    let lastGateIdx = -1;
+    cs.forEach((c,i)=>{ if(c.gateUnlocked) lastGateIdx = i; });
+    cs.forEach((c,i)=>{ if(i<=lastGateIdx) unlocked += Number(c.expansionAccrued)||0; else pending += Number(c.expansionAccrued)||0; });
+  });
+  const items = tgArr(db,'tgExpansion').filter(x=>biz==='all'||x.biz===biz);
+  const topups = items.filter(x=>x.kind==='topup').reduce((t,x)=>t+(Number(x.amount)||0),0);
+  const committed = items.filter(x=>x.kind!=='topup' && x.status==='approved').reduce((t,x)=>t+(Number(x.amount)||0),0);
+  const spent = items.filter(x=>x.kind!=='topup' && x.status==='spent').reduce((t,x)=>t+(Number(x.amount)||0),0);
+  const allowance = tgRound(unlocked + topups);
+  return {allowance, accruing:tgRound(pending), committed:tgRound(committed), spent:tgRound(spent), remaining:tgRound(allowance - committed - spent),
+    pendingRecs: items.filter(x=>x.kind!=='topup' && x.status==='pending').length,
+    gates: cycles.filter(c=>c.gateUnlocked).length, perGate:per};
+}
+
+/* ---------- rewards ---------- */
+function tgRewardUnlockedNow(db, r){
+  const done = r.biz==='combined' ? Math.min(tgLevelsCompleted(db,'sw'), tgLevelsCompleted(db,'sf')) : tgLevelsCompleted(db, r.biz);
+  const per = Number(tgSettings(db).levelsPerGate)||2;
+  if(r.trigger==='gate') return Math.floor(done/per) >= (Number(r.requiredGate)||1);
+  return done >= (Number(r.requiredLevel)||1);
+}
+function tgUnlockRewards(db, now){
+  const out = [];
+  tgArr(db,'tgRewards').forEach(r=>{
+    if((r.status||'locked')==='locked' && tgRewardUnlockedNow(db, r)){ r.status='unlocked'; r.unlockedAt = tgToday(now); out.push(r); }
+  });
+  return out;
+}
+function tgRewardAction(db, id, action, now){
+  const r = tgArr(db,'tgRewards').find(x=>x.id===id);
+  if(!r) return {error:'Reward not found'};
+  if((r.status||'locked')==='locked') return {error:'This reward is still locked — complete the required level first'};
+  if(r.status==='claimed' || r.status==='moved') return {error:'This reward has already been '+(r.status==='claimed'?'claimed':'moved to expansion')};
+  if(action==='claim'){ r.status='claimed'; r.claimedAt = tgToday(now); }
+  else if(action==='save'){ r.status='saved'; }
+  else if(action==='move'){
+    r.status='moved'; r.movedAt = tgToday(now);
+    tgArr(db,'tgExpansion').push({id:'exp-reward-'+r.id, kind:'topup', biz: r.biz==='combined'?'sw':r.biz, amount:Number(r.cost)||0, category:'Other',
+      reason:'Reward "'+r.name+'" moved into the expansion pot', date:tgToday(now), status:'topup', createdAt:(now||new Date()).toISOString()});
+  } else return {error:'Unknown action'};
+  return {reward:r};
+}
+
+/* ---------- Road to £50K ---------- */
+const TG_OBJECTIVES = {
+  gross:{label:'Gross Revenue', how:'All money received (deposits, stage, final payments, retainers, other income), minus refunds.'},
+  afterAcq:{label:'Revenue After Acquisition', how:'Money received minus customer-acquisition spend.'},
+  profit:{label:'Profit', how:'Money received, minus VAT (if registered), acquisition, operating costs and expansion spend. Same figure as Accounting.'},
+  retained:{label:'Cash Retained', how:'Money received minus all costs, owner pay and claimed rewards. What\'s actually left in the business (VAT still owed is in here).'}
+};
+function tgRoad(db, biz, start, end, objective){
+  const rec = receivedEntries(db, biz).filter(x=>x.date && x.date>=start && x.date<=end);
+  const gross = tgRound(rec.reduce((s,x)=>s+x.amount,0));
+  const vat = (db.settings && db.settings.vatRegistered===false) ? 0 : tgRound(rec.reduce((s,x)=>s+x.vat,0));
+  const acq = tgAcqSpend(db, biz, start, end);
+  const ops = tgOpCosts(db, biz, start, end);
+  const exp = tgExpansionSpent(db, biz, start, end);
+  const owner = tgOwnerPaid(db, biz, start, end);
+  const rewards = tgRewardsClaimed(db, biz, start, end);
+  const afterAcq = tgRound(gross-acq), profit = tgRound(gross-vat-acq-ops-exp), retained = tgRound(gross-acq-ops-exp-owner-rewards);
+  const value = {gross, afterAcq, profit, retained}[objective||'gross'];
+  const goal = Number(tgSettings(db).road50kGoal)||50000;
+  return {gross, vat, acq, afterAcq, ops, profit, exp, owner, rewards, retained, value, goal, pct: goal ? Math.max(0, value/goal*100) : 0};
+}
+
+/* ---------- Perfect Run projection (NOT a forecast) ---------- */
+function tgProject(opts){
+  const start = Number(opts.startTarget)||0, g = (Number(opts.growthPct)||0)/100, wins = Math.max(0, Math.floor(Number(opts.successWeeks)||0));
+  const weeks = Math.max(1, Math.floor(Number(opts.weeks)||12)), per = Number(opts.levelsPerGate)||2, acqPct = (Number(opts.acqPct)||0)/100;
+  const startLevel = Math.max(1, Number(opts.startLevel)||1);
+  const rows = []; let cum = 0, target = start, level = startLevel, gates = 0;
+  for(let w=1; w<=weeks; w++){
+    const success = w<=wins;
+    cum += success ? target : 0;
+    const row = {week:w, level, target:tgRound(target), success, cumulative:tgRound(cum), acqAllowance: tgRound((success?target:0)*acqPct), gate:false};
+    if(success){
+      // completing level N unlocks a gate whenever N is a multiple of levels-per-gate
+      if(level % per === 0){ gates++; row.gate = true; }
+      level++; target = target*(1+g);
+    }
+    row.gates = gates;
+    rows.push(row);
+  }
+  return rows;
+}
+
+/* ---------- capacity & bottlenecks ---------- */
+function tgStage(level){ return level<=2 ? 'early' : level<=5 ? 'middle' : 'high'; }
+function tgMetrics(db, biz, now){
+  const s = tgSettings(db), cap = s.capacity[biz];
+  const today = tgToday(now), fourWeeksAgo = tgAddDays(today, -28);
+  if(biz==='sw'){
+    const paid = (db.invoices||[]).filter(i=>i.status==='paid');
+    const auto = paid.length ? paid.reduce((t,i)=>t+calcInvoiceTotal(i).total,0)/paid.length
+      : ((db.jobs||[]).filter(j=>Number(j.expectedRevenue)>0).reduce((t,j,_,a)=>t+Number(j.expectedRevenue)/a.length,0) || 350);
+    const decided = (db.quotes||[]).filter(q=>['approved','declined','expired'].includes(q.status));
+    const autoConv = decided.length>=3 ? decided.filter(q=>q.status==='approved').length/decided.length : 0.4;
+    const leadsPerWeek = ((db.leads||[]).filter(l=>tgInRange(l.createdAt,fourWeeksAgo,today)).length + (db.followUps||[]).filter(f=>tgInRange(f.createdAt,fourWeeksAgo,today)).length)/4;
+    const quotesPerWeek = (db.quotes||[]).filter(q=>tgInRange(q.createdAt,fourWeeksAgo,today)).length/4;
+    return {avgValue: Number(cap.avgJobValue)||tgRound(auto), avgAuto:!(Number(cap.avgJobValue)), conversion: (Number(cap.conversion)||0)/100 || autoConv, convAuto:!(Number(cap.conversion)),
+      leadsPerWeek: tgRound(leadsPerWeek), quotesPerWeek: tgRound(quotesPerWeek),
+      capacityUnits: (Number(cap.jobsPerDay)||0)*(Number(cap.workingDays)||0) + (Number(cap.subcontractorJobs)||0),
+      openQuotes: (db.quotes||[]).filter(q=>q.status==='sent').length, subcontractors:(db.subcontractors||[]).length,
+      activeJobs: (db.jobs||[]).filter(j=>['scheduled','active'].includes(j.status)).length};
+  }
+  const paid = (db.sfInvoices||[]).filter(i=>i.status==='paid');
+  const auto = paid.length ? paid.reduce((t,i)=>t+calcInvoiceTotal(i).total,0)/paid.length : 780;
+  const pros = db.sfProspects||[];
+  const decided = pros.filter(p=>p.status==='Won'||p.status==='Lost');
+  const autoConv = decided.length>=3 ? decided.filter(p=>p.status==='Won').length/decided.length : 0.5;
+  const outreach = (db.sfActivity||[]).filter(a=>tgInRange(a.date,fourWeeksAgo,today)).reduce((t,a)=>t+(Number(a.emails)||0)+(Number(a.calls)||0),0)/4;
+  const builds = (Number(cap.buildsPerWeek)||0) + (Number(cap.freelancerBuilds)||0);
+  const hoursCap = (Number(cap.hoursPerBuild)||0) ? Math.floor((Number(cap.hoursPerWeek)||0)/(Number(cap.hoursPerBuild)||1)) : builds;
+  return {avgValue: Number(cap.avgClientValue)||tgRound(auto), avgAuto:!(Number(cap.avgClientValue)), conversion:(Number(cap.conversion)||0)/100 || autoConv, convAuto:!(Number(cap.conversion)),
+    outreachPerWeek: tgRound(outreach), leadsPerWeek: tgRound(pros.filter(p=>tgInRange(p.createdAt,fourWeeksAgo,today)).length/4),
+    capacityUnits: Math.min(builds, Math.max(hoursCap,(Number(cap.freelancerBuilds)||0))) || builds,
+    openProposals: pros.filter(p=>p.status==='Proposal Sent'||p.status==='Negotiating').length + (db.sfQuotes||[]).filter(q=>q.status==='sent').length,
+    mrr: (db.sfClients||[]).filter(c=>c.status==='active'&&c.billingType!=='one-off').reduce((t,c)=>t+(Number(c.mrr)||0),0),
+    freelancers: Number(cap.freelancerBuilds)||0};
+}
+// Weekly plan: what has to happen for a given target (pure arithmetic, shown as missions).
+function tgPlan(db, biz, target, now){
+  const m = tgMetrics(db, biz, now);
+  const sales = Math.max(1, Math.ceil(target / Math.max(1, m.avgValue)));
+  if(biz==='sw'){
+    const quotes = Math.ceil(sales / Math.max(0.05, m.conversion));
+    const leads = Math.ceil(quotes * 1.25);
+    return {m, sales, quotes, leads, followUps: Math.max(m.openQuotes, Math.ceil(quotes/2)), pastCustomers: Math.max(5, sales*2), reviews: Math.max(2, sales), agents: Math.max(2, Math.ceil(sales/2))};
+  }
+  const proposals = Math.ceil(sales / Math.max(0.05, m.conversion));
+  const calls = Math.ceil(proposals * 1.25);
+  const conversations = calls * 2;
+  return {m, sales, proposals, calls, conversations, outreach: conversations * 5, followUps: Math.max(m.openProposals, proposals)};
+}
+function tgCapacity(db, biz, now){
+  const st = tgState(db, biz, now);
+  const plan = tgPlan(db, biz, st.target, now);
+  const next = tgPlan(db, biz, st.nextTarget, now);
+  const m = plan.m;
+  const rows = [];
+  const row = (area, current, required, unit, kind)=>{
+    const gap = tgRound(required - current);
+    const status = current>=required ? 'OK' : (kind==='delivery' ? 'CAPACITY BOTTLENECK' : current>=required*0.75 ? 'Tight' : 'Gap');
+    rows.push({area, current, required, gap, unit, status, kind});
+  };
+  if(biz==='sw'){
+    row('Jobs per week (next level)', m.capacityUnits, next.sales, 'jobs', 'delivery');
+    row('Qualified leads per week', m.leadsPerWeek, next.leads, 'leads', 'sales');
+    row('Quotes sent per week', m.quotesPerWeek, next.quotes, 'quotes', 'sales');
+    row('Quote conversion', Math.round(m.conversion*100), 40, '%', 'sales');
+  } else {
+    row('Builds / clients delivered per week (next level)', m.capacityUnits, next.sales, 'clients', 'delivery');
+    row('Outreach per week', m.outreachPerWeek, next.outreach, 'touches', 'sales');
+    row('New prospects per week', m.leadsPerWeek, next.conversations, 'prospects', 'sales');
+    row('Proposal → close rate', Math.round(m.conversion*100), 40, '%', 'sales');
+  }
+  const delivery = rows.find(r=>r.kind==='delivery' && r.status==='CAPACITY BOTTLENECK');
+  const salesGap = rows.filter(r=>r.kind==='sales' && r.status!=='OK').sort((a,b)=>(a.current/(a.required||1))-(b.current/(b.required||1)))[0];
+  const bottleneck = delivery ? {type:'delivery', label:'CAPACITY BOTTLENECK', detail: delivery.area+': '+delivery.current+' vs '+delivery.required+' needed'}
+    : salesGap ? {type:'sales', label:'SALES BOTTLENECK', detail: salesGap.area+': '+salesGap.current+' vs '+salesGap.required+' needed'}
+    : {type:'none', label:'NO BOTTLENECK', detail:'Current setup can support the next target'};
+  return {st, plan, next, m, rows, bottleneck, recs: tgRecommendations(db, biz, now, {st, plan, next, m, bottleneck})};
+}
+/* Recommendations change with the stage of growth: early levels lean on the owner's
+   own effort, middle levels add systems/paid acquisition/subcontracting, higher
+   levels add delegation, recurring revenue, people and reporting. Each has a stable
+   key so approve/dismiss decisions stick. */
+function tgRecommendations(db, biz, now, ctx){
+  ctx = ctx || {};
+  const st = ctx.st || tgState(db, biz, now);
+  const m = ctx.m || tgMetrics(db, biz, now);
+  const next = ctx.next || tgPlan(db, biz, st.nextTarget, now);
+  const stage = tgStage(st.level);
+  const acq = tgAcquisition(db, biz, tgAddDays(tgToday(now),-27), tgToday(now));
+  const out = [];
+  const add = (key, issue, action, benefit, cost, priority)=>out.push({key:biz+'-'+key, issue, action, benefit, cost, priority});
+  if(biz==='sw'){
+    if(m.capacityUnits < next.sales) add('subbie', `Next target needs ~${next.sales} jobs a week at ${gbp(m.avgValue)} average; you can deliver about ${m.capacityUnits}.`,
+      'Add a reliable subcontractor before aggressively increasing lead generation. Trial them on one job this week.', `Lifts capacity by ~${Math.max(2, next.sales-m.capacityUnits)} jobs/week without you on the tools for all of it.`, 'Day rate only when used', 'High');
+    if(m.leadsPerWeek < next.leads) add('leads', `You're averaging ${m.leadsPerWeek} leads a week; the next level needs ~${next.leads}.`,
+      stage==='early' ? 'Message 10 past customers and 5 local letting agents this week asking for work and referrals.' : 'Put part of the acquisition allowance into one paid channel (Google Local Services or Checkatrade) and track cost per job.',
+      'Fills the diary for the bigger target.', stage==='early' ? '£0' : 'Up to '+gbp(acq.max||0)+' (20% allowance)', 'High');
+    if(m.conversion < 0.35) add('conv', `Only ${Math.round(m.conversion*100)}% of quotes convert.`, 'Follow up every open quote within 48 hours, add photos of similar work and a clear start date to each quote.', 'Each 10% lift in conversion is worth '+gbp(m.avgValue*Math.max(1,m.quotesPerWeek)*0.1)+'/week.', '£0', m.openQuotes>2?'High':'Medium');
+    if(m.openQuotes>0) add('fu', `${m.openQuotes} quote${m.openQuotes===1?' is':'s are'} waiting on a reply.`, 'Ring each one today — ask what\'s stopping them going ahead.', 'Fastest money available: the work is already priced.', '£0', 'High');
+    if(stage!=='early') add('admin', 'Admin and invoicing grow with every level and eat working days.', 'Batch quotes and invoices into one admin block, use templates for every common job, and send invoices the day work finishes.', 'Gets back 3–5 hours a week and speeds up cash.', '£0–£30/mo software', 'Medium');
+    if(stage==='middle') add('agents', 'Repeat work from one-off homeowners is unpredictable.', 'Pitch two estate/letting agents or a property manager for maintenance work on a call-out rate.', 'Steady weekly volume that doesn\'t need new marketing.', '£0', 'Medium');
+    if(stage==='high') add('team', 'You can\'t personally deliver this level — growth depends on other people.', 'Hire or retain a second engineer/regular subcontractor and move yourself to quoting, scheduling and quality checks.', 'Revenue stops being capped by your own hours.', 'Wages / day rates', 'High');
+    add('reviews', 'Reviews and referrals drive the cheapest leads for trades.', 'Ask every finished customer for a Google review the same day, and hand over two business cards for referrals.', 'Lowers future cost per lead.', '£0', 'Low');
+  } else {
+    if(m.capacityUnits < next.sales) add('delivery', `Next target needs ~${next.sales} new clients a week at ${gbp(m.avgValue)} average; you can deliver about ${m.capacityUnits}.`,
+      stage==='early' ? 'Turn your last build into a reusable template and use AI for first-draft copy before selling more.' : 'Bring in a freelance designer/developer for builds so you can stay on selling and directing.',
+      'Raises builds per week before more sales create a backlog.', stage==='early'?'£0':'£150–£400 per build', 'High');
+    if(m.outreachPerWeek < next.outreach) add('outreach', `You're averaging ${m.outreachPerWeek} outreach touches a week; the next level needs ~${next.outreach}.`,
+      'Block 90 minutes each morning for outreach (emails, DMs, calls) before any build work.', 'Keeps the pipeline full for the bigger target.', '£0', 'High');
+    if(m.openProposals>0) add('proposals', `${m.openProposals} proposal${m.openProposals===1?' is':'s are'} still open.`, 'Follow up every open proposal today with one specific question about their decision.', 'Closest money to the bank.', '£0', 'High');
+    if(m.conversion < 0.35) add('conv', `Proposal close rate is ${Math.round(m.conversion*100)}%.`, 'Only send proposals after a discovery call, and lead with one fixed package rather than options.', 'Fewer wasted proposals, higher close rate.', '£0', 'Medium');
+    if(stage!=='early' && m.mrr < st.target*2) add('recurring', `Recurring revenue is ${gbp(m.mrr)}/mo — every week starts from zero.`, 'Offer the Essentials retainer to every website client at handover.', 'Builds a monthly floor under the weekly target.', '£0', 'High');
+    if(stage==='middle') add('automate', 'Onboarding and follow-ups are manual.', 'Automate onboarding forms, proposal follow-ups and invoice reminders.', 'Saves hours per client and stops leads going cold.', '£20–£60/mo tools', 'Medium');
+    if(stage==='high') add('team', 'You can\'t sell, build and manage accounts alone at this level.', 'Hire an account manager / VA and a regular developer; move yourself to sales and direction.', 'Revenue stops being capped by your own hours.', 'Freelancer / staff costs', 'High');
+    add('referrals', 'Referral partners are the cheapest source of good clients.', 'Agree a referral fee with two complementary businesses (accountants, printers, photographers).', 'Warm introductions convert far better than cold outreach.', '10% referral fee', 'Low');
+  }
+  const order = {High:0, Medium:1, Low:2};
+  return out.sort((a,b)=>order[a.priority]-order[b.priority]).slice(0,5);
+}
+function tgDecision(db, key){ return tgArr(db,'tgDecisions').find(d=>d.key===key) || null; }
+
+/* ---------- weekly missions ---------- */
+function tgMissionTemplates(db, biz, target, level, now){
+  const p = tgPlan(db, biz, target, now);
+  const stage = tgStage(level);
+  if(biz==='sw') return [
+    {slug:'leads', title:`Respond to ${p.leads} qualified leads`, target:p.leads, auto:'sw-leads', priority:'High', category:'MONEY MAKING'},
+    {slug:'quotes', title:`Send ${p.quotes} quotes`, target:p.quotes, auto:'sw-quotes', priority:'High', category:'MONEY MAKING'},
+    {slug:'fu', title:`Follow up ${p.followUps} outstanding quotes`, target:p.followUps, priority:'High', category:'FOLLOW-UP'},
+    {slug:'past', title:`Contact ${p.pastCustomers} previous customers`, target:p.pastCustomers, priority:'Medium', category:'MONEY MAKING'},
+    {slug:'reviews', title:`Request ${p.reviews} reviews`, target:p.reviews, priority:'Low', category:'FOLLOW-UP'},
+    {slug:'agents', title:`Contact ${p.agents} estate agents or property managers`, target:p.agents, priority:'Medium', category:'MONEY MAKING'}
+  ].concat(stage==='middle' ? [{slug:'sub', title:'Line up one reliable subcontractor', target:1, priority:'Medium', category:'OPERATIONS'}]
+         : stage==='high' ? [{slug:'delegate', title:'Delegate one job end-to-end without going on site', target:1, priority:'Medium', category:'OPERATIONS'}] : []);
+  return [
+    {slug:'outreach', title:`${p.outreach} targeted outreaches`, target:p.outreach, auto:'sf-outreach', priority:'High', category:'MONEY MAKING'},
+    {slug:'conv', title:`${p.conversations} conversations`, target:p.conversations, auto:'sf-conversations', priority:'High', category:'MONEY MAKING'},
+    {slug:'calls', title:`${p.calls} discovery calls`, target:p.calls, auto:'sf-calls', priority:'High', category:'MONEY MAKING'},
+    {slug:'proposals', title:`${p.proposals} proposals`, target:p.proposals, auto:'sf-proposals', priority:'High', category:'MONEY MAKING'},
+    {slug:'closes', title:`${p.sales} close${p.sales===1?'':'s'}`, target:p.sales, auto:'sf-closes', priority:'High', category:'MONEY MAKING'},
+    {slug:'fu', title:'Follow up every open proposal', target:Math.max(1,p.followUps), priority:'High', category:'FOLLOW-UP'}
+  ].concat(stage==='middle' ? [{slug:'template', title:'Turn one build into a reusable template / automation', target:1, priority:'Medium', category:'OPERATIONS'}]
+         : stage==='high' ? [{slug:'delegate', title:'Hand one client build fully to a freelancer', target:1, priority:'Medium', category:'OPERATIONS'}] : []);
+}
+// Creates this week's missions once (stable ids, so edits stick and devices don't duplicate).
+function tgEnsureMissions(db, biz, now){
+  const st = tgState(db, biz, now);
+  const wk = st.weekKey;
+  const list = tgArr(db,'tgMissions');
+  if(list.some(m=>m.biz===biz && m.weekKey===wk && m.generated)) return false;
+  tgMissionTemplates(db, biz, st.target, st.level, now).forEach((t,i)=>{
+    const id = 'm-'+biz+'-'+wk+'-'+t.slug;
+    if(!list.some(m=>m.id===id)) list.push(Object.assign({id, biz, weekKey:wk, generated:true, order:i, done:false, progress:0, due:tgAddDays(wk,4), link:'', createdAt:(now||new Date()).toISOString()}, t));
+  });
+  return true;
+}
+// Progress pulled from real records where it's reliable; otherwise manual.
+function tgAutoProgress(db, auto, weekStart, weekEnd){
+  const inW = d => tgInRange(String(d||'').slice(0,10), weekStart, weekEnd);
+  const pros = db.sfProspects||[];
+  switch(auto){
+    case 'sw-quotes': return (db.quotes||[]).filter(q=>inW(q.createdAt) && q.status!=='draft').length + (PAINT_JOBS_CACHE||[]).filter(r=>inW(r.dateQuoted) && r.stage!=='draft').length;
+    case 'sw-leads': return (db.leads||[]).filter(l=>inW(l.createdAt) && l.stage!=='New Lead').length + (db.followUps||[]).filter(f=>inW(f.createdAt) && f.status!=='new').length;
+    case 'sf-outreach': return Math.max((db.sfActivity||[]).filter(a=>inW(a.date)).reduce((t,a)=>t+(Number(a.emails)||0)+(Number(a.calls)||0),0), pros.filter(p=>inW(p.lastContacted)).length);
+    case 'sf-conversations': return pros.filter(p=>['Replied','Call Booked','Proposal Sent','Negotiating','Won'].includes(p.status) && inW(p.statusChangedAt)).length;
+    case 'sf-calls': return pros.filter(p=>inW(p.callBookedAt)).length;
+    case 'sf-proposals': return Math.max((db.sfQuotes||[]).filter(q=>inW(q.createdAt) && q.status!=='draft').length, pros.filter(p=>p.status==='Proposal Sent' && inW(p.statusChangedAt)).length);
+    case 'sf-closes': return pros.filter(p=>inW(p.wonAt)).length;
+  }
+  return null;
+}
+function tgMissionsFor(db, biz, weekKey){
+  const s = tgSettings(db);
+  const end = tgAddDays(weekKey, 6);
+  return tgArr(db,'tgMissions').filter(m=>m.biz===biz && m.weekKey===weekKey && !m.removed).sort((a,b)=>(a.order||0)-(b.order||0)).map(m=>{
+    const auto = m.auto ? tgAutoProgress(db, m.auto, weekKey, end) : null;
+    const progress = Math.max(Number(m.progress)||0, auto||0);
+    const complete = !!m.done || (m.target>0 && progress>=m.target);
+    return Object.assign({}, m, {autoProgress:auto, progressShown:progress, complete, autoComplete: !m.done && auto!=null && m.target>0 && auto>=m.target});
+  });
+}
+
+/* ---------- today's actions ---------- */
+function tgDailyActions(db, now){
+  const today = tgToday(now);
+  const items = [];
+  const add = (id, category, title, detail, impact, urgency, go)=>items.push({id, category, title, detail, impact, urgency, go});
+  // money owed
+  (db.invoices||[]).concat((db.sfInvoices||[]).map(i=>Object.assign({_sf:true}, i))).forEach(inv=>{
+    if(invoiceStatus(inv)!=='overdue') return;
+    const owed = invoiceOutstanding(inv);
+    add('inv-'+inv.id, 'URGENT', `Chase ${inv.invoiceNumber} — ${gbp(owed)} overdue`, (inv.customerName||inv.clientName||'')+' · due '+fmtDate(inv.dueDate), owed, 3, inv._sf?"navigate('sf-invoices')":"navigate('invoices')");
+  });
+  (db.followUps||[]).filter(f=>f.status==='new').forEach(f=>add('fu-'+f.id, 'URGENT', `Call back ${f.name||'missed caller'}`, f.phone||'', 300, 3, "navigate('followups')"));
+  // warm money
+  (db.sfProspects||[]).filter(p=>p.status==='Call Booked').forEach(p=>add('pc-'+p.id, 'MONEY MAKING', `Prep & run call — ${p.business}`, 'Call booked · '+(acqPkg(p.package)||{label:''}).label, (acqValue(p).oneOff||acqValue(p).monthly*3), 2, "navigate('sf-acquisition')"));
+  (db.sfProspects||[]).filter(p=>p.status==='Proposal Sent'||p.status==='Negotiating').forEach(p=>add('pp-'+p.id, 'FOLLOW-UP', `Follow up proposal — ${p.business}`, 'Proposal sent '+(acqDaysSince(p.statusChangedAt)||0)+' days ago', (acqValue(p).oneOff||acqValue(p).monthly*3), (acqDaysSince(p.statusChangedAt)||0)>=3?3:2, "navigate('sf-acquisition')"));
+  (db.quotes||[]).filter(q=>q.status==='sent' && (typeof swQuoteNeedsChase!=='function' || swQuoteNeedsChase(q))).forEach(q=>add('q-'+q.id, 'FOLLOW-UP', `Follow up quote ${q.quoteNumber} — ${q.customerName}`, gbp(calcQuoteTotal(q).total), calcQuoteTotal(q).total, (daysUntil(q.validUntil)!==null && daysUntil(q.validUntil)<=3)?3:2, "navigate('quotes')"));
+  (db.sfQuotes||[]).filter(q=>q.status==='sent').forEach(q=>add('sq-'+q.id, 'FOLLOW-UP', `Follow up proposal ${q.quoteNumber} — ${q.clientName}`, gbp(calcQuoteTotal(q).total), calcQuoteTotal(q).total, 2, "navigate('sf-quotes')"));
+  (db.leads||[]).filter(l=>l.stage==='New Lead').forEach(l=>add('l-'+l.id, 'MONEY MAKING', `Contact new lead — ${l.name}`, (l.source||'')+(l.phone?' · '+l.phone:''), Number(l.value)||300, 3, "navigate('leads')"));
+  (db.sfProspects||[]).filter(p=>p.status==='Not Contacted').slice(0,5).forEach(p=>add('pn-'+p.id, 'MONEY MAKING', `First contact — ${p.business}`, p.type||'', (acqValue(p).oneOff||acqValue(p).monthly*3)*0.3, 1, "navigate('sf-acquisition')"));
+  (db.sfClients||[]).filter(c=>c.callDate && c.callDate<=today && c.status!=='paused').forEach(c=>add('sc-'+c.id, 'FOLLOW-UP', `Client call due — ${c.name}`, c.biz||'', Number(c.mrr)||200, 2, "navigate('sf-clients')"));
+  (db.swServices||[]).filter(sv=>sv.status!=='paused').forEach(sv=>{ const d = daysUntil(sv.nextDue); if(d===null || d>14 || sv.bookedJobId) return; const lastRem = (sv.reminders||[]).slice(-1)[0];
+    if(lastRem && -daysUntil(lastRem.date) < 7) return;
+    add('sv-'+sv.id, 'MONEY MAKING', `Book ${sv.type.toLowerCase()} — ${sv.customerName}`, (d<0?'overdue by '+(-d)+' days':'due '+fmtDate(sv.nextDue))+' · '+gbp(sv.price), Number(sv.price)||90, d<0?3:2, "SW_SERVICE_FILTER='due'; navigate('services')"); });
+  (db.jobs||[]).filter(j=>j.status==='completed' && !(db.invoices||[]).some(i=>i.jobId===j.id)).forEach(j=>add('ji-'+j.id, 'URGENT', `Invoice finished job ${j.jobNumber}`, j.customerName+' · '+gbp(j.expectedRevenue), Number(j.expectedRevenue)||0, 3, `swInvoiceFromJob('${j.id}')`));
+  // delivery
+  (db.jobs||[]).filter(j=>['scheduled','active'].includes(j.status)).forEach(j=>{
+    if(j.endDate && j.endDate<today) add('jr-'+j.id, 'DELIVERY', `At-risk job ${j.jobNumber} — past its end date`, j.customerName, Number(j.expectedRevenue)||0, 3, `navigate('jobs','${j.id}')`);
+    else if(j.startDate===today) add('js-'+j.id, 'DELIVERY', `Job starts today — ${j.jobNumber}`, j.customerName+' · '+(j.assignedTo||'Unassigned'), Number(j.expectedRevenue)||0, 3, `navigate('jobs','${j.id}')`);
+  });
+  (db.invoices||[]).concat(db.sfInvoices||[]).filter(i=>i.status==='draft').forEach(i=>add('id-'+i.id, 'MONEY MAKING', `Send draft invoice ${i.invoiceNumber}`, gbp(calcInvoiceTotal(i).total), calcInvoiceTotal(i).total, 2, (db.sfInvoices||[]).includes(i)?"navigate('sf-invoices')":"navigate('invoices')"));
+  // operations / admin
+  ['sw','sf'].forEach(biz=>{ const c = tgCapacity(db, biz, now); if(c.bottleneck.type==='delivery') add('cap-'+biz, 'OPERATIONS', TG_BIZ[biz].name+': '+c.bottleneck.label, c.bottleneck.detail, 0, 2, `setTgTab('${biz}')`); });
+  (db.compliance||[]).concat(db.sfCompliance||[]).filter(c=>{ const d=daysUntil(c.expiryDate); return d!==null && d<=14; }).forEach(c=>add('cm-'+c.id, 'ADMIN', `Renew ${c.name}`, 'Expires '+fmtDate(c.expiryDate), 0, 1, "navigate('compliance')"));
+  const behind = ['sw','sf'].some(b=>{ const st = tgState(db,b,now); return ['BEHIND'].includes(tgPace(st, now).status); });
+  const catW = {URGENT:5, 'MONEY MAKING':4, 'FOLLOW-UP':3.5, DELIVERY:3, OPERATIONS:2, ADMIN:1};
+  items.forEach(it=>{ it.score = catW[it.category]*10 + it.urgency*6 + Math.min(20, Math.log10(1+(Number(it.impact)||0))*5) - (behind && it.category==='ADMIN' ? 25 : 0); });
+  items.sort((a,b)=>b.score-a.score);
+  return {items, behind};
+}
+
+/* ===================== TARGETS — UI ===================== */
+// GBP everywhere: whole pounds without pence, otherwise two decimals.
+function gbp(n){
+  n = Number(n)||0;
+  const neg = n<0; n = Math.abs(n);
+  const whole = Math.abs(n-Math.round(n))<0.005;
+  return (neg?'-':'')+'£'+n.toLocaleString('en-GB',{minimumFractionDigits:whole?0:2, maximumFractionDigits:whole?0:2});
+}
+function tgAudit(entity, entityId, action, before, after, reason){
+  const list = tgArr(DB,'tgAudit');
+  list.unshift({id:uid(), at:new Date().toISOString(), by:CURRENT_USER_EMAIL||'', entity, entityId, action, before:before||null, after:after||null, reason:reason||''});
+  if(list.length>500) DB.tgAudit = list.slice(0,500);
+}
+let TG_TAB = 'overview';
+try{ TG_TAB = localStorage.getItem('steadyworks_tg_tab') || 'overview'; }catch(e){}
+const TG_TABS = [['overview','Overview'],['sw','SteadyWorks'],['sf','SteadyFlow'],['ledger','Money'],['rewards','Rewards'],['history','History'],['projection','Projection'],['settings','Settings']];
+function setTgTab(t){ TG_TAB = t; try{ localStorage.setItem('steadyworks_tg_tab', t); }catch(e){} if(currentRoute!=='targets') navigate('targets'); else { renderPage(); window.scrollTo(0,0); } }
+// Housekeeping each time Targets renders: close finished weeks, create this week's missions, unlock rewards.
+function tgPrepare(){
+  const now = new Date();
+  tgSettings(DB);
+  let changed = false;
+  const closed = tgCloseDueCycles(DB, now);
+  if(closed.length) changed = true;
+  if(tgEnsureMissions(DB,'sw',now)) changed = true;
+  if(tgEnsureMissions(DB,'sf',now)) changed = true;
+  if(tgUnlockRewards(DB, now).length) changed = true;
+  if(changed) save();
+  return closed;
+}
+function view_targets(){
+  if(!TG_TABS.some(([k])=>k===TG_TAB)) TG_TAB = 'overview';
+  let body;
+  try{
+    tgPrepare();
+    body = {overview:tgOverviewView, sw:()=>tgBizView('sw'), sf:()=>tgBizView('sf'), combined:tgCombinedView, ledger:tgLedgerView, rewards:tgRewardsView, projection:tgProjectionView, history:tgHistoryView, settings:tgSettingsView}[TG_TAB]();
+  }catch(err){
+    console.error(err);
+    body = `<div class="card">${emptyBlock('Something went wrong building this panel: '+esc(err.message)+'. Your data is untouched.','Try again','renderPage()','⚠️')}</div>`;
+  }
+  return `<div class="tabs">${TG_TABS.map(([k,l])=>`<button class="tab-btn ${TG_TAB===k?'active':''}" onclick="setTgTab('${k}')">${l}</button>`).join('')}</div>${body}`;
+}
+function afterRender_targets(){
+  if(TG_TAB==='history') tgHistoryCharts();
+  if(TG_TAB==='projection') tgProjectionRender();
+}
+
+/* ---------- shared pieces ---------- */
+const TG_PACE_CLS = {'TARGET ACHIEVED':'good', 'AHEAD':'good', 'ON PACE':'ok', 'BEHIND':'bad', 'MISSED':'bad', 'NOT STARTED':'muted'};
+function tgPill(text, tone){ return `<span class="tg-pill tg-${tone||'muted'}">${esc(text)}</span>`; }
+function tgBar(pct, color, h){ return `<div class="tg-bar" style="${h?'height:'+h+'px;':''}"><div style="width:${Math.max(0,Math.min(100,pct)).toFixed(1)}%;${color?'background:'+color+';':''}"></div>${pct>100?'<span class="tg-bar-over"></span>':''}</div>`; }
+function tgStat(label, value, sub, tone){ return `<div class="tg-stat"><div class="tg-stat-l">${label}</div><div class="tg-stat-v ${tone?'tg-t-'+tone:''}">${value}</div>${sub?`<div class="tg-stat-s">${sub}</div>`:''}</div>`; }
+function tgLevelBadge(level, color){ return `<div class="tg-level" style="--c:${color}"><span>LEVEL</span><strong>${level}</strong></div>`; }
+
+function tgTrackCard(biz){
+  const now = new Date();
+  const B = TG_BIZ[biz];
+  const st = tgState(DB, biz, now);
+  const pace = tgPace(st, now);
+  const ms = tgMissionsFor(DB, biz, st.weekKey);
+  const cap = tgCapacity(DB, biz, now);
+  const pot = tgExpansionPot(DB, biz);
+  return `<div class="card tg-track" style="--c:${B.color}">
+    <div class="tg-track-head">
+      ${tgLevelBadge(st.level, B.color)}
+      <div style="flex:1;min-width:0;">
+        <div class="tg-track-name">${B.name}</div>
+        <div class="small muted">${fmtDate(st.startDate)} – ${fmtDate(st.endDate)}${st.override?` · <span style="color:var(--warning);">override: ${esc(st.override.reason)}</span>`:''}</div>
+      </div>
+      ${tgPill(pace.status, TG_PACE_CLS[pace.status])}
+    </div>
+    <div class="tg-big"><span>${gbp(st.revenue)}</span><small> / ${gbp(st.target)}</small></div>
+    ${tgBar(st.pct, B.color, 12)}
+    <div class="tg-row-stats">
+      ${tgStat('Progress', Math.round(st.pct)+'%')}
+      ${st.achieved ? tgStat('Surplus', gbp(st.surplus), '', 'good') : tgStat('Remaining', gbp(st.remaining))}
+      ${tgStat('Need / day', st.achieved?'—':gbp(pace.requiredDaily), pace.daysLeft+' day'+(pace.daysLeft===1?'':'s')+' left')}
+      ${tgStat('Next target', gbp(st.nextTarget))}
+    </div>
+    <div class="tg-chips">
+      <span class="tg-chip">✅ Missions ${ms.filter(m=>m.complete).length}/${ms.length}</span>
+      <span class="tg-chip">${st.levelsToGate===Number(tgSettings(DB).levelsPerGate)&&st.levelsDone>0?'🔓 Gate just unlocked':'🔒 Gate in '+st.levelsToGate+' level'+(st.levelsToGate===1?'':'s')} · pot ${gbp(pot.remaining)}</span>
+      <span class="tg-chip ${cap.bottleneck.type==='delivery'?'tg-chip-bad':cap.bottleneck.type==='sales'?'tg-chip-warn':''}">⚙️ ${cap.bottleneck.label}</span>
+    </div>
+    <div class="flex gap-8 mt-10" style="flex-wrap:wrap;">
+      <button class="btn btn-ghost btn-sm" onclick="setTgTab('${biz}')">Open ${B.name} →</button>
+      ${st.achieved?`<button class="btn btn-gold btn-sm" onclick="tgCompleteEarly('${biz}')">🏁 Complete level now</button>`:''}
+    </div>
+  </div>`;
+}
+
+/* ---------- OVERVIEW ---------- */
+function tgRoadState(){ if(!window._tgRoad) window._tgRoad = {biz:'all', from:'', to:'', objective: tgSettings(DB).objective||'gross'}; return window._tgRoad; }
+function tgRoadCard(){
+  const f = tgRoadState();
+  const r = tgRoad(DB, f.biz, f.from||'1900-01-01', f.to||'2999-12-31', f.objective);
+  const obj = TG_OBJECTIVES[f.objective];
+  return `<div class="card tg-road">
+    <div class="flex-between" style="flex-wrap:wrap;gap:10px;">
+      <div><div class="tg-eyebrow">THE CHALLENGE</div><div class="tg-road-title">ROAD TO ${gbp(r.goal).toUpperCase()}</div></div>
+      <div class="flex gap-8" style="flex-wrap:wrap;">
+        <select onchange="tgRoadState().objective=this.value; tgSettings(DB).objective=this.value; save(); renderPage();" style="width:auto;">${Object.entries(TG_OBJECTIVES).map(([k,o])=>`<option value="${k}" ${f.objective===k?'selected':''}>${o.label}</option>`).join('')}</select>
+        <select onchange="tgRoadState().biz=this.value; renderPage();" style="width:auto;"><option value="all" ${f.biz==='all'?'selected':''}>Combined</option><option value="sw" ${f.biz==='sw'?'selected':''}>SteadyWorks</option><option value="sf" ${f.biz==='sf'?'selected':''}>SteadyFlow</option></select>
+        <input type="date" value="${f.from}" title="From" onchange="tgRoadState().from=this.value; renderPage();" style="width:auto;">
+        <input type="date" value="${f.to}" title="To" onchange="tgRoadState().to=this.value; renderPage();" style="width:auto;">
+      </div>
+    </div>
+    <div class="tg-road-num"><span>${gbp(r.value)}</span> <small>/ ${gbp(r.goal)}</small> <em>${r.pct.toFixed(1)}%</em></div>
+    ${tgBar(r.pct, 'linear-gradient(90deg,var(--gold),var(--gold-light))', 18)}
+    <div class="small muted mt-10"><strong style="color:var(--text);">${obj.label}:</strong> ${obj.how} This is ${f.objective==='gross'?'<strong>revenue, not profit</strong>':'<strong>after costs</strong>'}.</div>
+    <div class="tg-road-break">
+      ${tgStat('Gross received', gbp(r.gross))}
+      ${tgStat('Acquisition', tgMinus(r.acq))}
+      ${tgStat('After acquisition', gbp(r.afterAcq))}
+      ${tgStat('Operating costs', tgMinus(r.ops))}
+      ${tgStat('Expansion spend', tgMinus(r.exp))}
+      ${tgStat('Owner pay', tgMinus(r.owner))}
+      ${tgStat('Est. retained cash', gbp(r.retained), r.rewards?'after '+gbp(r.rewards)+' rewards':'', r.retained<0?'bad':'good')}
+    </div>
+  </div>`;
+}
+function tgMinus(n){ return n ? '−'+gbp(n) : gbp(0); }
+function tgWeekRange(now){ const s = tgSettings(DB); const ws = tgWeekStart(tgToday(now), s.weekStartDay); return {start:ws, end:tgAddDays(ws,6)}; }
+function tgCombinedStrip(){
+  const now = new Date();
+  const w = tgWeekRange(now);
+  const rev = tgRevenue(DB,'all',w.start,w.end), acq = tgAcquisition(DB,'all',w.start,w.end), own = tgOwnerPayWeek(DB, w.start);
+  const ops = tgOpCosts(DB,'all',w.start,w.end), exp = tgExpansionSpent(DB,'all',w.start,w.end), pot = tgExpansionPot(DB,'all');
+  const retained = tgRound(rev - acq.spend - ops - own.taken - exp);
+  const combinedTarget = tgState(DB,'sw',now).target + tgState(DB,'sf',now).target;
+  return `<div class="tg-strip">
+    <div class="card">${tgStat('Combined revenue (this week)', gbp(rev), 'of '+gbp(combinedTarget)+' combined target')}</div>
+    <div class="card">${tgStat('Acquisition spend', gbp(acq.spend), 'max '+gbp(acq.max)+' · '+gbp(acq.unused)+' unused')}</div>
+    <div class="card">${tgStat('Owner pay', gbp(own.taken)+' / '+gbp(own.requirement), own.status, own.status==='Taken'?'good':own.taken>0?'warn':'')}</div>
+    <div class="card">${tgStat('Expansion pot', gbp(pot.remaining), pot.accruing?gbp(pot.accruing)+' accruing to next gate':'available to invest')}</div>
+    <div class="card">${tgStat('Retained cash (this week)', gbp(retained), 'after acquisition, costs, owner pay & expansion', retained<0?'bad':'')}</div>
+  </div>`;
+}
+function tgToday_summary(){
+  const now = new Date();
+  const {items, behind} = tgDailyActions(DB, now);
+  const sw = tgState(DB,'sw',now), sf = tgState(DB,'sf',now);
+  const remaining = sw.remaining + sf.remaining;
+  const daysLeft = Math.max(tgPace(sw,now).daysLeft, 1);
+  const count = pref => items.filter(i=>i.id.startsWith(pref)).length;
+  const doneToday = (tgSettings(DB).dailyDone||{})[tgToday(now)] || [];
+  const visible = items.filter(i=>!(behind && i.category==='ADMIN')).slice(0,10);
+  const top = items.find(i=>!doneToday.includes(i.id));
+  return `<div class="card">
+    <div class="card-title">TODAY'S MONEY-MAKING MISSIONS <span class="small muted">What to do today to hit this week</span></div>
+    <div class="tg-today-head">
+      <div class="tg-today-top">${top?`<div class="tg-eyebrow">TODAY'S PRIORITY</div><div style="font-size:16px;font-weight:800;margin-top:4px;">${esc(top.title)}</div><div class="small muted">${esc(top.detail||'')}</div>`:'<div class="small muted">Nothing urgent in the data — use today for outreach.</div>'}</div>
+      <div class="tg-today-stats">
+        ${tgStat('Still required', gbp(remaining))}
+        ${tgStat('Daily pace', gbp(tgRound(remaining/daysLeft)))}
+        ${tgStat('Overdue follow-ups', count('fu-')+count('inv-')+count('sc-'))}
+        ${tgStat('Open proposals', count('pp-')+count('q-')+count('sq-'))}
+        ${tgStat('Uncontacted leads', count('l-')+count('pn-'))}
+        ${tgStat('At-risk jobs', count('jr-'))}
+        ${tgStat('Blockers', count('cap-'))}
+      </div>
+    </div>
+    ${behind?'<div class="acq-banner warn mt-10">You\'re behind pace, so admin tasks are hidden until the money-making work is done.</div>':''}
+    <div class="tg-actions mt-10">${visible.length ? visible.map(i=>{ const done = doneToday.includes(i.id); return `<div class="tg-action ${done?'done':''}">
+      <input type="checkbox" ${done?'checked':''} onchange="tgToggleDaily('${i.id}')" aria-label="Mark done">
+      <span class="tg-cat tg-cat-${i.category.replace(/[^A-Z]/g,'').toLowerCase()}">${i.category}</span>
+      <div style="flex:1;min-width:0;"><div class="tg-action-t">${esc(i.title)}</div>${i.detail?`<div class="small muted">${esc(i.detail)}</div>`:''}</div>
+      ${i.go?`<button class="btn btn-ghost btn-sm" onclick="${i.go}">Open</button>`:''}
+    </div>`; }).join('') : emptyBlock('No actions pulled from your records today. Your weekly missions are below.','','','✅')}</div>
+  </div>`;
+}
+function tgToggleDaily(id){
+  const s = tgSettings(DB), d = tgToday();
+  // keep only the last 7 days of ticks
+  Object.keys(s.dailyDone).forEach(k=>{ if(k < tgAddDays(d,-7)) delete s.dailyDone[k]; });
+  const list = s.dailyDone[d] = s.dailyDone[d] || [];
+  const i = list.indexOf(id);
+  if(i>-1) list.splice(i,1); else list.push(id);
+  save(); renderPage(); toast(i>-1?'Marked not done':'Done — nice', i>-1?'↺':'✓');
+}
+function tgBottlenecks(){
+  const now = new Date();
+  return `<div class="card"><div class="card-title">OPERATIONAL BOTTLENECKS</div>
+    ${['sw','sf'].map(biz=>{ const c = tgCapacity(DB,biz,now); const r = c.recs[0]; return `<div class="tg-bneck">
+      <div class="flex-between" style="gap:8px;flex-wrap:wrap;"><strong>${TG_BIZ[biz].name}</strong>${tgPill(c.bottleneck.label, c.bottleneck.type==='delivery'?'bad':c.bottleneck.type==='sales'?'warn':'good')}</div>
+      <div class="small muted" style="margin-top:4px;">${esc(c.bottleneck.detail)}</div>
+      ${r?`<div class="small" style="margin-top:6px;"><strong>Next move:</strong> ${esc(r.action)}</div>`:''}
+    </div>`; }).join('')}
+  </div>`;
+}
+function tgNextExpansion(){
+  const s = tgSettings(DB);
+  const reviewsDue = tgReviewsDue();
+  return `<div class="card"><div class="card-title">NEXT EXPANSION</div>
+    ${['sw','sf'].map(biz=>{ const st = tgState(DB,biz,new Date()); const pot = tgExpansionPot(DB,biz); const per = Number(s.levelsPerGate)||2; const done = st.levelsDone % per; return `<div class="tg-bneck">
+      <div class="flex-between"><strong>${TG_BIZ[biz].name}</strong><span class="small muted">Gate ${st.gatesUnlocked+1}</span></div>
+      <div class="tg-gate-steps">${Array.from({length:per}).map((_,i)=>`<span class="${i<done?'on':''}"></span>`).join('')}<em>${st.levelsToGate} level${st.levelsToGate===1?'':'s'} to unlock</em></div>
+      <div class="small muted">Pot available ${gbp(pot.remaining)} · ${gbp(pot.accruing)} accruing · ${pot.pendingRecs} pending recommendation${pot.pendingRecs===1?'':'s'}</div>
+    </div>`; }).join('')}
+    ${reviewsDue.length?reviewsDue.map(g=>`<div class="acq-banner good mt-10 flex-between" style="gap:8px;flex-wrap:wrap;"><span>🔓 ${TG_BIZ[g.biz].name}: Expansion Gate ${g.gateNumber} unlocked — review due</span><button class="btn btn-gold btn-sm" onclick="tgOpenReview('${g.id}')">Start review</button></div>`).join(''):''}
+  </div>`;
+}
+function tgReviewsDue(){ return tgArr(DB,'tgCycles').filter(c=>c.gateUnlocked && !tgArr(DB,'tgReviews').some(r=>r.cycleId===c.id)); }
+function tgOverviewView(){
+  const pendingAll = tgArr(DB,'tgCycles').filter(c=>c.achieved && !c.ack).sort((a,b)=>a.startDate.localeCompare(b.startDate));
+  const pendingLevelUps = ['sw','sf'].map(b=>pendingAll.filter(c=>c.biz===b).pop()).filter(Boolean);
+  return `
+  ${pendingLevelUps.map(c=>`<div class="card tg-levelup-banner" style="--c:${TG_BIZ[c.biz].color}"><div><div class="tg-eyebrow">LEVEL COMPLETE</div><strong>${TG_BIZ[c.biz].name} — Level ${c.level}</strong> · ${gbp(c.revenue)} received vs ${gbp(c.target)} (${Math.round(c.revenue/c.target*100)}%)</div><button class="btn btn-gold btn-sm" onclick="tgOpenLevelUp('${c.id}')">See what changes next →</button></div>`).join('')}
+  ${tgRoadCard()}
+  <div class="grid grid-2 mt-10" style="align-items:start;">${tgTrackCard('sw')}${tgTrackCard('sf')}</div>
+  ${tgCombinedStrip()}
+  ${tgToday_summary()}
+  <div class="grid grid-2 mt-10" style="align-items:start;">${tgBottlenecks()}${tgNextExpansion()}</div>
+  ${tgLivePayments(DB).length===0?`<div class="card mt-10">${emptyBlock('No received money recorded yet. Revenue appears here automatically when you mark invoices paid, or you can import invoices you\'ve already been paid for.','Import past paid invoices','tgOpenImport()','💷')}</div>`:''}`;
+}
+
+/* ---------- BUSINESS TRACK ---------- */
+function tgLadder(biz){
+  const st = tgState(DB, biz, new Date());
+  const per = Number(tgSettings(DB).levelsPerGate)||2;
+  const from = Math.max(1, st.level-2), to = st.level+3;
+  let html = '';
+  for(let L=from; L<=to; L++){
+    const cyc = tgCyclesFor(DB,biz).filter(c=>c.levelCompleted && c.level===L)[0];
+    const state = L<st.level ? 'done' : L===st.level ? 'current' : 'locked';
+    html += `<div class="tg-step tg-step-${state}"><div class="tg-step-n">L${L}</div><div class="tg-step-t">${gbp(L===st.level?st.target:cyc?cyc.target:tgCalcTarget(DB,biz,L))}</div><div class="tg-step-s">${state==='done'?'✓ done':state==='current'?'now':'🔒'}</div></div>`;
+    if(L % per === 0) html += `<div class="tg-gate ${L<st.level?'open':''}" title="Expansion gate">${L<st.level?'🔓':'🔒'}<span>Gate ${L/per}</span></div>`;
+  }
+  return `<div class="tg-ladder">${html}</div>`;
+}
+function tgBizView(biz){
+  const now = new Date();
+  const B = TG_BIZ[biz];
+  const st = tgState(DB, biz, now);
+  const pace = tgPace(st, now);
+  const cap = tgCapacity(DB, biz, now);
+  const acq = tgAcquisition(DB, biz, st.startDate, st.endDate);
+  const pot = tgExpansionPot(DB, biz);
+  const own = tgOwnerPayWeek(DB, st.weekKey);
+  const cycles = tgCyclesFor(DB, biz).slice(-6).reverse();
+  return `
+  <div class="card mb-10 tg-biz-head" style="--c:${B.color}">
+    ${tgLevelBadge(st.level, B.color)}
+    <div style="flex:1;min-width:0;"><div class="tg-track-name">${B.name}</div><div class="small muted">${B.desc}</div></div>
+    <div class="flex gap-8" style="flex-wrap:wrap;"><button class="btn btn-ghost btn-sm" onclick="tgOpenOverride('${biz}')">Override target</button><button class="btn btn-ghost btn-sm" onclick="tgOpenPayment(null,'${biz}')">+ Record money received</button></div>
+  </div>
+  ${tgLadder(biz)}
+  <div class="grid grid-2 mt-10" style="align-items:start;">
+    <div class="card">
+      <div class="card-title">WEEKLY TARGET ${tgPill(pace.status, TG_PACE_CLS[pace.status])}</div>
+      <div class="tg-big"><span>${gbp(st.revenue)}</span><small> / ${gbp(st.target)}</small></div>
+      ${tgBar(st.pct, B.color, 14)}
+      <div class="tg-row-stats">
+        ${tgStat('Complete', Math.round(st.pct)+'%')}
+        ${st.achieved?tgStat('Surplus', gbp(st.surplus),'', 'good'):tgStat('Remaining', gbp(st.remaining))}
+        ${tgStat('Time left', pace.daysLeft+' day'+(pace.daysLeft===1?'':'s'), 'ends '+fmtDate(st.endDate))}
+        ${tgStat('Required pace', st.achieved?'—':gbp(pace.requiredDaily)+'/day')}
+      </div>
+      <div class="small muted mt-10">Calculated target ${gbp(st.calcTarget)}${st.override?` · <strong style="color:var(--warning);">active override ${gbp(st.override.amount)}</strong> — ${esc(st.override.reason)} <a style="color:var(--teal);cursor:pointer;" onclick="tgEndOverride('${st.override.id}')">end override</a>`:''} · Next level target ${gbp(st.nextTarget)} (+${tgSettings(DB).growthPct}%)</div>
+      ${st.achieved?`<div class="acq-banner good mt-10 flex-between" style="gap:8px;flex-wrap:wrap;"><span>🏁 TARGET ACHIEVED — the level completes when the week ends.</span><button class="btn btn-gold btn-sm" onclick="tgCompleteEarly('${biz}')">Complete now</button></div>`:''}
+      <div class="divider"></div>
+      <div class="card-title" style="margin-bottom:8px;">Owner pay this week <span class="small muted">combined, not revenue</span></div>
+      <div class="tg-row-stats">${tgStat('Required', gbp(own.requirement))}${tgStat('Taken', gbp(own.taken))}${tgStat('Remaining', gbp(own.remaining))}${tgStat('Status', own.status, '', own.status==='Taken'?'good':own.taken>0?'warn':'')}</div>
+      <button class="btn btn-ghost btn-sm mt-10" onclick="tgOpenOwnerPay()">+ Record owner pay</button>
+    </div>
+    ${tgMissionsCard(biz, st)}
+  </div>
+  ${tgCapacityCard(biz, cap)}
+  <div class="grid grid-2 mt-10" style="align-items:start;">
+    <div class="card">
+      <div class="card-title">ACQUISITION BUDGET <span class="small muted">${tgSettings(DB).acqPct}% of received — a ceiling, not a target</span></div>
+      <div class="tg-row-stats">${tgStat('Revenue received', gbp(acq.revenue))}${tgStat('Max budget', gbp(acq.max))}${tgStat('Actual spend', gbp(acq.spend), acq.over?'over by '+gbp(acq.over):'', acq.over?'bad':'')}${tgStat('Unused allowance', gbp(acq.unused), '', 'good')}</div>
+      <div class="tg-row-stats">${tgStat('Acquisition %', acq.pct==null?'—':acq.pct.toFixed(1)+'%')}${tgStat('Cost per lead', acq.costPerLead==null?'—':gbp(acq.costPerLead), acq.leads?acq.leads+' leads logged':'log leads with spend')}${tgStat('Cost per sale', acq.costPerSale==null?'—':gbp(acq.costPerSale))}${tgStat('Return on spend', acq.roas==null?'—':acq.roas.toFixed(1)+'×', acq.roas==null?'unattributed':'from '+gbp(acq.attributed)+' attributed')}</div>
+      <p class="small muted mt-10">Return on spend only counts payments tagged with the same channel as the spend. Anything else is shown as unattributed.</p>
+      <button class="btn btn-ghost btn-sm mt-10" onclick="tgOpenAcq(null,'${biz}')">+ Log acquisition spend</button>
+    </div>
+    <div class="card">
+      <div class="card-title">EXPANSION POT <span class="small muted">${st.levelsToGate} level${st.levelsToGate===1?'':'s'} to next gate</span></div>
+      <div class="tg-row-stats">${tgStat('Allowance', gbp(pot.allowance), 'unlocked by gates')}${tgStat('Accruing', gbp(pot.accruing), tgSettings(DB).expansionPct+'% of revenue, locked')}${tgStat('Committed', gbp(pot.committed))}${tgStat('Remaining', gbp(pot.remaining), '', pot.remaining<0?'bad':'good')}</div>
+      ${tgExpansionList(biz)}
+      <button class="btn btn-ghost btn-sm mt-10" onclick="tgOpenExpansion(null,'${biz}')">+ Propose investment</button>
+    </div>
+  </div>
+  <div class="card mt-10">
+    <div class="card-title">RECENT CYCLES <a class="small" style="color:var(--teal);cursor:pointer;" onclick="setTgTab('history')">Full history →</a></div>
+    <table><thead><tr><th>Week</th><th>Level</th><th>Target</th><th>Received</th><th>Result</th><th>Retained</th></tr></thead>
+    <tbody>${cycles.map(c=>`<tr><td>${fmtDate(c.startDate)} – ${fmtDate(c.endDate)}</td><td>${c.level}</td><td>${gbp(c.target)}${c.overrideTarget!=null?' <span class="small muted">(override)</span>':''}</td><td>${gbp(c.revenue)}</td><td>${c.achieved?tgPill('Level complete','good'):tgPill('Missed — level repeats','bad')}${c.gateUnlocked?' '+tgPill('Gate '+c.gateNumber,'ok'):''}</td><td>${gbp(c.retained)}</td></tr>`).join('') || emptyRow(6,'No finished weeks yet. Your first cycle closes at the end of this week.')}</tbody></table>
+  </div>`;
+}
+function tgMissionsCard(biz, st){
+  const ms = tgMissionsFor(DB, biz, st.weekKey);
+  const prCls = {High:'priority-high', Medium:'priority-med', Low:'priority-low'};
+  return `<div class="card">
+    <div class="card-title">WEEKLY MISSIONS <span class="small muted">${ms.filter(m=>m.complete).length}/${ms.length} done</span></div>
+    ${ms.length ? ms.map((m,i)=>`<div class="tg-mission ${m.complete?'done':''}">
+      <input type="checkbox" ${m.complete?'checked':''} ${m.autoComplete?'disabled title="Completed automatically from your records"':''} onchange="tgToggleMission('${m.id}')">
+      <div style="flex:1;min-width:0;">
+        <div class="tg-mission-t">${esc(m.title)}</div>
+        <div class="small muted">${m.target>1?`${m.progressShown}/${m.target}${m.autoProgress!=null?' <span title="Counted from your records">· auto</span>':''} · `:''}due ${fmtDate(m.due)}${m.link?' · '+esc(m.link):''}</div>
+        ${m.target>1?tgBar(m.progressShown/m.target*100, TG_BIZ[biz].color, 4):''}
+      </div>
+      <span class="pill ${prCls[m.priority]||'priority-low'}">${esc(m.priority||'Low')}</span>
+      <span class="tg-mission-btns">
+        <button class="icon-btn" title="Move up" ${i===0?'disabled':''} onclick="tgMoveMission('${m.id}',-1)">↑</button>
+        <button class="icon-btn" title="Move down" ${i===ms.length-1?'disabled':''} onclick="tgMoveMission('${m.id}',1)">↓</button>
+        <button class="icon-btn" title="Edit" onclick="tgOpenMission('${m.id}','${biz}')">✎</button>
+      </span>
+    </div>`).join('') : emptyBlock('No missions this week.','','','🎯')}
+    <button class="btn btn-ghost btn-sm mt-10" onclick="tgOpenMission(null,'${biz}')">+ Add mission</button>
+  </div>`;
+}
+function tgCapacityCard(biz, cap){
+  return `<div class="card mt-10">
+    <div class="flex-between" style="flex-wrap:wrap;gap:8px;margin-bottom:10px;">
+      <div class="card-title" style="margin:0;">OPERATIONS / CAPACITY <span class="small muted" style="margin-left:6px;">stage: ${tgStage(cap.st.level)} · level ${cap.st.level} → ${cap.st.level+1}</span></div>
+      <button class="btn btn-ghost btn-sm" onclick="tgOpenCapacity('${biz}')">Edit capacity inputs</button>
+    </div>
+    <div class="acq-banner ${cap.bottleneck.type==='delivery'?'push':cap.bottleneck.type==='sales'?'warn':'good'}"><strong>${cap.bottleneck.label}</strong> — ${esc(cap.bottleneck.detail)}</div>
+    <table class="mt-10"><thead><tr><th>Area</th><th>Current</th><th>Needed for next target (${gbp(cap.st.nextTarget)})</th><th>Gap</th><th>Status</th></tr></thead>
+    <tbody>${cap.rows.map(r=>`<tr><td>${esc(r.area)}</td><td>${r.current} ${r.unit}</td><td>${r.required} ${r.unit}</td><td>${r.gap>0?'+'+r.gap:'—'}</td><td>${tgPill(r.status, r.status==='OK'?'good':r.status==='Tight'?'warn':'bad')}</td></tr>`).join('')}</tbody></table>
+    <p class="small muted mt-10">Average ${TG_BIZ[biz].unit} value ${gbp(cap.m.avgValue)}${cap.m.avgAuto?' (from your paid invoices)':' (your input)'} · conversion ${Math.round(cap.m.conversion*100)}%${cap.m.convAuto?' (from your records, or 40–50% default until you have 3+ decided)':' (your input)'} · required ${TG_BIZ[biz].units} = target ÷ average value · required leads = ${TG_BIZ[biz].units} ÷ conversion.</p>
+    <div class="card-title mt-10" style="margin-bottom:6px;">Recommended actions</div>
+    ${cap.recs.map(r=>tgRecRow(r)).join('')}
+  </div>`;
+}
+function tgRecRow(r){
+  const d = tgDecision(DB, r.key);
+  const status = d ? (d.status==='approved'?'Approved':'Dismissed') : 'Open';
+  return `<div class="tg-rec ${d&&d.status==='dismissed'?'dismissed':''}">
+    <div style="flex:1;min-width:0;">
+      <div class="small muted">${esc(r.issue)}</div>
+      <div style="font-weight:700;margin:3px 0;">${esc(r.action)}</div>
+      <div class="small muted">Benefit: ${esc(r.benefit)} · Cost: ${esc(r.cost||'—')}</div>
+    </div>
+    <div class="tg-rec-side">
+      <span class="pill ${r.priority==='High'?'priority-high':r.priority==='Medium'?'priority-med':'priority-low'}">${r.priority}</span>
+      ${tgPill(status, status==='Approved'?'good':status==='Dismissed'?'muted':'ok')}
+      ${d?`<button class="icon-btn" title="Reopen" onclick="tgDecide('${r.key}','reopen')">↺</button>`:`<button class="btn btn-success btn-sm" onclick="tgDecide('${r.key}','approved')">Approve</button><button class="btn btn-ghost btn-sm" onclick="tgDecide('${r.key}','dismissed')">Dismiss</button>`}
+    </div>
+  </div>`;
+}
+function tgDecide(key, status){
+  const list = tgArr(DB,'tgDecisions');
+  const i = list.findIndex(d=>d.key===key);
+  if(status==='reopen'){ if(i>-1) list.splice(i,1); }
+  else if(i>-1) Object.assign(list[i], {status, at:new Date().toISOString()});
+  else list.push({id:'dec-'+key, key, status, at:new Date().toISOString(), by:CURRENT_USER_EMAIL||''});
+  save(); renderPage();
+  toast(status==='approved'?'Approved — add it to this week\'s missions if it needs doing now':status==='dismissed'?'Dismissed':'Reopened');
+}
+function tgExpansionList(biz){
+  const items = tgArr(DB,'tgExpansion').filter(x=>x.biz===biz).sort((a,b)=>String(b.date).localeCompare(String(a.date))).slice(0,6);
+  if(!items.length) return '<p class="small muted mt-10">No investments yet. Proposals stay pending until you approve them. Nothing is spent automatically.</p>';
+  const tone = {pending:'warn', approved:'ok', spent:'good', dismissed:'muted', topup:'good'};
+  return `<div class="mt-10">${items.map(x=>`<div class="tg-exp-row"><div style="flex:1;min-width:0;"><strong>${esc(x.kind==='topup'?'Top-up':x.category)}</strong> · ${gbp(x.amount)}<div class="small muted">${esc(x.reason||'')}${x.result?' · result: '+esc(x.result):''}</div></div>${tgPill(x.kind==='topup'?'Added to pot':x.status, tone[x.kind==='topup'?'topup':x.status])}${x.kind!=='topup'?`<button class="icon-btn" title="Edit" onclick="tgOpenExpansion('${x.id}','${biz}')">✎</button>`:''}</div>`).join('')}</div>`;
+}
+
+/* ---------- COMBINED ---------- */
+function tgCombinedView(){
+  const now = new Date();
+  const w = tgWeekRange(now);
+  const sw = tgState(DB,'sw',now), sf = tgState(DB,'sf',now);
+  const target = sw.target + sf.target, revenue = tgRevenue(DB,'all',w.start,w.end);
+  const pct = target ? revenue/target*100 : 0;
+  const acq = tgAcquisition(DB,'all',w.start,w.end);
+  return `
+  <div class="card">
+    <div class="card-title">ALL BUSINESSES — THIS WEEK <span class="small muted">${fmtDate(w.start)} – ${fmtDate(w.end)} · levels stay separate</span></div>
+    <div class="tg-big"><span>${gbp(revenue)}</span><small> / ${gbp(target)}</small></div>
+    ${tgBar(pct, 'linear-gradient(90deg,var(--gold),var(--teal))', 14)}
+    <div class="tg-row-stats">
+      ${tgStat('SteadyWorks', gbp(sw.revenue)+' / '+gbp(sw.target), 'Level '+sw.level)}
+      ${tgStat('SteadyFlow', gbp(sf.revenue)+' / '+gbp(sf.target), 'Level '+sf.level)}
+      ${tgStat('Combined', Math.round(pct)+'%')}
+      ${tgStat('Starting combined target', gbp((Number(tgSettings(DB).startTargets.sw)||0)+(Number(tgSettings(DB).startTargets.sf)||0)))}
+    </div>
+  </div>
+  ${tgCombinedStrip()}
+  <div class="grid grid-2 mt-10" style="align-items:start;">
+    <div class="card"><div class="card-title">ACQUISITION — BOTH BUSINESSES</div>
+      <div class="tg-row-stats">${tgStat('Max budget', gbp(acq.max))}${tgStat('Spent', gbp(acq.spend))}${tgStat('Unused', gbp(acq.unused),'', 'good')}${tgStat('Acquisition %', acq.pct==null?'—':acq.pct.toFixed(1)+'%')}</div></div>
+    <div class="card"><div class="card-title">EXPANSION — BOTH BUSINESSES</div>
+      ${(()=>{ const p = tgExpansionPot(DB,'all'); return `<div class="tg-row-stats">${tgStat('Allowance', gbp(p.allowance))}${tgStat('Committed', gbp(p.committed))}${tgStat('Spent', gbp(p.spent))}${tgStat('Remaining', gbp(p.remaining),'', 'good')}</div>`; })()}</div>
+  </div>
+  <div class="grid grid-2 mt-10" style="align-items:start;">${tgTrackCard('sw')}${tgTrackCard('sf')}</div>`;
+}
+
+/* ---------- LEDGER ---------- */
+function tgLedgerState(){ if(!window._tgLedger) window._tgLedger = {biz:'all', show:'payments'}; return window._tgLedger; }
+function tgLedgerView(){
+  const f = tgLedgerState();
+  const bizOk = x => f.biz==='all' || x.biz===f.biz || (f.biz!=='all' && !x.biz);
+  const sec = [['payments','Money received'],['acq','Acquisition spend'],['owner','Owner pay'],['expansion','Expansion'],['audit','Audit trail']];
+  let table = '';
+  if(f.show==='payments'){
+    const rows = tgArr(DB,'tgPayments').filter(p=>f.biz==='all'||p.biz===f.biz).sort((a,b)=>String(b.date).localeCompare(String(a.date)));
+    const closedIn = p => tgArr(DB,'tgCycles').some(c=>c.biz===p.biz && tgInRange(p.date,c.startDate,c.endDate));
+    table = `<table><thead><tr><th>Date</th><th>Business</th><th>Amount</th><th>Type</th><th>Customer</th><th>Job / project</th><th>Source</th><th>Notes</th><th></th></tr></thead><tbody>${rows.map(p=>`<tr style="${p.removed?'opacity:.45;':''}">
+      <td>${fmtDate(p.date)}</td><td>${TG_BIZ[p.biz]?TG_BIZ[p.biz].short:'—'}</td><td><strong>${gbp(p.amount)}</strong></td><td>${esc((TG_PAYMENT_TYPES.find(t=>t[0]===p.type)||['',p.type])[1])}</td>
+      <td>${esc(p.customer||'—')}</td><td class="small">${esc(p.job||'—')}</td>
+      <td class="small">${p.manual?tgPill('Manual','warn'):esc(p.sourceType||'')}${p.estimated?' '+tgPill('Estimated date','muted'):''}${p.removed?' '+tgPill('Removed','muted'):''}${closedIn(p)?' '+tgPill('In closed week','muted'):''}</td>
+      <td class="small muted">${esc(p.notes||'')}${p.channel?' · '+esc(p.channel):''}</td>
+      <td>${p.removed?'':`<button class="icon-btn" title="Edit" onclick="tgOpenPayment('${p.id}')">✎</button>`}</td></tr>`).join('') || emptyRow(9,'No money recorded yet. Payments are added automatically when you raise "Amount Paid" or mark an invoice paid.','Import past paid invoices','tgOpenImport()')}</tbody></table>`;
+  } else if(f.show==='acq'){
+    const rows = tgArr(DB,'tgAcqSpend').filter(bizOk).sort((a,b)=>String(b.date).localeCompare(String(a.date)));
+    table = `<table><thead><tr><th>Date</th><th>Business</th><th>Amount</th><th>Channel</th><th>Campaign</th><th>Supplier</th><th>Leads / sales</th><th>Related</th><th></th></tr></thead><tbody>${rows.map(a=>`<tr><td>${fmtDate(a.date)}</td><td>${TG_BIZ[a.biz].short}</td><td><strong>${gbp(a.amount)}</strong></td><td>${esc(a.channel||'—')}</td><td>${esc(a.campaign||'—')}</td><td>${esc(a.supplier||'—')}</td><td>${a.leads||0} / ${a.sales||0}</td><td class="small">${esc(a.related||'')}</td><td><button class="icon-btn" title="Edit" onclick="tgOpenAcq('${a.id}')">✎</button></td></tr>`).join('') || emptyRow(9,'No acquisition spend logged.','+ Log spend','tgOpenAcq()')}</tbody></table>`;
+  } else if(f.show==='owner'){
+    const rows = tgArr(DB,'tgOwnerPay').filter(bizOk).sort((a,b)=>String(b.date).localeCompare(String(a.date)));
+    table = `<table><thead><tr><th>Date</th><th>Amount</th><th>Status</th><th>Paid from</th><th>Notes</th><th></th></tr></thead><tbody>${rows.map(o=>`<tr><td>${fmtDate(o.date)}</td><td><strong>${gbp(o.amount)}</strong></td><td>${esc({taken:'Taken',scheduled:'Scheduled',partial:'Partially taken',not:'Not taken'}[o.status]||o.status)}</td><td>${o.biz?TG_BIZ[o.biz].name:'Combined'}</td><td class="small muted">${esc(o.notes||'')}</td><td><button class="icon-btn" title="Edit" onclick="tgOpenOwnerPay('${o.id}')">✎</button></td></tr>`).join('') || emptyRow(6,'No owner pay recorded.','+ Record owner pay','tgOpenOwnerPay()')}</tbody></table>`;
+  } else if(f.show==='expansion'){
+    const rows = tgArr(DB,'tgExpansion').filter(bizOk).sort((a,b)=>String(b.date).localeCompare(String(a.date)));
+    table = `<table><thead><tr><th>Date</th><th>Business</th><th>Category</th><th>Amount</th><th>Status</th><th>Reason / expected benefit</th><th>Result / ROI</th><th>Gate</th><th></th></tr></thead><tbody>${rows.map(x=>`<tr><td>${fmtDate(x.date)}</td><td>${TG_BIZ[x.biz]?TG_BIZ[x.biz].short:'—'}</td><td>${esc(x.kind==='topup'?'Top-up':x.category)}</td><td><strong>${gbp(x.amount)}</strong></td><td>${esc(x.kind==='topup'?'Added to pot':x.status)}</td><td class="small">${esc(x.reason||'')}${x.benefit?'<div class="muted">'+esc(x.benefit)+'</div>':''}</td><td class="small">${esc(x.result||'—')}</td><td>${x.gate||'—'}</td><td>${x.kind==='topup'?'':`<button class="icon-btn" title="Edit" onclick="tgOpenExpansion('${x.id}')">✎</button>`}</td></tr>`).join('') || emptyRow(9,'No expansion investments yet.','+ Propose investment','tgOpenExpansion()')}</tbody></table>`;
+  } else {
+    const rows = tgArr(DB,'tgAudit');
+    table = `<table><thead><tr><th>When</th><th>Record</th><th>Action</th><th>Change</th><th>Reason</th><th>By</th></tr></thead><tbody>${rows.map(a=>`<tr><td class="small">${fmtDateTime(a.at)}</td><td class="small">${esc(a.entity)}</td><td>${esc(a.action)}</td><td class="small muted" style="max-width:340px;">${esc(tgDiffText(a.before,a.after))}</td><td class="small">${esc(a.reason||'')}</td><td class="small muted">${esc(a.by||'')}</td></tr>`).join('') || emptyRow(6,'No edits recorded yet.')}</tbody></table>`;
+  }
+  const addBtn = {payments:`<button class="btn btn-ghost btn-sm" onclick="tgOpenImport()">Import past paid invoices</button><button class="btn btn-gold btn-sm" onclick="tgOpenPayment()">+ Manual payment</button>`, acq:`<button class="btn btn-gold btn-sm" onclick="tgOpenAcq()">+ Log spend</button>`, owner:`<button class="btn btn-gold btn-sm" onclick="tgOpenOwnerPay()">+ Owner pay</button>`, expansion:`<button class="btn btn-gold btn-sm" onclick="tgOpenExpansion()">+ Propose investment</button>`, audit:''}[f.show];
+  return `<div class="toolbar">
+    <div class="seg-toggle">${sec.map(([k,l])=>`<button class="seg-btn ${f.show===k?'active':''}" style="${f.show===k?'background:var(--gold);color:#fff;':''}" onclick="tgLedgerState().show='${k}'; renderPage();">${l}</button>`).join('')}</div>
+    <select style="width:auto;" onchange="tgLedgerState().biz=this.value; renderPage();"><option value="all">Both businesses</option><option value="sw" ${f.biz==='sw'?'selected':''}>SteadyWorks</option><option value="sf" ${f.biz==='sf'?'selected':''}>SteadyFlow</option></select>
+    <div class="spacer"></div>${addBtn}
+  </div>
+  <div class="card">${table}</div>
+  <p class="small muted mt-10">Only money actually received counts toward targets. Accepted quotes, unpaid invoices and pipeline value never do. Removing a payment keeps it in the audit trail.</p>`;
+}
+function tgDiffText(before, after){
+  if(!before && after) return 'created';
+  if(before && !after) return 'removed';
+  if(!before || !after) return '';
+  return Object.keys(after).filter(k=>JSON.stringify(before[k])!==JSON.stringify(after[k]) && !['updatedAt'].includes(k)).map(k=>`${k}: ${before[k]==null?'—':before[k]} → ${after[k]==null?'—':after[k]}`).join(' · ') || 'no change';
+}
+
+/* ---------- REWARDS ---------- */
+function tgRewardsView(){
+  const list = tgArr(DB,'tgRewards');
+  const st = r => (r.status||'locked');
+  const label = {locked:'LOCKED', unlocked:'REWARD UNLOCKED', saved:'SAVED FOR LATER', claimed:'CLAIMED', moved:'MOVED TO EXPANSION'};
+  const tone = {locked:'muted', unlocked:'good', saved:'ok', claimed:'good', moved:'ok'};
+  return `<div class="toolbar"><div class="small muted">Rewards are personal and separate from business expansion. Nothing is deducted unless you confirm a claim.</div><div class="spacer"></div><button class="btn btn-gold btn-sm" onclick="tgOpenReward()">+ Add reward</button></div>
+  ${list.length ? `<div class="grid grid-3">${list.slice().sort((a,b)=>['unlocked','saved','locked','claimed','moved'].indexOf(st(a))-['unlocked','saved','locked','claimed','moved'].indexOf(st(b))).map(r=>{
+    const s = st(r), bizName = r.biz==='combined'?'Both businesses':TG_BIZ[r.biz].name;
+    const req = r.trigger==='gate' ? 'Expansion gate '+(r.requiredGate||1) : 'Level '+(r.requiredLevel||1)+' complete';
+    const done = r.biz==='combined' ? Math.min(tgLevelsCompleted(DB,'sw'),tgLevelsCompleted(DB,'sf')) : tgLevelsCompleted(DB,r.biz);
+    return `<div class="card tg-reward tg-reward-${s}">
+      <div class="flex-between">${tgPill(label[s], tone[s])}<button class="icon-btn" title="Edit" onclick="tgOpenReward('${r.id}')">✎</button></div>
+      <div class="tg-reward-icon">${s==='locked'?'🔒':s==='claimed'?'🏆':'🎁'}</div>
+      <div style="font-size:16px;font-weight:800;">${esc(r.name)}</div>
+      <div class="small muted">${esc(r.type||'')} · ${bizName} · ${req}</div>
+      <div class="small muted">Est. cost ${gbp(r.cost)}${r.unlockedAt?' · unlocked '+fmtDate(r.unlockedAt):''}${r.claimedAt?' · claimed '+fmtDate(r.claimedAt):''}</div>
+      ${s==='locked' && r.trigger!=='gate' ? tgBar(Math.min(100, done/(Number(r.requiredLevel)||1)*100), 'var(--gold)', 6) : ''}
+      ${(s==='unlocked'||s==='saved')?`<div class="flex gap-8 mt-10" style="flex-wrap:wrap;"><button class="btn btn-gold btn-sm" onclick="tgRewardDo('${r.id}','claim')">Claim</button>${s==='unlocked'?`<button class="btn btn-ghost btn-sm" onclick="tgRewardDo('${r.id}','save')">Save for later</button>`:''}<button class="btn btn-ghost btn-sm" onclick="tgRewardDo('${r.id}','move')">Move money to expansion</button></div>`:''}
+      ${r.notes?`<div class="small muted mt-10">${esc(r.notes)}</div>`:''}
+    </div>`; }).join('')}</div>` : `<div class="card">${emptyBlock('No rewards set yet. Attach something you want to a level or an expansion gate, like a new tool, a day out, or eventually a van.','+ Add reward','tgOpenReward()','🎁')}</div>`}`;
+}
+function tgRewardDo(id, action){
+  const r = tgArr(DB,'tgRewards').find(x=>x.id===id);
+  if(!r) return;
+  const msg = {claim:`Claim "${r.name}"? ${gbp(r.cost)} will be counted against retained cash.`, save:`Save "${r.name}" for later?`, move:`Move ${gbp(r.cost)} from "${r.name}" into the expansion pot instead? This can't be undone.`}[action];
+  openModal(`<div class="modal-head"><h2>${action==='claim'?'Claim reward':action==='save'?'Save for later':'Move to expansion'}</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body"><p>${esc(msg)}</p></div>
+    <div class="modal-foot"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-gold" onclick="tgRewardConfirm('${id}','${action}')">Confirm</button></div>`);
+}
+function tgRewardConfirm(id, action){
+  const before = Object.assign({}, tgArr(DB,'tgRewards').find(x=>x.id===id));
+  const res = tgRewardAction(DB, id, action, new Date());
+  if(res.error){ toast(res.error,'⚠️'); return; }
+  tgAudit('Reward', id, action, before, Object.assign({}, res.reward));
+  save(); closeModal(); renderPage();
+  toast({claim:'Reward claimed — enjoy it 🏆', save:'Saved for later', move:'Moved into the expansion pot'}[action]);
+}
+
+/* ---------- PROJECTION ---------- */
+function tgProjState(){
+  if(!window._tgProj){ const st = tgState(DB,'sf',new Date()); const s = tgSettings(DB); window._tgProj = {biz:'sf', startTarget:st.target, growthPct:s.growthPct, successWeeks:8, weeks:12}; }
+  return window._tgProj;
+}
+function tgProjectionView(){
+  const now = new Date();
+  const p = tgProjState();
+  const comp = ['sw','sf'].map(biz=>{ const st = tgState(DB,biz,now); const cap = tgCapacity(DB,biz,now); return `<div class="card tg-compound" style="--c:${TG_BIZ[biz].color}">
+    <div class="flex-between"><strong>${TG_BIZ[biz].name}</strong>${tgLevelBadge(st.level, TG_BIZ[biz].color)}</div>
+    <div class="tg-compound-flow">
+      <div>${tgStat('Current target', gbp(st.target))}</div><span>→</span>
+      <div>${tgStat('Next target', gbp(st.nextTarget))}</div><span>→</span>
+      <div>${tgStat('Acquisition allowance', gbp(st.nextTarget*tgSettings(DB).acqPct/100), 'at next target')}</div>
+    </div>
+    <div class="tg-row-stats">${tgStat('Gates unlocked', st.gatesUnlocked)}${tgStat('Next gate in', st.levelsToGate+' lvl')}${tgStat('Capacity needed next', cap.next.sales+' '+TG_BIZ[biz].units+'/wk', 'you have ~'+cap.m.capacityUnits)}</div>
+  </div>`; }).join('');
+  return `<div class="grid grid-2" style="align-items:start;">${comp}</div>
+  <div class="card mt-10">
+    <div class="card-title">PERFECT RUN PROJECTION <span class="small" style="color:var(--warning);font-weight:700;">Not a forecast. It shows what happens if every target is hit.</span></div>
+    <div class="form-row form-row-3" style="grid-template-columns:repeat(5,1fr);">
+      <div class="form-group"><label>Business</label><select id="pj-biz" onchange="tgProjBiz(this.value)"><option value="sw" ${p.biz==='sw'?'selected':''}>SteadyWorks</option><option value="sf" ${p.biz==='sf'?'selected':''}>SteadyFlow</option></select></div>
+      <div class="form-group"><label>Starting target (£)</label><input id="pj-start" type="number" min="0" value="${p.startTarget}" oninput="tgProjState().startTarget=this.value; tgProjectionRender();"></div>
+      <div class="form-group"><label>Growth per level (%)</label><input id="pj-growth" type="number" min="0" value="${p.growthPct}" oninput="tgProjState().growthPct=this.value; tgProjectionRender();"></div>
+      <div class="form-group"><label>Successful weeks</label><input id="pj-wins" type="number" min="0" value="${p.successWeeks}" oninput="tgProjState().successWeeks=this.value; tgProjectionRender();"></div>
+      <div class="form-group"><label>Projection period (weeks)</label><input id="pj-weeks" type="number" min="1" max="104" value="${p.weeks}" oninput="tgProjState().weeks=this.value; tgProjectionRender();"></div>
+    </div>
+    <div style="position:relative;height:240px;"><canvas id="chartTgProjection"></canvas></div>
+    <div id="tg-proj-table" class="mt-10"></div>
+  </div>`;
+}
+function tgProjBiz(b){ const p = tgProjState(); p.biz = b; p.startTarget = tgState(DB,b,new Date()).target; renderPage(); }
+function tgProjectionRender(){
+  const p = tgProjState(), s = tgSettings(DB);
+  const st = tgState(DB, p.biz, new Date());
+  const rows = tgProject({startTarget:p.startTarget, growthPct:p.growthPct, successWeeks:Math.min(p.successWeeks,p.weeks), weeks:Math.min(104,p.weeks), levelsPerGate:s.levelsPerGate, acqPct:s.acqPct, startLevel:st.level});
+  const box = document.getElementById('tg-proj-table');
+  if(box){
+    const last = rows[rows.length-1];
+    box.innerHTML = `<div class="tg-row-stats">${tgStat('Projected level', last.level)}${tgStat('Projected weekly target', gbp(last.target))}${tgStat('Cumulative revenue', gbp(last.cumulative))}${tgStat('Expansion gates reached', last.gates)}</div>
+    <p class="small muted mt-10"><strong>Assumptions:</strong> starts at level ${st.level} on ${gbp(p.startTarget)}. Each of the first ${Math.min(p.successWeeks,p.weeks)} weeks hits its target exactly, then the target grows ${p.growthPct}%. Later weeks repeat the level with £0 counted. Acquisition allowance is ${s.acqPct}% of each week's revenue, and a gate unlocks every ${s.levelsPerGate} levels. It ignores capacity limits, which the Operations panel covers.</p>
+    <table class="mt-10"><thead><tr><th>Week</th><th>Level</th><th>Weekly target</th><th>Hit?</th><th>Cumulative revenue</th><th>Acq. allowance</th><th>Gate</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${r.week}</td><td>${r.level}</td><td>${gbp(r.target)}</td><td>${r.success?'✓':'—'}</td><td>${gbp(r.cumulative)}</td><td>${gbp(r.acqAllowance)}</td><td>${r.gate?'🔓 Gate '+r.gates:''}</td></tr>`).join('')}</tbody></table>`;
+  }
+  chartSafe('chartTgProjection','bar',{labels:rows.map(r=>'Wk '+r.week),datasets:[
+    {type:'bar', label:'Weekly target', data:rows.map(r=>r.target), backgroundColor:TG_BIZ[p.biz].color+'99', borderRadius:5, yAxisID:'y'},
+    {type:'line', label:'Cumulative revenue', data:rows.map(r=>r.cumulative), borderColor:'#F59E0B', backgroundColor:'rgba(245,158,11,.15)', tension:.3, yAxisID:'y1'}
+  ]},{plugins:{legend:{position:'bottom'}}, scales:{y:{ticks:{callback:v=>'£'+v}}, y1:{position:'right', grid:{drawOnChartArea:false}, ticks:{callback:v=>'£'+v}}}});
+}
+
+/* ---------- HISTORY ---------- */
+function tgHistState(){ if(!window._tgHist) window._tgHist = {biz:'all', from:'', to:'', level:'', result:'all', revType:'all'}; return window._tgHist; }
+function tgHistRows(){
+  const f = tgHistState();
+  return tgArr(DB,'tgCycles').filter(c=>(f.biz==='all'||c.biz===f.biz) && (!f.from||c.endDate>=f.from) && (!f.to||c.startDate<=f.to) && (!f.level||String(c.level)===String(f.level)) && (f.result==='all'||(f.result==='hit'?c.achieved:!c.achieved)))
+    .sort((a,b)=>a.startDate.localeCompare(b.startDate) || a.biz.localeCompare(b.biz));
+}
+function tgHistoryView(){
+  const f = tgHistState();
+  const rows = tgHistRows();
+  const rev = c => f.revType==='deposits' ? c.deposits : f.revType==='finals' ? c.finals : c.revenue;
+  return `<div class="toolbar">
+    <select style="width:auto;" onchange="tgHistState().biz=this.value; renderPage();"><option value="all">Both businesses</option><option value="sw" ${f.biz==='sw'?'selected':''}>SteadyWorks</option><option value="sf" ${f.biz==='sf'?'selected':''}>SteadyFlow</option></select>
+    <input type="date" value="${f.from}" title="From" style="width:auto;" onchange="tgHistState().from=this.value; renderPage();">
+    <input type="date" value="${f.to}" title="To" style="width:auto;" onchange="tgHistState().to=this.value; renderPage();">
+    <input type="number" min="1" placeholder="Level" value="${f.level}" style="width:90px;" onchange="tgHistState().level=this.value; renderPage();">
+    <select style="width:auto;" onchange="tgHistState().result=this.value; renderPage();"><option value="all">All results</option><option value="hit" ${f.result==='hit'?'selected':''}>Targets hit</option><option value="miss" ${f.result==='miss'?'selected':''}>Missed</option></select>
+    <select style="width:auto;" onchange="tgHistState().revType=this.value; renderPage();"><option value="all">All revenue</option><option value="deposits" ${f.revType==='deposits'?'selected':''}>Deposits only</option><option value="finals" ${f.revType==='finals'?'selected':''}>Final payments only</option></select>
+  </div>
+  ${rows.length ? `<div class="grid grid-2">
+    <div class="card"><div class="card-title">Targets vs actual</div><div style="height:220px;position:relative;"><canvas id="chartTgTvA"></canvas></div></div>
+    <div class="card"><div class="card-title">Revenue growth & retained cash</div><div style="height:220px;position:relative;"><canvas id="chartTgRetained"></canvas></div></div>
+    <div class="card"><div class="card-title">Acquisition % of revenue</div><div style="height:200px;position:relative;"><canvas id="chartTgAcq"></canvas></div></div>
+    <div class="card"><div class="card-title">Owner pay & expansion spend</div><div style="height:200px;position:relative;"><canvas id="chartTgOwner"></canvas></div></div>
+    <div class="card"><div class="card-title">Average sale value</div><div style="height:200px;position:relative;"><canvas id="chartTgAvg"></canvas></div></div>
+    <div class="card"><div class="card-title">Missions completed</div><div style="height:200px;position:relative;"><canvas id="chartTgMissions"></canvas></div></div>
+  </div>` : ''}
+  <div class="card mt-10"><table><thead><tr><th>Week</th><th>Business</th><th>Level</th><th>Target</th><th>${f.revType==='deposits'?'Deposits':f.revType==='finals'?'Final payments':'Received'}</th><th>Acq.</th><th>Op. costs</th><th>Owner pay</th><th>Expansion</th><th>Retained</th><th>Missions</th><th>Result</th><th></th></tr></thead>
+  <tbody>${rows.slice().reverse().map(c=>`<tr>
+    <td class="small">${fmtDate(c.startDate)} – ${fmtDate(c.endDate)}${c.earlyClose?' <span class="muted">(early)</span>':''}</td><td>${TG_BIZ[c.biz].short}</td><td>${c.level}</td>
+    <td>${gbp(c.target)}${c.overrideTarget!=null?`<div class="small muted">calc ${gbp(c.calcTarget)} · override</div>`:''}</td><td><strong>${gbp(rev(c))}</strong></td><td>${gbp(c.acqSpend)}</td><td>${gbp(c.opCosts)}</td><td>${gbp(c.ownerPay)}</td><td>${gbp(c.expansionSpend)}</td><td>${gbp(c.retained)}</td>
+    <td>${c.missionsDone}/${c.missionsTotal}</td><td>${c.achieved?tgPill('Level '+c.level+' complete','good'):tgPill('Missed','bad')}${c.gateUnlocked?' '+tgPill('Gate '+c.gateNumber,'ok'):''}${(c.corrections||[]).length?' '+tgPill('Corrected','warn'):''}</td>
+    <td><button class="icon-btn" title="Correct this record" onclick="tgOpenCorrection('${c.id}')">✎</button></td></tr>`).join('') || emptyRow(13,'No finished cycles yet. Each week is saved here permanently when it ends.')}</tbody></table></div>
+  <p class="small muted mt-10">Closed weeks can't be deleted. Corrections keep the original value and log who changed what and why.</p>`;
+}
+function tgHistoryCharts(){
+  const rows = tgHistRows();
+  if(!rows.length) return;
+  const labels = rows.map(c=>TG_BIZ[c.biz].short+' '+fmtDate(c.startDate).slice(0,6));
+  const col = rows.map(c=>TG_BIZ[c.biz].color);
+  const o = {plugins:{legend:{position:'bottom',labels:{boxWidth:10,font:{size:10}}}}};
+  chartSafe('chartTgTvA','bar',{labels,datasets:[{type:'bar',label:'Received',data:rows.map(c=>c.revenue),backgroundColor:col,borderRadius:5},{type:'line',label:'Target',data:rows.map(c=>c.target),borderColor:'#F59E0B',backgroundColor:'#F59E0B',tension:.2}]},o);
+  chartSafe('chartTgRetained','line',{labels,datasets:[{label:'Received',data:rows.map(c=>c.revenue),borderColor:'#E11D2A',tension:.3},{label:'Retained cash',data:rows.map(c=>c.retained),borderColor:'#22C55E',backgroundColor:'rgba(34,197,94,.12)',fill:true,tension:.3}]},o);
+  chartSafe('chartTgAcq','bar',{labels,datasets:[{label:'Acquisition %',data:rows.map(c=>c.revenue>0?tgRound(c.acqSpend/c.revenue*100):0),backgroundColor:'#7C3AED',borderRadius:5}]},Object.assign({},o,{scales:{y:{ticks:{callback:v=>v+'%'}}}}));
+  chartSafe('chartTgOwner','bar',{labels,datasets:[{label:'Owner pay',data:rows.map(c=>c.ownerPay),backgroundColor:'#00A99D',borderRadius:5},{label:'Expansion spend',data:rows.map(c=>c.expansionSpend),backgroundColor:'#F59E0B',borderRadius:5}]},o);
+  chartSafe('chartTgAvg','line',{labels,datasets:[{label:'Average sale',data:rows.map(c=>c.avgSale),borderColor:'#00E5CC',tension:.3}]},o);
+  chartSafe('chartTgMissions','bar',{labels,datasets:[{label:'Done',data:rows.map(c=>c.missionsDone),backgroundColor:'#22C55E',borderRadius:5},{label:'Set',data:rows.map(c=>c.missionsTotal),backgroundColor:'#3A4058',borderRadius:5}]},o);
+}
+
+/* ---------- SETTINGS ---------- */
+function tgSettingsView(){
+  const s = tgSettings(DB);
+  const hasCycles = tgArr(DB,'tgCycles').length>0;
+  const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  return `<div class="grid grid-2" style="align-items:start;">
+    <div class="card"><div class="card-title">Targets & growth</div>
+      <div class="form-row"><div class="form-group"><label>SteadyWorks starting target (£/week)</label><input id="ts-sw" type="number" min="0" value="${s.startTargets.sw}"></div><div class="form-group"><label>SteadyFlow starting target (£/week)</label><input id="ts-sf" type="number" min="0" value="${s.startTargets.sf}"></div></div>
+      <div class="form-row"><div class="form-group"><label>Growth when a target is hit (%)</label><input id="ts-growth" type="number" min="0" value="${s.growthPct}"></div><div class="form-group"><label>Levels per expansion gate</label><input id="ts-gate" type="number" min="1" value="${s.levelsPerGate}"></div></div>
+      <div class="form-row"><div class="form-group"><label>Week starts on</label><select id="ts-wsd" ${hasCycles?'disabled title="Fixed once weeks have been recorded"':''}>${days.map((d,i)=>`<option value="${i}" ${Number(s.weekStartDay)===i?'selected':''}>${d}</option>`).join('')}</select></div>
+        <div class="form-group"><label>Tracking started (week)</label><input id="ts-started" type="date" value="${s.startedWeek}" ${hasCycles?'disabled title="Fixed once weeks have been recorded"':''}></div></div>
+      <p class="small muted">Changing starting targets or growth only affects levels that haven't been played yet. Closed weeks keep the targets they had.</p>
+    </div>
+    <div class="card"><div class="card-title">Money rules</div>
+      <div class="form-row"><div class="form-group"><label>Owner pay per week (£, combined)</label><input id="ts-owner" type="number" min="0" value="${s.ownerPayWeekly}"></div><div class="form-group"><label>Acquisition budget (% of received)</label><input id="ts-acq" type="number" min="0" max="100" value="${s.acqPct}"></div></div>
+      <div class="form-row"><div class="form-group"><label>Expansion pot accrual (% of received)</label><input id="ts-exp" type="number" min="0" max="100" value="${s.expansionPct}"></div><div class="form-group"><label>Road-to goal (£)</label><input id="ts-goal" type="number" min="1" value="${s.road50kGoal}"></div></div>
+      <p class="small muted">The expansion pot accrues each week but only unlocks at an expansion gate. Owner pay never grows with levels.</p>
+    </div>
+  </div>
+  <div class="flex" style="justify-content:flex-end;margin-top:14px;"><button class="btn btn-gold" onclick="tgSaveSettings()">Save settings</button></div>`;
+}
+function tgSaveSettings(){
+  const s = tgSettings(DB);
+  const v = id => document.getElementById(id);
+  const nums = {sw:Number(v('ts-sw').value), sf:Number(v('ts-sf').value), growth:Number(v('ts-growth').value), gate:Number(v('ts-gate').value), owner:Number(v('ts-owner').value), acq:Number(v('ts-acq').value), exp:Number(v('ts-exp').value), goal:Number(v('ts-goal').value)};
+  if(Object.values(nums).some(n=>!isFinite(n) || n<0)){ toast('Values can\'t be negative','⚠️'); return; }
+  if(nums.gate<1){ toast('A gate needs at least 1 level','⚠️'); return; }
+  const before = JSON.parse(JSON.stringify(s));
+  Object.assign(s, {startTargets:{sw:nums.sw, sf:nums.sf}, growthPct:nums.growth, levelsPerGate:Math.floor(nums.gate), ownerPayWeekly:nums.owner, acqPct:nums.acq, expansionPct:nums.exp, road50kGoal:nums.goal||50000});
+  if(!tgArr(DB,'tgCycles').length){
+    s.weekStartDay = Number(v('ts-wsd').value);
+    if(v('ts-started').value) s.startedWeek = tgWeekStart(v('ts-started').value, s.weekStartDay);
+  }
+  tgAudit('Target settings', 'settings', 'updated', {startTargets:before.startTargets, growthPct:before.growthPct, ownerPayWeekly:before.ownerPayWeekly, acqPct:before.acqPct}, {startTargets:s.startTargets, growthPct:s.growthPct, ownerPayWeekly:s.ownerPayWeekly, acqPct:s.acqPct});
+  save(); renderPage(); toast('Target settings saved');
+}
+
+/* ---------- TARGETS — FORMS & ACTIONS ---------- */
+function tgBizSelect(id, val, allowCombined){
+  return `<select id="${id}">${allowCombined?`<option value="" ${!val?'selected':''}>Combined / personal</option>`:''}${Object.values(TG_BIZ).map(b=>`<option value="${b.key}" ${val===b.key?'selected':''}>${b.name}</option>`).join('')}</select>`;
+}
+function tgNum(id){ const v = document.getElementById(id).value; return v==='' ? NaN : Number(v); }
+function tgVal(id){ const el = document.getElementById(id); return el ? el.value.trim() : ''; }
+
+/* payments (money received) */
+function tgOpenPayment(id, biz){
+  const p = id ? tgArr(DB,'tgPayments').find(x=>x.id===id) : null;
+  const invOpts = DB.invoices.map(i=>({k:'inv:'+i.id, l:i.invoiceNumber+' — '+i.customerName+' ('+gbp(calcInvoiceTotal(i).total)+')', biz:'sw'}))
+    .concat((DB.sfInvoices||[]).map(i=>({k:'sfinv:'+i.id, l:i.invoiceNumber+' — '+i.clientName+' ('+gbp(calcInvoiceTotal(i).total)+')', biz:'sf'})));
+  openModal(`<div class="modal-head"><h2>${p?'Edit payment':'Record money received'}</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      ${p&&!p.manual?`<p class="small" style="color:var(--warning);margin-bottom:10px;">Created automatically from ${esc(p.sourceType)} ${esc(p.sourceLabel||'')}. Edits are logged in the audit trail.</p>`:'<p class="small muted mb-10">Only record money that has actually landed. This entry is labelled as manually entered.</p>'}
+      <div class="form-row"><div class="form-group"><label>Business</label>${tgBizSelect('tp-biz', p?p.biz:(biz||'sw'))}</div><div class="form-group"><label>Amount (£)</label><input id="tp-amount" type="number" step="0.01" value="${p?p.amount:''}"></div></div>
+      <div class="form-row"><div class="form-group"><label>Date received</label><input id="tp-date" type="date" value="${p?p.date:tgToday()}"></div><div class="form-group"><label>Payment type</label><select id="tp-type">${TG_PAYMENT_TYPES.map(([k,l])=>`<option value="${k}" ${(p?p.type:'deposit')===k?'selected':''}>${l}</option>`).join('')}</select></div></div>
+      <div class="form-row"><div class="form-group"><label>Customer</label><input id="tp-customer" type="text" value="${p?esc(p.customer||''):''}"></div><div class="form-group"><label>Job / project</label><input id="tp-job" type="text" value="${p?esc(p.job||''):''}"></div></div>
+      <div class="form-row"><div class="form-group"><label>Linked invoice (prevents double counting)</label><select id="tp-source" ${p&&!p.manual?'disabled':''}><option value="">— Not linked —</option>${invOpts.map(o=>`<option value="${o.k}" ${p&&p.sourceKey===o.k?'selected':''}>${esc(o.l)}</option>`).join('')}</select></div>
+        <div class="form-group"><label>Channel it came from (for acquisition ROI)</label><select id="tp-channel"><option value="">— Unattributed —</option>${TG_ACQ_CHANNELS.map(c=>`<option ${p&&p.channel===c?'selected':''}>${c}</option>`).join('')}</select></div></div>
+      <div class="form-group"><label>Notes</label><textarea id="tp-notes">${p?esc(p.notes||''):''}</textarea></div>
+      ${p?`<div class="form-group"><label>Reason for this change *</label><input id="tp-reason" type="text" placeholder="e.g. Customer paid £50 less than invoiced"></div>`:''}
+    </div>
+    <div class="modal-foot">${p?`<button class="btn btn-danger" onclick="tgRemovePayment('${p.id}')">Remove</button>`:''}<button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-gold" onclick="tgSavePayment('${p?p.id:''}')">${p?'Save changes':'Record payment'}</button></div>`);
+}
+function tgSavePayment(id){
+  const existing = id ? tgArr(DB,'tgPayments').find(x=>x.id===id) : null;
+  const src = tgVal('tp-source');
+  const data = {biz:tgVal('tp-biz'), amount:tgRound(tgNum('tp-amount')), date:tgVal('tp-date'), type:tgVal('tp-type'), customer:tgVal('tp-customer'), job:tgVal('tp-job'), channel:tgVal('tp-channel'), notes:tgVal('tp-notes')};
+  if(existing && !existing.manual){ data.sourceKey = existing.sourceKey; data.sourceLabel = existing.sourceLabel; }
+  else if(src){ data.sourceKey = src; const opt = document.querySelector('#tp-source option:checked'); data.sourceLabel = opt ? opt.textContent.split(' — ')[0] : ''; data.sourceType = src.startsWith('sf')?'SteadyFlow invoice':'Invoice'; }
+  else { data.sourceKey = ''; data.sourceLabel=''; data.sourceType='Manual entry'; }
+  if(data.sourceKey){
+    const inv = data.sourceKey.startsWith('sfinv:') ? (DB.sfInvoices||[]).find(i=>'sfinv:'+i.id===data.sourceKey) : DB.invoices.find(i=>'inv:'+i.id===data.sourceKey);
+    if(inv && (data.sourceKey.startsWith('sfinv:')?'sf':'sw')!==data.biz){ toast('That invoice belongs to '+(data.sourceKey.startsWith('sfinv:')?'SteadyFlow':'SteadyWorks'),'⚠️'); return; }
+  }
+  const err = tgValidatePayment(DB, data, id||null);
+  if(err){ toast(err,'⚠️'); return; }
+  if(existing){
+    const reason = tgVal('tp-reason');
+    if(!reason){ toast('Add a reason for the change — it goes in the audit trail','⚠️'); document.getElementById('tp-reason').classList.add('invalid'); return; }
+    const before = Object.assign({}, existing);
+    Object.assign(existing, data, {updatedAt:new Date().toISOString()});
+    tgAudit('Payment', id, 'edited', before, Object.assign({}, existing), reason);
+  } else {
+    const p = Object.assign({id:'pay-man-'+uid(), manual:true, estimated:false, createdAt:new Date().toISOString()}, data);
+    tgArr(DB,'tgPayments').push(p);
+    tgAudit('Payment', p.id, 'created (manual)', null, Object.assign({}, p));
+  }
+  save(); closeModal(); renderPage(); toast(existing?'Payment updated':'Payment recorded — '+gbp(data.amount));
+}
+function tgRemovePayment(id){
+  const p = tgArr(DB,'tgPayments').find(x=>x.id===id);
+  if(!p) return;
+  openModal(`<div class="modal-head"><h2>Remove payment?</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body"><p>${gbp(p.amount)} from ${esc(p.customer||'—')} on ${fmtDate(p.date)} will stop counting toward targets. The record and this decision stay in the audit trail.</p>
+    <div class="form-group mt-10"><label>Reason *</label><input id="tp-rm-reason" type="text" placeholder="e.g. Entered twice"></div></div>
+    <div class="modal-foot"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-danger" onclick="tgConfirmRemovePayment('${id}')">Remove</button></div>`);
+}
+function tgConfirmRemovePayment(id){
+  const reason = tgVal('tp-rm-reason');
+  if(!reason){ toast('Add a reason','⚠️'); return; }
+  const p = tgArr(DB,'tgPayments').find(x=>x.id===id);
+  const before = Object.assign({}, p);
+  Object.assign(p, {removed:true, removedAt:new Date().toISOString(), removedReason:reason});
+  tgAudit('Payment', id, 'removed', before, Object.assign({}, p), reason);
+  save(); closeModal(); renderPage(); toast('Payment removed (kept in audit trail)','🗑️');
+}
+// One-off: bring in invoices you've already been paid for. Dated by invoice date and flagged "estimated".
+function tgOpenImport(){
+  const cands = DB.invoices.map(i=>({kind:'sw', inv:i})).concat((DB.sfInvoices||[]).map(i=>({kind:'sf', inv:i})))
+    .map(c=>Object.assign(c, {key:(c.kind==='sf'?'sfinv:':'inv:')+c.inv.id, received:tgInvoiceReceived(c.inv)}))
+    .map(c=>Object.assign(c, {missing:tgRound(c.received - tgLinkedTotal(DB, c.key))})).filter(c=>c.missing>0.009);
+  window._tgImport = cands;
+  openModal(`<div class="modal-head"><h2>Import past paid invoices</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <p class="small muted mb-10">These invoices show money received that isn't in the ledger yet. Their exact payment dates weren't stored, so each is dated by invoice date and labelled <strong>estimated</strong>. Change any date before importing. Invoices already in the ledger are left out, so nothing gets counted twice.</p>
+      ${cands.length?`<table><thead><tr><th></th><th>Invoice</th><th>Business</th><th>Received</th><th>Date received</th></tr></thead><tbody>${cands.map((c,i)=>`<tr><td><input type="checkbox" checked id="ti-c-${i}"></td><td>${esc(c.inv.invoiceNumber)} — ${esc(c.inv.customerName||c.inv.clientName||'')}</td><td>${TG_BIZ[c.kind].short}</td><td>${gbp(c.missing)}</td><td><input type="date" id="ti-d-${i}" value="${esc(String(c.inv.createdAt||tgToday()).slice(0,10))}" style="width:150px;"></td></tr>`).join('')}</tbody></table>`:emptyBlock('Nothing to import. Every paid invoice is already in the ledger.')}
+    </div>
+    <div class="modal-foot"><button class="btn btn-ghost" onclick="closeModal()">Close</button>${cands.length?'<button class="btn btn-gold" onclick="tgRunImport()">Import selected</button>':''}</div>`, true);
+}
+function tgRunImport(){
+  let n = 0, total = 0;
+  (window._tgImport||[]).forEach((c,i)=>{
+    if(!document.getElementById('ti-c-'+i).checked) return;
+    const date = document.getElementById('ti-d-'+i).value || String(c.inv.createdAt||'').slice(0,10) || tgToday();
+    const p = tgSyncInvoicePayment(DB, c.kind, c.inv, new Date(), {date, estimated:true, note:'Imported from existing invoice — payment date estimated'});
+    if(p){ n++; total += p.amount; tgAudit('Payment', p.id, 'imported', null, Object.assign({}, p)); }
+  });
+  save(); closeModal(); renderPage();
+  toast(n ? `Imported ${n} payment${n===1?'':'s'} — ${gbp(total)}` : 'Nothing imported');
+}
+
+/* acquisition spend */
+function tgOpenAcq(id, biz){
+  const a = id ? tgArr(DB,'tgAcqSpend').find(x=>x.id===id) : null;
+  openModal(`<div class="modal-head"><h2>${a?'Edit':'Log'} acquisition spend</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <p class="small muted mb-10">Already logged ads as an Expense (Advertising / Ad Spend)? Those count automatically, so don't log them here too. Use this for spend that isn't an expense, or to record the leads and sales a campaign produced.</p>
+      <div class="form-row"><div class="form-group"><label>Business</label>${tgBizSelect('ta-biz', a?a.biz:(biz||'sf'))}</div><div class="form-group"><label>Amount (£)</label><input id="ta-amount" type="number" min="0" step="0.01" value="${a?a.amount:''}"></div></div>
+      <div class="form-row"><div class="form-group"><label>Date</label><input id="ta-date" type="date" value="${a?a.date:tgToday()}"></div><div class="form-group"><label>Channel</label><select id="ta-channel">${TG_ACQ_CHANNELS.map(c=>`<option ${a&&a.channel===c?'selected':''}>${c}</option>`).join('')}</select></div></div>
+      <div class="form-row"><div class="form-group"><label>Campaign</label><input id="ta-campaign" type="text" value="${a?esc(a.campaign||''):''}"></div><div class="form-group"><label>Supplier</label><input id="ta-supplier" type="text" value="${a?esc(a.supplier||''):''}"></div></div>
+      <div class="form-row"><div class="form-group"><label>Leads it produced</label><input id="ta-leads" type="number" min="0" value="${a?a.leads||'':''}"></div><div class="form-group"><label>Sales it produced</label><input id="ta-sales" type="number" min="0" value="${a?a.sales||'':''}"></div></div>
+      <div class="form-group"><label>Related lead, job or customer</label><input id="ta-related" type="text" value="${a?esc(a.related||''):''}"></div>
+      <div class="form-group"><label>Notes</label><textarea id="ta-notes">${a?esc(a.notes||''):''}</textarea></div>
+    </div>
+    <div class="modal-foot">${a?`<button class="btn btn-danger" onclick="tgDeleteSimple('tgAcqSpend','${a.id}','acquisition spend')">Delete</button>`:''}<button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-gold" onclick="tgSaveAcq('${a?a.id:''}')">Save</button></div>`);
+}
+function tgSaveAcq(id){
+  const amt = tgNum('ta-amount');
+  if(!isFinite(amt) || amt<=0){ toast('Enter an amount above £0','⚠️'); return; }
+  if(!tgVal('ta-date')){ toast('Add a date','⚠️'); return; }
+  const leads = tgNum('ta-leads'), sales = tgNum('ta-sales');
+  if((isFinite(leads)&&leads<0) || (isFinite(sales)&&sales<0)){ toast('Counts can\'t be negative','⚠️'); return; }
+  const data = {biz:tgVal('ta-biz'), amount:tgRound(amt), date:tgVal('ta-date'), channel:tgVal('ta-channel'), campaign:tgVal('ta-campaign'), supplier:tgVal('ta-supplier'), leads:isFinite(leads)?leads:0, sales:isFinite(sales)?sales:0, related:tgVal('ta-related'), notes:tgVal('ta-notes')};
+  const list = tgArr(DB,'tgAcqSpend');
+  if(id){ const a = list.find(x=>x.id===id); tgAudit('Acquisition spend', id, 'edited', Object.assign({},a), data); Object.assign(a, data); }
+  else list.push(Object.assign({id:'acq-'+uid(), createdAt:new Date().toISOString()}, data));
+  save(); closeModal(); renderPage(); toast(id?'Spend updated':'Spend logged — '+gbp(data.amount));
+}
+function tgDeleteSimple(key, id, label){
+  confirmDelete('Delete this '+label+'?', 'It will be recorded in the audit trail.', ()=>{
+    const list = tgArr(DB,key);
+    const x = list.find(r=>r.id===id);
+    tgAudit(label, id, 'deleted', x?Object.assign({},x):null, null);
+    DB[key] = list.filter(r=>r.id!==id);
+    save(); renderPage(); toast('Deleted','🗑️');
+  });
+}
+
+/* owner pay */
+function tgOpenOwnerPay(id){
+  const o = id ? tgArr(DB,'tgOwnerPay').find(x=>x.id===id) : null;
+  const wk = tgOwnerPayWeek(DB, tgWeekStart(tgToday(), tgSettings(DB).weekStartDay));
+  openModal(`<div class="modal-head"><h2>${o?'Edit':'Record'} owner pay</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <p class="small muted mb-10">This week: ${gbp(wk.taken)} taken of ${gbp(wk.requirement)}. Owner pay never counts as revenue.</p>
+      <div class="form-row"><div class="form-group"><label>Amount (£)</label><input id="to-amount" type="number" min="0" step="0.01" value="${o?o.amount:wk.remaining||''}"></div><div class="form-group"><label>Date</label><input id="to-date" type="date" value="${o?o.date:tgToday()}"></div></div>
+      <div class="form-row"><div class="form-group"><label>Status</label><select id="to-status">${[['taken','Taken'],['scheduled','Scheduled'],['partial','Partially taken'],['not','Not taken']].map(([k,l])=>`<option value="${k}" ${(o?o.status:'taken')===k?'selected':''}>${l}</option>`).join('')}</select></div><div class="form-group"><label>Paid from</label>${tgBizSelect('to-biz', o?o.biz:'', true)}</div></div>
+      <div class="form-group"><label>Notes</label><input id="to-notes" type="text" value="${o?esc(o.notes||''):''}"></div>
+    </div>
+    <div class="modal-foot">${o?`<button class="btn btn-danger" onclick="tgDeleteSimple('tgOwnerPay','${o.id}','owner pay')">Delete</button>`:''}<button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-gold" onclick="tgSaveOwnerPay('${o?o.id:''}')">Save</button></div>`);
+}
+function tgSaveOwnerPay(id){
+  const amt = tgNum('to-amount');
+  if(!isFinite(amt) || amt<0){ toast('Enter an amount (£0 or more)','⚠️'); return; }
+  if(!tgVal('to-date')){ toast('Add a date','⚠️'); return; }
+  const data = {amount:tgRound(amt), date:tgVal('to-date'), status:tgVal('to-status'), biz:tgVal('to-biz')||'', notes:tgVal('to-notes')};
+  const list = tgArr(DB,'tgOwnerPay');
+  if(id){ const o = list.find(x=>x.id===id); tgAudit('Owner pay', id, 'edited', Object.assign({},o), data); Object.assign(o, data); }
+  else list.push(Object.assign({id:'own-'+uid(), createdAt:new Date().toISOString()}, data));
+  save(); closeModal(); renderPage(); toast('Owner pay saved');
+}
+
+/* expansion investments — nothing is spent without approval */
+function tgOpenExpansion(id, biz, prefill){
+  const x = id ? tgArr(DB,'tgExpansion').find(r=>r.id===id) : null;
+  const p = prefill||{};
+  const b = x?x.biz:(p.biz||biz||'sw');
+  const pot = tgExpansionPot(DB, b);
+  openModal(`<div class="modal-head"><h2>${x?'Expansion investment':'Propose expansion investment'}</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <p class="small muted mb-10">${TG_BIZ[b].name} pot: ${gbp(pot.remaining)} available, ${gbp(pot.accruing)} accruing. Investments start as <strong>pending</strong> and only count once you approve them, then mark them spent.</p>
+      <div class="form-row"><div class="form-group"><label>Business</label>${tgBizSelect('tx-biz', b)}</div><div class="form-group"><label>Amount (£)</label><input id="tx-amount" type="number" min="0" step="0.01" value="${x?x.amount:(p.amount||'')}"></div></div>
+      <div class="form-row"><div class="form-group"><label>Category</label><select id="tx-cat">${TG_EXP_CATEGORIES.map(c=>`<option ${(x?x.category:(p.category||'Marketing'))===c?'selected':''}>${c}</option>`).join('')}</select></div><div class="form-group"><label>Date</label><input id="tx-date" type="date" value="${x?x.date:tgToday()}"></div></div>
+      <div class="form-group"><label>Reason *</label><input id="tx-reason" type="text" value="${esc(x?x.reason||'':(p.reason||''))}"></div>
+      <div class="form-group"><label>Expected benefit</label><input id="tx-benefit" type="text" value="${esc(x?x.benefit||'':(p.benefit||''))}"></div>
+      <div class="form-row"><div class="form-group"><label>Status</label><select id="tx-status">${[['pending','Pending approval'],['approved','Approved (committed)'],['spent','Spent'],['dismissed','Dismissed']].map(([k,l])=>`<option value="${k}" ${(x?x.status:'pending')===k?'selected':''}>${l}</option>`).join('')}</select></div><div class="form-group"><label>Related expansion gate</label><input id="tx-gate" type="number" min="1" value="${x?x.gate||'':(p.gate||'')}"></div></div>
+      <div class="form-group"><label>Result / ROI</label><input id="tx-result" type="text" value="${x?esc(x.result||''):''}" placeholder="Fill in once you know — e.g. 3 extra jobs/week"></div>
+    </div>
+    <div class="modal-foot">${x&&['pending','dismissed'].includes(x.status)?`<button class="btn btn-danger" onclick="tgDeleteSimple('tgExpansion','${x.id}','expansion investment')">Delete</button>`:''}<button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-gold" onclick="tgSaveExpansion('${x?x.id:''}')">Save</button></div>`);
+}
+function tgSaveExpansion(id){
+  const amt = tgNum('tx-amount');
+  if(!isFinite(amt) || amt<=0){ toast('Enter an amount above £0','⚠️'); return; }
+  if(!tgVal('tx-reason')){ toast('Add a reason','⚠️'); return; }
+  const list = tgArr(DB,'tgExpansion');
+  const x = id ? list.find(r=>r.id===id) : null;
+  const data = {biz:tgVal('tx-biz'), amount:tgRound(amt), category:tgVal('tx-cat'), date:tgVal('tx-date')||tgToday(), reason:tgVal('tx-reason'), benefit:tgVal('tx-benefit'), status:tgVal('tx-status'), gate:tgVal('tx-gate'), result:tgVal('tx-result'), kind:'investment'};
+  const movingToCommitted = ['approved','spent'].includes(data.status) && !(x && ['approved','spent'].includes(x.status));
+  if(movingToCommitted){
+    const pot = tgExpansionPot(DB, data.biz);
+    if(data.amount > pot.remaining + 0.01){ toast(`Only ${gbp(pot.remaining)} is available in the ${TG_BIZ[data.biz].name} pot. Keep it pending until the next gate.`,'⚠️'); return; }
+  }
+  if(x){ tgAudit('Expansion investment', id, 'edited', Object.assign({},x), data); Object.assign(x, data, {approvedAt: movingToCommitted ? new Date().toISOString() : x.approvedAt}); }
+  else { const n = Object.assign({id:'exp-'+uid(), createdAt:new Date().toISOString(), approvedAt: movingToCommitted?new Date().toISOString():null}, data); list.push(n); tgAudit('Expansion investment', n.id, 'created', null, Object.assign({},n)); }
+  save(); closeModal(); renderPage(); toast('Investment saved'+(data.status==='pending'?' — awaiting your approval':''));
+}
+
+/* rewards */
+function tgOpenReward(id){
+  const r = id ? tgArr(DB,'tgRewards').find(x=>x.id===id) : null;
+  const locked = !r || (r.status||'locked')==='locked';
+  openModal(`<div class="modal-head"><h2>${r?'Edit reward':'Add reward'}</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <div class="form-row"><div class="form-group"><label>Reward *</label><input id="tr-name" type="text" value="${r?esc(r.name):''}" placeholder="e.g. New impact driver"></div><div class="form-group"><label>Type</label><select id="tr-type">${['Tool','Clothing','Meal or day out','Equipment','Personal purchase','Trip','Van','Major purchase'].map(t=>`<option ${r&&r.type===t?'selected':''}>${t}</option>`).join('')}</select></div></div>
+      <div class="form-row"><div class="form-group"><label>Business</label><select id="tr-biz" ${locked?'':'disabled'}><option value="sw" ${r&&r.biz==='sw'?'selected':''}>SteadyWorks</option><option value="sf" ${r&&r.biz==='sf'?'selected':''}>SteadyFlow</option><option value="combined" ${r&&r.biz==='combined'?'selected':''}>Both (lower of the two levels)</option></select></div><div class="form-group"><label>Estimated cost (£)</label><input id="tr-cost" type="number" min="0" step="0.01" value="${r?r.cost||'':''}"></div></div>
+      <div class="form-row"><div class="form-group"><label>Unlocks on</label><select id="tr-trigger" ${locked?'':'disabled'}><option value="level" ${!r||r.trigger!=='gate'?'selected':''}>Completing a level</option><option value="gate" ${r&&r.trigger==='gate'?'selected':''}>Reaching an expansion gate</option></select></div><div class="form-group"><label>Required level / gate number</label><input id="tr-req" type="number" min="1" value="${r?(r.trigger==='gate'?r.requiredGate:r.requiredLevel):2}" ${locked?'':'disabled'}></div></div>
+      <div class="form-group"><label>Notes</label><input id="tr-notes" type="text" value="${r?esc(r.notes||''):''}"></div>
+    </div>
+    <div class="modal-foot">${r&&locked?`<button class="btn btn-danger" onclick="tgDeleteSimple('tgRewards','${r.id}','reward')">Delete</button>`:''}<button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-gold" onclick="tgSaveReward('${r?r.id:''}')">Save</button></div>`);
+}
+function tgSaveReward(id){
+  if(!requireField('tr-name','Name the reward')) return;
+  const cost = tgNum('tr-cost'), req = tgNum('tr-req');
+  if(isFinite(cost) && cost<0){ toast('Cost can\'t be negative','⚠️'); return; }
+  if(!isFinite(req) || req<1){ toast('Required level / gate must be 1 or more','⚠️'); return; }
+  const list = tgArr(DB,'tgRewards');
+  const r = id ? list.find(x=>x.id===id) : null;
+  const data = {name:tgVal('tr-name'), type:tgVal('tr-type'), cost:isFinite(cost)?tgRound(cost):0, notes:tgVal('tr-notes')};
+  if(!r || (r.status||'locked')==='locked'){
+    const trigger = tgVal('tr-trigger');
+    Object.assign(data, {biz:tgVal('tr-biz'), trigger, requiredLevel: trigger==='level'?Math.floor(req):null, requiredGate: trigger==='gate'?Math.floor(req):null});
+  }
+  if(r) Object.assign(r, data); else list.push(Object.assign({id:'rw-'+uid(), status:'locked', createdAt:new Date().toISOString()}, data));
+  const unlocked = tgUnlockRewards(DB, new Date());
+  save(); closeModal(); renderPage();
+  toast(unlocked.length ? 'REWARD UNLOCKED — '+unlocked.map(x=>x.name).join(', ') : 'Reward saved', unlocked.length?'🎁':'✓');
+}
+
+/* overrides — the calculated target is always kept alongside */
+function tgOpenOverride(biz){
+  const st = tgState(DB, biz, new Date());
+  openModal(`<div class="modal-head"><h2>Override ${TG_BIZ[biz].name} target</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <p class="small muted mb-10">The calculated level-${st.level} target is <strong>${gbp(st.calcTarget)}</strong>. An override replaces it for the weeks you choose, and the calculated figure is still stored with every week.</p>
+      <div class="form-row"><div class="form-group"><label>Override amount (£) *</label><input id="tv-amount" type="number" min="0" step="0.01"></div><div class="form-group"><label>Effective week (starting)</label><input id="tv-week" type="date" value="${st.weekKey}"></div></div>
+      <div class="form-row"><div class="form-group"><label>Expires after week (optional)</label><input id="tv-exp" type="date"></div><div></div></div>
+      <div class="form-group"><label>Reason *</label><input id="tv-reason" type="text" placeholder="e.g. Away on holiday Wed–Fri"></div>
+      ${tgArr(DB,'tgOverrides').filter(o=>o.biz===biz).length?`<div class="divider"></div><div class="small muted">Previous overrides:<br>${tgArr(DB,'tgOverrides').filter(o=>o.biz===biz).map(o=>`${gbp(o.amount)} from ${fmtDate(o.effectiveWeek)}${o.expires?' to '+fmtDate(o.expires):''} — ${esc(o.reason)} · ${o.active===false?'ended':'active'} · by ${esc(o.createdBy||'—')} on ${fmtDate(o.createdAt)}`).join('<br>')}</div>`:''}
+    </div>
+    <div class="modal-foot"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-gold" onclick="tgSaveOverride('${biz}')">Apply override</button></div>`);
+}
+function tgSaveOverride(biz){
+  const amt = tgNum('tv-amount');
+  if(!isFinite(amt) || amt<=0){ toast('Enter an override amount above £0','⚠️'); return; }
+  if(!requireField('tv-reason','An override needs a reason')) return;
+  const s = tgSettings(DB);
+  const wk = tgWeekStart(tgVal('tv-week')||tgToday(), s.weekStartDay);
+  const exp = tgVal('tv-exp') ? tgWeekStart(tgVal('tv-exp'), s.weekStartDay) : '';
+  if(exp && exp < wk){ toast('Expiry is before the effective week','⚠️'); return; }
+  const o = {id:'ov-'+uid(), biz, amount:tgRound(amt), effectiveWeek:wk, expires:exp, reason:tgVal('tv-reason'), createdBy:CURRENT_USER_EMAIL||'', createdAt:new Date().toISOString(), active:true, calcTargetAtCreation: tgState(DB,biz,new Date()).calcTarget};
+  tgArr(DB,'tgOverrides').push(o);
+  tgAudit('Target override', o.id, 'created', null, Object.assign({},o), o.reason);
+  save(); closeModal(); renderPage(); toast('Override applied');
+}
+function tgEndOverride(id){
+  const o = tgArr(DB,'tgOverrides').find(x=>x.id===id);
+  if(!o) return;
+  const before = Object.assign({}, o);
+  o.active = false; o.endedAt = new Date().toISOString();
+  tgAudit('Target override', id, 'ended', before, Object.assign({},o));
+  save(); renderPage(); toast('Override ended — back to the calculated target');
+}
+
+/* missions */
+function tgToggleMission(id){
+  const m = tgArr(DB,'tgMissions').find(x=>x.id===id);
+  if(!m) return;
+  m.done = !m.done; m.doneAt = m.done ? new Date().toISOString() : null;
+  save(); renderPage(); toast(m.done?'Mission complete':'Mission reopened', m.done?'✓':'↺');
+}
+function tgMoveMission(id, dir){
+  const m = tgArr(DB,'tgMissions').find(x=>x.id===id);
+  if(!m) return;
+  const list = tgMissionsFor(DB, m.biz, m.weekKey);
+  const i = list.findIndex(x=>x.id===id), j = i+dir;
+  if(j<0 || j>=list.length) return;
+  list.splice(j, 0, list.splice(i,1)[0]);
+  list.forEach((x,k)=>{ const real = DB.tgMissions.find(r=>r.id===x.id); if(real) real.order = k; });
+  save(); renderPage();
+}
+function tgOpenMission(id, biz){
+  const m = id ? tgArr(DB,'tgMissions').find(x=>x.id===id) : null;
+  openModal(`<div class="modal-head"><h2>${m?'Edit mission':'Add mission'}</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <div class="form-group"><label>Mission *</label><input id="tm-title" type="text" value="${m?esc(m.title):''}" placeholder="e.g. Ring every customer from last spring"></div>
+      <div class="form-row"><div class="form-group"><label>Target count</label><input id="tm-target" type="number" min="1" value="${m?m.target:1}"></div><div class="form-group"><label>Progress so far</label><input id="tm-progress" type="number" min="0" value="${m?m.progress||0:0}"></div></div>
+      <div class="form-row"><div class="form-group"><label>Due date</label><input id="tm-due" type="date" value="${m?m.due||'':tgAddDays(tgState(DB,biz,new Date()).weekKey,4)}"></div><div class="form-group"><label>Priority</label><select id="tm-pri">${['High','Medium','Low'].map(p=>`<option ${(m?m.priority:'High')===p?'selected':''}>${p}</option>`).join('')}</select></div></div>
+      <div class="form-group"><label>Linked lead, customer, job or campaign</label><input id="tm-link" type="text" value="${m?esc(m.link||''):''}"></div>
+      ${m&&m.auto?'<p class="small muted">Progress is also counted automatically from your records. Whichever figure is higher is shown.</p>':''}
+    </div>
+    <div class="modal-foot">${m?`<button class="btn btn-danger" onclick="tgRemoveMission('${m.id}')">Remove</button>`:''}<button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-gold" onclick="tgSaveMission('${m?m.id:''}','${biz}')">Save</button></div>`);
+}
+function tgSaveMission(id, biz){
+  if(!requireField('tm-title','Describe the mission')) return;
+  const target = tgNum('tm-target'), progress = tgNum('tm-progress');
+  if(!isFinite(target) || target<1 || (isFinite(progress) && progress<0)){ toast('Target must be 1 or more and progress can\'t be negative','⚠️'); return; }
+  const data = {title:tgVal('tm-title'), target:Math.floor(target), progress:isFinite(progress)?progress:0, due:tgVal('tm-due'), priority:tgVal('tm-pri'), link:tgVal('tm-link')};
+  const list = tgArr(DB,'tgMissions');
+  if(id) Object.assign(list.find(x=>x.id===id), data);
+  else { const wk = tgState(DB,biz,new Date()).weekKey; list.push(Object.assign({id:'m-'+biz+'-'+wk+'-c'+uid(), biz, weekKey:wk, generated:false, done:false, order:tgMissionsFor(DB,biz,wk).length, category:'MONEY MAKING', createdAt:new Date().toISOString()}, data)); }
+  save(); closeModal(); renderPage(); toast('Mission saved');
+}
+function tgRemoveMission(id){
+  const m = tgArr(DB,'tgMissions').find(x=>x.id===id);
+  if(!m) return;
+  m.removed = true; // kept for weekly history; hidden from the list
+  save(); closeModal(); renderPage(); toast('Mission removed','🗑️');
+}
+
+/* capacity inputs */
+function tgOpenCapacity(biz){
+  const c = tgSettings(DB).capacity[biz];
+  const m = tgMetrics(DB, biz, new Date());
+  const f = (id, label, val, hint) => `<div class="form-group"><label>${label}</label><input id="tc-${id}" type="number" min="0" step="any" value="${val===''||val==null?'':val}" placeholder="${hint||''}"></div>`;
+  openModal(`<div class="modal-head"><h2>${TG_BIZ[biz].name} capacity inputs</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <p class="small muted mb-10">Leave average value and conversion blank to work them out from your records. Right now that's ${gbp(m.avgValue)} and ${Math.round(m.conversion*100)}%.</p>
+      ${biz==='sw' ? `
+      <div class="form-row">${f('avg','Average job value (£)',c.avgJobValue,'auto')}${f('conv','Quote conversion (%)',c.conversion,'auto')}</div>
+      <div class="form-row">${f('jpd','Jobs you can complete per day',c.jobsPerDay)}${f('wd','Working days per week',c.workingDays)}</div>
+      <div class="form-row">${f('sub','Extra jobs/week from subcontractors',c.subcontractorJobs)}${f('admin','Admin hours per week',c.adminHours)}</div>` : `
+      <div class="form-row">${f('avg','Average client value (£)',c.avgClientValue,'auto')}${f('conv','Proposal close rate (%)',c.conversion,'auto')}</div>
+      <div class="form-row">${f('bpw','Builds you can deliver per week',c.buildsPerWeek)}${f('hpb','Hours per build',c.hoursPerBuild)}</div>
+      <div class="form-row">${f('hpw','Delivery hours available per week',c.hoursPerWeek)}${f('fl','Extra builds/week from freelancers',c.freelancerBuilds)}</div>`}
+      <div class="form-group"><label>Notes</label><input id="tc-notes" type="text" value="${esc(c.notes||'')}" placeholder="e.g. van due MOT in May"></div>
+    </div>
+    <div class="modal-foot"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-gold" onclick="tgSaveCapacity('${biz}')">Save</button></div>`);
+}
+function tgSaveCapacity(biz){
+  const c = tgSettings(DB).capacity[biz];
+  const read = id => { const v = document.getElementById('tc-'+id).value; return v==='' ? '' : Number(v); };
+  const vals = biz==='sw' ? {avgJobValue:read('avg'), conversion:read('conv'), jobsPerDay:read('jpd'), workingDays:read('wd'), subcontractorJobs:read('sub'), adminHours:read('admin')}
+                          : {avgClientValue:read('avg'), conversion:read('conv'), buildsPerWeek:read('bpw'), hoursPerBuild:read('hpb'), hoursPerWeek:read('hpw'), freelancerBuilds:read('fl')};
+  if(Object.values(vals).some(v=>v!=='' && (!isFinite(v) || v<0))){ toast('Values can\'t be negative','⚠️'); return; }
+  if(vals.conversion!=='' && vals.conversion>100){ toast('Conversion is a percentage (0–100)','⚠️'); return; }
+  Object.assign(c, vals, {notes:tgVal('tc-notes')});
+  save(); closeModal(); renderPage(); toast('Capacity inputs saved');
+}
+
+/* completing a level early, level-up screen, expansion review */
+function tgCompleteEarly(biz){
+  const st = tgState(DB, biz, new Date());
+  openModal(`<div class="modal-head"><h2>Complete Level ${st.level} now?</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body"><p>${TG_BIZ[biz].name} has received ${gbp(st.revenue)} against ${gbp(st.target)}. Completing now locks this cycle in. Money received for the rest of this week then counts toward Level ${st.level+1}, which runs to the end of next week.</p></div>
+    <div class="modal-foot"><button class="btn btn-ghost" onclick="closeModal()">Not yet</button><button class="btn btn-gold" onclick="tgConfirmEarly('${biz}')">Complete level</button></div>`);
+}
+function tgConfirmEarly(biz){
+  const res = tgCloseEarly(DB, biz, new Date());
+  if(res.error){ toast(res.error,'⚠️'); closeModal(); return; }
+  tgAudit('Cycle', res.cycle.id, 'completed early', null, {level:res.cycle.level, revenue:res.cycle.revenue, target:res.cycle.target});
+  tgEnsureMissions(DB, biz, new Date());
+  save(); closeModal(); renderPage();
+  tgOpenLevelUp(res.cycle.id);
+}
+function tgOpenLevelUp(cycleId){
+  const c = tgArr(DB,'tgCycles').find(x=>x.id===cycleId);
+  if(!c) return;
+  const B = TG_BIZ[c.biz];
+  const recs = tgRecommendations(DB, c.biz, new Date());
+  const per = Number(tgSettings(DB).levelsPerGate)||2;
+  const left = per - (c.level % per);
+  openModal(`<div class="tg-levelup" style="--c:${B.color}">
+      <div class="tg-eyebrow">LEVEL COMPLETE</div>
+      <div class="tg-levelup-biz">${B.name.toUpperCase()}</div>
+      <div class="tg-levelup-grid">
+        ${tgStat('Target', gbp(c.target))}${tgStat('Received', gbp(c.revenue))}${tgStat('Achieved', Math.round(c.revenue/c.target*100)+'%','', 'good')}${tgStat('Next target', gbp(c.nextTarget))}
+      </div>
+      <div class="tg-levelup-gate">${c.gateUnlocked?'🔓 EXPANSION GATE '+c.gateNumber+' UNLOCKED':'Expansion gate: '+left+' level'+(left===1?'':'s')+' remaining'}</div>
+    </div>
+    <div class="modal-body">
+      <div class="card-title">WHAT MUST CHANGE TO SUPPORT THE NEXT LEVEL?</div>
+      ${recs.slice(0,5).map(r=>tgRecRow(r)).join('')}
+    </div>
+    <div class="modal-foot">${c.gateUnlocked&&!tgArr(DB,'tgReviews').some(r=>r.cycleId===c.id)?`<button class="btn btn-ghost" onclick="tgAckLevel('${c.id}'); tgOpenReview('${c.id}')">Start expansion review</button>`:''}<button class="btn btn-gold" onclick="tgAckLevel('${c.id}')">Onto Level ${c.level+1} →</button></div>`, true);
+}
+function tgAckLevel(id){
+  const c = tgArr(DB,'tgCycles').find(x=>x.id===id);
+  // acknowledging the latest level also clears any older unseen ones for that business
+  if(c){ tgArr(DB,'tgCycles').filter(x=>x.biz===c.biz && x.achieved && !x.ack && x.startDate<=c.startDate).forEach(x=>x.ack = true); save(); }
+  closeModal(); if(currentRoute==='targets') renderPage();
+}
+function tgReviewAssessment(biz){
+  const now = new Date();
+  const cap = tgCapacity(DB, biz, now);
+  const m = cap.m;
+  const areas = biz==='sw' ? [
+    ['Sales and leads', m.leadsPerWeek>=cap.next.leads?'Strong':'Limiting', `${m.leadsPerWeek}/wk vs ${cap.next.leads} needed`],
+    ['Labour', m.capacityUnits>=cap.next.sales?'OK':'Limiting', `${m.capacityUnits} jobs/wk capacity vs ${cap.next.sales} needed`],
+    ['Transport', 'Check', 'Van reliability and a second vehicle once a second person is on the tools'],
+    ['Tools', 'Check', 'Any job types you turn down for lack of kit?'],
+    ['Materials', 'Check', 'Trade accounts and credit terms with suppliers'],
+    ['Administration', Number(tgSettings(DB).capacity.sw.adminHours)>8?'Limiting':'OK', tgSettings(DB).capacity.sw.adminHours+' admin hours/week'],
+    ['Systems', m.openQuotes>3?'Limiting':'OK', m.openQuotes+' quotes waiting on follow-up']
+  ] : [
+    ['Lead generation', m.outreachPerWeek>=cap.next.outreach?'Strong':'Limiting', `${m.outreachPerWeek}/wk outreach vs ${cap.next.outreach} needed`],
+    ['Sales', m.conversion>=0.4?'Strong':'Limiting', Math.round(m.conversion*100)+'% close rate'],
+    ['Production', m.capacityUnits>=cap.next.sales?'OK':'Limiting', `${m.capacityUnits} builds/wk vs ${cap.next.sales} needed`],
+    ['Automation', 'Check', 'Onboarding, follow-ups and reporting still manual?'],
+    ['Freelancers', m.freelancers>0?'OK':'Limiting', m.freelancers+' builds/wk from freelancers'],
+    ['Client management', 'Check', 'Who answers clients when you\'re building?'],
+    ['Recurring revenue', m.mrr>=tgState(DB,'sf',now).target?'Strong':'Limiting', gbp(m.mrr)+'/mo recurring']
+  ];
+  const limiting = areas.filter(a=>a[1]==='Limiting');
+  const pot = tgExpansionPot(DB, biz);
+  const share = limiting.length ? tgRound(pot.remaining/limiting.length) : 0;
+  const catFor = {'Sales and leads':'Marketing', Labour:'Subcontractors', Transport:'Vehicle', Tools:'Tools', Materials:'Stock/materials', Administration:'Systems', Systems:'Software',
+    'Lead generation':'Marketing', Sales:'Training', Production:'Freelancers', Automation:'Automation', Freelancers:'Freelancers', 'Client management':'Staff', 'Recurring revenue':'Marketing'};
+  return {areas, allocations: limiting.map(a=>({area:a[0], category:catFor[a[0]]||'Other', amount:share})), pot};
+}
+function tgOpenReview(cycleId){
+  const c = tgArr(DB,'tgCycles').find(x=>x.id===cycleId);
+  if(!c) return;
+  const a = tgReviewAssessment(c.biz);
+  const recent = tgCyclesFor(DB, c.biz).slice(-Number(tgSettings(DB).levelsPerGate||2));
+  window._tgReview = {cycleId, allocations:a.allocations};
+  openModal(`<div class="modal-head"><h2>Expansion review — ${TG_BIZ[c.biz].name}, Gate ${c.gateNumber}</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <div class="card-title">WHAT GOT US HERE?</div>
+      <p class="small muted mb-10">${recent.map(r=>`Level ${r.level}: ${gbp(r.revenue)} vs ${gbp(r.target)}, ${r.missionsDone}/${r.missionsTotal} missions`).join(' · ')}</p>
+      <textarea id="rv-got" placeholder="What worked — channels, habits, specific clients…"></textarea>
+      <div class="card-title mt-10">WHAT IS CURRENTLY LIMITING GROWTH?</div>
+      <table><thead><tr><th>Area</th><th>Assessment</th><th>Evidence</th></tr></thead><tbody>${a.areas.map(r=>`<tr><td>${r[0]}</td><td>${tgPill(r[1], r[1]==='Limiting'?'bad':r[1]==='Check'?'warn':'good')}</td><td class="small muted">${esc(r[2])}</td></tr>`).join('')}</tbody></table>
+      <textarea id="rv-limit" class="mt-10" placeholder="Your view of the real constraint…"></textarea>
+      <div class="card-title mt-10">WHAT SHOULD WE INVEST IN NEXT? <span class="small muted">Pot available ${gbp(a.pot.remaining)}</span></div>
+      ${a.allocations.length ? a.allocations.map((al,i)=>`<div class="tg-exp-row"><input type="checkbox" id="rv-al-${i}" checked><div style="flex:1;"><strong>${esc(al.area)}</strong> → ${esc(al.category)}</div><input type="number" min="0" id="rv-amt-${i}" value="${al.amount}" style="width:110px;"></div>`).join('') : '<p class="small muted">Nothing is flagged as limiting. Keep the pot for the next gate, or add your own investment below.</p>'}
+      <textarea id="rv-next" class="mt-10" placeholder="Anything else to invest in, or notes on the plan…"></textarea>
+      <p class="small muted mt-10">Ticked allocations are added as <strong>pending</strong> investments. Nothing is spent until you approve each one.</p>
+    </div>
+    <div class="modal-foot"><button class="btn btn-ghost" onclick="closeModal()">Later</button><button class="btn btn-gold" onclick="tgSaveReview()">Save review</button></div>`, true);
+}
+function tgSaveReview(){
+  const r = window._tgReview; if(!r) return;
+  const c = tgArr(DB,'tgCycles').find(x=>x.id===r.cycleId);
+  const chosen = r.allocations.map((al,i)=>Object.assign({}, al, {amount:Number(document.getElementById('rv-amt-'+i).value)||0, picked:document.getElementById('rv-al-'+i).checked})).filter(al=>al.picked && al.amount>0);
+  chosen.forEach(al=>tgArr(DB,'tgExpansion').push({id:'exp-'+uid(), kind:'investment', biz:c.biz, amount:tgRound(al.amount), category:al.category, reason:'Expansion review, Gate '+c.gateNumber+': '+al.area, benefit:'Removes the '+al.area.toLowerCase()+' constraint', date:tgToday(), status:'pending', gate:c.gateNumber, createdAt:new Date().toISOString()}));
+  tgArr(DB,'tgReviews').push({id:'rev-'+c.id, cycleId:c.id, biz:c.biz, gate:c.gateNumber, date:tgToday(), gotHere:tgVal('rv-got'), limiting:tgVal('rv-limit'), investNext:tgVal('rv-next'), assessment:tgReviewAssessment(c.biz).areas, allocations:chosen, createdAt:new Date().toISOString()});
+  save(); closeModal(); renderPage();
+  toast('Review saved'+(chosen.length?' — '+chosen.length+' investment'+(chosen.length===1?'':'s')+' awaiting approval':''));
+}
+
+/* history corrections — the original value is always kept */
+function tgOpenCorrection(id){
+  const c = tgArr(DB,'tgCycles').find(x=>x.id===id);
+  if(!c) return;
+  const fields = [['revenue','Received'],['target','Target'],['acqSpend','Acquisition spend'],['opCosts','Operating costs'],['ownerPay','Owner pay'],['expansionSpend','Expansion spend'],['notes','Notes']];
+  openModal(`<div class="modal-head"><h2>Correct ${TG_BIZ[c.biz].name} week of ${fmtDate(c.startDate)}</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <p class="small muted mb-10">Closed weeks are permanent. A correction records the old value, the new value and why. Level results don't change; if a level outcome was wrong, explain it in the notes.</p>
+      <div class="form-row">${fields.slice(0,6).map(([k,l])=>`<div class="form-group"><label>${l} (£)</label><input id="hc-${k}" type="number" step="0.01" value="${c[k]}"></div>`).join('')}</div>
+      <div class="form-group"><label>Notes</label><textarea id="hc-notes">${esc(c.notes||'')}</textarea></div>
+      <div class="form-group"><label>Reason for correction *</label><input id="hc-reason" type="text"></div>
+      ${(c.corrections||[]).length?`<div class="divider"></div><div class="small muted">${c.corrections.map(x=>`${fmtDateTime(x.at)}: ${esc(x.field)} ${esc(String(x.before))} → ${esc(String(x.after))} (${esc(x.reason)})`).join('<br>')}</div>`:''}
+    </div>
+    <div class="modal-foot"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-gold" onclick="tgSaveCorrection('${id}')">Save correction</button></div>`, true);
+}
+function tgSaveCorrection(id){
+  const c = tgArr(DB,'tgCycles').find(x=>x.id===id);
+  const reason = tgVal('hc-reason');
+  if(!reason){ toast('A correction needs a reason','⚠️'); return; }
+  const changes = [];
+  ['revenue','target','acqSpend','opCosts','ownerPay','expansionSpend'].forEach(k=>{
+    const v = tgNum('hc-'+k);
+    if(!isFinite(v)){ return; }
+    if(v<0 && k!=='revenue'){ return; }
+    if(Math.abs(v-(Number(c[k])||0))>0.004) changes.push({field:k, before:c[k], after:tgRound(v)});
+  });
+  const notes = tgVal('hc-notes');
+  if(notes!==(c.notes||'')) changes.push({field:'notes', before:c.notes||'', after:notes});
+  if(!changes.length){ toast('Nothing changed'); return; }
+  c.corrections = c.corrections||[];
+  changes.forEach(ch=>{ c.corrections.push(Object.assign({at:new Date().toISOString(), by:CURRENT_USER_EMAIL||'', reason}, ch)); c[ch.field] = ch.after; });
+  c.retained = tgRound(c.revenue - c.acqSpend - c.opCosts - c.ownerPay - c.expansionSpend);
+  tgAudit('Cycle', id, 'corrected', null, changes.reduce((o,ch)=>(o[ch.field]=ch.after,o),{}), reason);
+  save(); closeModal(); renderPage(); toast('Correction recorded');
+}
+
+/* ===================== STEADYWORKS — WORKFLOW ===================== */
+/* Joins up lead → quote → job → invoice → paid → review / repeat work. */
+
+/* ---------- customers: every quote, job and invoice links to a customer record ---------- */
+function swEnsureCustomer(name, extra){
+  name = String(name||'').trim();
+  if(!name) return null;
+  extra = extra||{};
+  let c = DB.customers.find(x=>String(x.name||'').trim().toLowerCase()===name.toLowerCase());
+  if(!c){
+    c = {id:uid(), name, phone:extra.phone||'', email:extra.email||'', address:extra.address||'', propertyType:extra.propertyType||'Residential',
+      leadSource:extra.source||'Other', notes:'Added automatically from '+(extra.from||'a record')+'.', createdAt:localDateStr()};
+    DB.customers.push(c);
+    logActivity('Customer created', name+' (automatic)');
+  } else {
+    // fill gaps only — never overwrite details you've typed on the customer
+    ['phone','email','address'].forEach(k=>{ if(!c[k] && extra[k]) c[k] = extra[k]; });
+  }
+  return c;
+}
+function swCustomerFor(rec){
+  if(!rec) return null;
+  return (rec.customerId && DB.customers.find(c=>c.id===rec.customerId)) || DB.customers.find(c=>c.name===rec.customerName) || null;
+}
+function swQuoteForCustomer(id){
+  const c = DB.customers.find(x=>x.id===id);
+  openQuoteModal(null, null, {customerName:c?c.name:''});
+  if(c) setTimeout(()=>{ const sel = document.getElementById('f-customer'); if(sel) sel.value = c.id; }, 0);
+}
+
+/* ---------- quotes: sent date, chasing, won/lost, lead stage ---------- */
+function swQuoteStatusChange(q, newStatus, isNew){
+  if(newStatus==='sent' && (isNew || q.status!=='sent') && !q.sentAt) q.sentAt = localDateStr();
+  if(newStatus==='approved' && (isNew || q.status!=='approved')) q.wonAt = localDateStr();
+  if(['declined','expired'].includes(newStatus) && (isNew || q.status!==newStatus)) q.lostAt = localDateStr();
+}
+function swQuoteAge(q){ const d = daysUntil(q.sentAt||q.createdAt); return d===null ? 0 : -d; }
+// A sent quote needs chasing 3+ days after it went out (or after the last chase).
+function swQuoteNeedsChase(q){
+  if(q.status!=='sent') return false;
+  const last = (q.chases||[]).slice(-1)[0];
+  const since = daysUntil(last ? last.date : (q.sentAt||q.createdAt));
+  return since!==null && -since >= 3;
+}
+function swSyncLeadFromQuote(q){
+  if(!q || !q.leadId) return;
+  const lead = DB.leads.find(l=>l.id===q.leadId);
+  if(!lead) return;
+  const total = calcQuoteTotal(q).total;
+  lead.quoteRef = q.quoteNumber; lead.value = Math.round(total*100)/100;
+  const order = LEAD_STAGES.indexOf(lead.stage);
+  if(q.status==='approved' && order < LEAD_STAGES.indexOf('Won')) lead.stage = 'Won';
+  else if(['sent','draft'].includes(q.status) && order < LEAD_STAGES.indexOf('Quoted')) lead.stage = 'Quoted';
+}
+function swMarkQuoteLost(id){
+  const q = DB.quotes.find(x=>x.id===id);
+  if(!q) return;
+  openModal(`<div class="modal-head"><h2>Mark ${esc(q.quoteNumber)} as lost?</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body"><div class="form-group"><label>Why was it lost? (helps you price and follow up better)</label><select id="ql-reason">${['Price too high','Went with someone else','Job cancelled / postponed','No response','Other'].map(r=>`<option>${r}</option>`).join('')}</select></div></div>
+    <div class="modal-foot"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-danger" onclick="swConfirmQuoteLost('${id}')">Mark lost</button></div>`);
+}
+function swConfirmQuoteLost(id){
+  const q = DB.quotes.find(x=>x.id===id);
+  swQuoteStatusChange(q, 'declined');
+  q.status = 'declined'; q.lostReason = document.getElementById('ql-reason').value;
+  logActivity('Quote lost', q.quoteNumber+' — '+q.lostReason);
+  save(); closeModal(); renderPage(); renderNav(); toast('Marked as lost','✕');
+}
+
+/* ---------- chasing: quotes, invoices, services, reviews (email / SMS, uses Follow-up templates) ---------- */
+function swMerge(str, vars){ return String(str||'').replace(/\{\{\s*(\w+)\s*\}\}/g, (m,k)=> vars[k]!=null ? vars[k] : m); }
+function swChaseContext(kind, id){
+  if(kind==='quote'){ const q = DB.quotes.find(x=>x.id===id); if(!q) return null; const c = swCustomerFor(q); const lead = q.leadId ? DB.leads.find(l=>l.id===q.leadId) : null;
+    return {rec:q, title:'Chase quote '+q.quoteNumber, tplPrefix:'tpl-fu-quote', phone:(c&&c.phone)||(lead&&lead.phone)||'', email:(c&&c.email)||(lead&&lead.email)||'', vars:{name:(q.customerName||'').split(' ')[0], number:q.quoteNumber, amount:gbp(calcQuoteTotal(q).total), date:fmtDate(q.sentAt||q.createdAt)}}; }
+  if(kind==='invoice'){ const i = DB.invoices.find(x=>x.id===id); if(!i) return null; const c = swCustomerFor(i);
+    return {rec:i, title:'Chase invoice '+i.invoiceNumber, tplPrefix:'tpl-fu-invoice', phone:(c&&c.phone)||'', email:(c&&c.email)||'', vars:{name:(i.customerName||'').split(' ')[0], number:i.invoiceNumber, amount:gbp(invoiceOutstanding(i)), date:fmtDate(i.dueDate)}}; }
+  if(kind==='service'){ const sv = (DB.swServices||[]).find(x=>x.id===id); if(!sv) return null; const c = DB.customers.find(x=>x.id===sv.customerId);
+    return {rec:sv, title:'Service reminder — '+sv.customerName, tplPrefix:'tpl-fu-service', phone:sv.phone||(c&&c.phone)||'', email:sv.email||(c&&c.email)||'', vars:{name:(sv.customerName||'').split(' ')[0], service:String(sv.type||'service').toLowerCase(), date:fmtDate(sv.nextDue)}}; }
+  if(kind==='review'){ const j = DB.jobs.find(x=>x.id===id); if(!j) return null; const c = swCustomerFor(j);
+    return {rec:j, title:'Ask '+j.customerName+' for a review', tplPrefix:'tpl-fu-review', phone:(c&&c.phone)||'', email:(c&&c.email)||'', vars:{name:(j.customerName||'').split(' ')[0]}}; }
+  return null;
+}
+function swOpenChase(kind, id){
+  const ctx = swChaseContext(kind, id);
+  if(!ctx){ toast('Record not found','⚠️'); return; }
+  const channel = ctx.email ? 'email' : 'sms';
+  window._swChase = {kind, id, channel};
+  openModal(`<div class="modal-head"><h2>${esc(ctx.title)}</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <div class="seg-toggle mb-10" style="display:inline-flex;">
+        <button class="seg-btn" id="ch-btn-email" onclick="swChaseChannel('email')">✉️ Email</button>
+        <button class="seg-btn" id="ch-btn-sms" onclick="swChaseChannel('sms')">💬 Text</button>
+      </div>
+      <div class="form-row"><div class="form-group"><label>Email</label><input id="ch-email" type="email" value="${esc(ctx.email)}"></div><div class="form-group"><label>Phone</label><input id="ch-phone" type="tel" value="${esc(ctx.phone)}"></div></div>
+      <div class="form-group" id="ch-subject-wrap"><label>Subject</label><input id="ch-subject" type="text"></div>
+      <div class="form-group"><label>Message</label><textarea id="ch-body" style="min-height:150px;"></textarea></div>
+      <p class="small muted">Templates live under Follow Ups → Templates. Sending opens your email or messages app with this filled in. The message is also copied to your clipboard, and the chase is logged.</p>
+    </div>
+    <div class="modal-foot"><button class="btn btn-ghost" onclick="swLogChase(true)">Log as chased (phoned / in person)</button><button class="btn btn-gold" onclick="swSendChase()">Open & send</button></div>`);
+  swChaseChannel(channel);
+}
+function swChaseChannel(channel){
+  const st = window._swChase; st.channel = channel;
+  const ctx = swChaseContext(st.kind, st.id);
+  const tpl = ((DB.templates&&DB.templates.followup)||[]).find(t=>t.id===ctx.tplPrefix+'-'+channel) || ((DB.templates&&DB.templates.followup)||[]).find(t=>t.channel===channel);
+  ['email','sms'].forEach(c=>{ const b = document.getElementById('ch-btn-'+c); if(b){ b.style.background = c===channel?'var(--gold)':''; b.style.color = c===channel?'#fff':''; } });
+  document.getElementById('ch-subject-wrap').style.display = channel==='email' ? '' : 'none';
+  document.getElementById('ch-subject').value = tpl ? swMerge(tpl.subject, ctx.vars) : '';
+  let body = tpl ? swMerge(tpl.body, ctx.vars) : '';
+  if(st.kind==='invoice'){ const extra = payDetailsText(ctx.rec, channel==='sms'); if(extra && !body.includes(extra.split('\n')[0])) body += (channel==='sms'?' ':'\n\n') + extra; }
+  document.getElementById('ch-body').value = body;
+}
+function swSendChase(){
+  const st = window._swChase;
+  const body = document.getElementById('ch-body').value;
+  let uri;
+  if(st.channel==='email'){
+    const email = document.getElementById('ch-email').value.trim();
+    if(!email){ toast('Add an email address first','⚠️'); return; }
+    uri = `mailto:${email}?subject=${encodeURIComponent(document.getElementById('ch-subject').value)}&body=${encodeURIComponent(body)}`;
+  } else {
+    const phone = document.getElementById('ch-phone').value.replace(/[^\d+]/g,'');
+    if(!phone){ toast('Add a phone number first','⚠️'); return; }
+    uri = `sms:${phone}?body=${encodeURIComponent(body)}`;
+  }
+  if(navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(body).catch(()=>{});
+  swLogChase(false);
+  window.location.href = uri;
+}
+function swLogChase(manual){
+  const st = window._swChase;
+  const ctx = swChaseContext(st.kind, st.id);
+  const rec = ctx.rec;
+  const entry = {date:localDateStr(), channel: manual ? 'manual' : st.channel};
+  if(st.kind==='service'){ rec.reminders = rec.reminders||[]; rec.reminders.push(entry); }
+  else if(st.kind==='review'){ rec.reviewRequestedAt = localDateStr(); }
+  else { rec.chases = rec.chases||[]; rec.chases.push(entry); }
+  // keep contact details you typed in the chase box
+  const c = st.kind==='service' ? DB.customers.find(x=>x.id===rec.customerId) : swCustomerFor(rec);
+  const email = document.getElementById('ch-email').value.trim(), phone = document.getElementById('ch-phone').value.trim();
+  if(c){ if(!c.email && email) c.email = email; if(!c.phone && phone) c.phone = phone; }
+  logActivity({quote:'Quote chased', invoice:'Invoice chased', service:'Service reminder sent', review:'Review requested'}[st.kind], (rec.quoteNumber||rec.invoiceNumber||rec.jobNumber||rec.customerName||'')+' · '+entry.channel);
+  save(); closeModal(); renderPage(); renderNav();
+  toast(manual ? 'Logged — it\'ll drop off the chase list for a few days' : 'Opening your '+(st.channel==='email'?'email':'messages')+' app — message copied too');
+}
+
+/* ---------- record a payment (real date + method → invoice + Targets ledger) ---------- */
+function swOpenRecordPayment(id){
+  const inv = DB.invoices.find(x=>x.id===id);
+  if(!inv) return;
+  const owed = tgRound(invoiceOutstanding(inv));
+  const t = calcInvoiceTotal(inv);
+  openModal(`<div class="modal-head"><h2>Record payment — ${esc(inv.invoiceNumber)}</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <p class="small muted mb-10">${esc(inv.customerName)} · total ${fmt(t.total)} · paid so far ${fmt(inv.amountPaid||0)} · <strong style="color:var(--text);">${fmt(owed)} outstanding</strong></p>
+      <div class="form-row"><div class="form-group"><label>Amount received (£)</label><input id="rp-amount" type="number" min="0" step="0.01" value="${owed}"></div><div class="form-group"><label>Date received</label><input id="rp-date" type="date" value="${localDateStr()}"></div></div>
+      <div class="form-row"><div class="form-group"><label>Method</label><select id="rp-method">${['Bank transfer','Card','Cash','Cheque','Other'].map(m=>`<option>${m}</option>`).join('')}</select></div><div class="form-group"><label>Reference / note</label><input id="rp-note" type="text" placeholder="optional"></div></div>
+      ${(inv.payments||[]).length?`<div class="divider"></div><div class="small muted">Previous payments: ${(inv.payments||[]).map(p=>`${fmt(p.amount)} on ${fmtDate(p.date)} (${esc(p.method)})`).join(' · ')}</div>`:''}
+      <p class="small muted mt-10">This counts toward your SteadyWorks target on the date you enter.</p>
+    </div>
+    <div class="modal-foot"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-success" onclick="swSaveRecordPayment('${id}')">Record payment</button></div>`);
+}
+function swSaveRecordPayment(id){
+  const inv = DB.invoices.find(x=>x.id===id);
+  const amount = tgRound(Number(document.getElementById('rp-amount').value));
+  const date = document.getElementById('rp-date').value;
+  const owed = tgRound(invoiceOutstanding(inv));
+  if(!(amount>0)){ toast('Enter the amount received','⚠️'); return; }
+  if(amount > owed + 0.01){ toast('That\'s more than the '+fmt(owed)+' outstanding','⚠️'); return; }
+  if(!date){ toast('Add the date it was received','⚠️'); return; }
+  const prevReceived = tgInvoiceReceived(inv);
+  const pid = uid();
+  inv.payments = inv.payments||[];
+  inv.payments.push({id:pid, amount, date, method:document.getElementById('rp-method').value, note:document.getElementById('rp-note').value.trim()});
+  inv.amountPaid = tgRound((Number(inv.amountPaid)||0) + amount);
+  const fullyPaid = inv.amountPaid >= calcInvoiceTotal(inv).total - 0.01;
+  inv.status = fullyPaid ? 'paid' : 'partial';
+  if(fullyPaid) inv.paidAt = date;
+  // Ledger entry with the real date. Only the newly-received amount is added, so nothing is counted twice.
+  const linked = tgLinkedTotal(DB, 'inv:'+inv.id);
+  const newMoney = tgRound(tgInvoiceReceived(inv) - Math.max(prevReceived, linked));
+  if(newMoney > 0.009){
+    const job = inv.jobId ? DB.jobs.find(j=>j.id===inv.jobId) : null;
+    tgArr(DB,'tgPayments').push({id:'pay-invrec-'+pid, biz:'sw', amount:newMoney, date, type: fullyPaid ? (linked>0||prevReceived>0?'final':'final') : (linked>0||prevReceived>0?'stage':'deposit'),
+      customer:inv.customerName||'', job: job?job.jobNumber:inv.invoiceNumber, sourceType:'Invoice', sourceKey:'inv:'+inv.id, sourceLabel:inv.invoiceNumber, manual:false, estimated:false,
+      channel:'', notes:document.getElementById('rp-method').value, createdAt:new Date().toISOString()});
+  }
+  if(fullyPaid && inv.jobId){ const j = DB.jobs.find(x=>x.id===inv.jobId); if(j){ j.actualRevenue = tgRound((Number(j.actualRevenue)||0) + amount); j.timeline = j.timeline||[]; j.timeline.push({e:'Payment Received', d:date}); } }
+  logActivity('Payment recorded', inv.invoiceNumber+' — '+fmt(amount));
+  save(); closeModal(); renderPage(); renderNav();
+  toast(fullyPaid ? inv.invoiceNumber+' paid in full 🎉' : fmt(amount)+' recorded — '+fmt(invoiceOutstanding(inv))+' still owed', '💷');
+}
+
+/* ---------- finishing a job: invoice, review, next service ---------- */
+function swMarkJobComplete(id){
+  const j = DB.jobs.find(x=>x.id===id);
+  if(!j) return;
+  j.status = 'completed';
+  if(!j.endDate || j.endDate > localDateStr()) j.endDate = localDateStr(); if(j.startDate && j.startDate > j.endDate) j.startDate = j.endDate; // finished today, even if planned later
+  j.timeline = j.timeline||[]; j.timeline.push({e:'Job Completed', d:localDateStr()});
+  swServiceJobCompleted(j);
+  logActivity('Job completed', j.jobNumber+' — '+j.customerName);
+  save(); renderPage(); renderNav();
+  swJobCompleteModal(id);
+}
+function swJobCompleteModal(id){
+  const j = DB.jobs.find(x=>x.id===id);
+  if(!j) return;
+  const invoiced = DB.invoices.filter(i=>i.jobId===j.id);
+  const hasPlan = (DB.swServices||[]).some(sv=>sv.customerId===j.customerId && sv.status!=='paused');
+  const m = swJobMargin(j);
+  openModal(`<div class="modal-head"><h2>✅ ${esc(j.jobNumber)} complete</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <p class="mb-10">${esc(j.customerName)} · ${fmt(m.value)}${m.cost?` · margin ${Math.round(m.pct)}%`:''}</p>
+      <div class="card-title">Next steps</div>
+      <div class="tg-rec"><div style="flex:1;"><strong>1. Get paid</strong><div class="small muted">${invoiced.length?invoiced.length+' invoice'+(invoiced.length===1?'':'s')+' already raised for this job':'No invoice yet. Invoicing the same day gets you paid fastest.'}</div></div><div class="tg-rec-side">${invoiced.length?`<button class="btn btn-ghost btn-sm" onclick="closeModal(); navigate('invoices')">View invoices</button>`:`<button class="btn btn-gold btn-sm" onclick="closeModal(); swInvoiceFromJob('${j.id}')">Create invoice</button>`}</div></div>
+      <div class="tg-rec"><div style="flex:1;"><strong>2. Ask for a review</strong><div class="small muted">${j.reviewRequestedAt?'Requested '+fmtDate(j.reviewRequestedAt):'Happy customers are most likely to leave one today.'}</div></div><div class="tg-rec-side"><button class="btn btn-ghost btn-sm" onclick="closeModal(); swOpenChase('review','${j.id}')">Request review</button></div></div>
+      <div class="tg-rec"><div style="flex:1;"><strong>3. Book the repeat work</strong><div class="small muted">${hasPlan?'This customer already has a service plan.':'Boilers, cylinders and landlord certificates come round every year. Set a reminder now.'}</div></div><div class="tg-rec-side">${hasPlan?'':`<button class="btn btn-ghost btn-sm" onclick="closeModal(); swOpenService(null,'${j.customerId||''}','${j.id}')">Add service plan</button>`}</div></div>
+    </div>
+    <div class="modal-foot"><button class="btn btn-ghost" onclick="closeModal()">Done</button></div>`);
+}
+// Builds a draft invoice from the won quote (or the job value) plus approved variations not yet invoiced.
+function swInvoiceFromJob(id){
+  const j = DB.jobs.find(x=>x.id===id);
+  if(!j) return;
+  const quote = (j.quoteId && DB.quotes.find(q=>q.id===j.quoteId)) || DB.quotes.find(q=>q.jobId===j.id && q.status==='approved');
+  const already = DB.invoices.filter(i=>i.jobId===j.id);
+  let items;
+  if(already.length) items = [];
+  else if(quote) items = quote.items.map(i=>Object.assign({}, i));
+  else items = [{desc:'Works completed — '+j.jobNumber+(j.address?' at '+j.address:''), qty:1, unit:'job', rate:tgRound((Number(j.expectedRevenue)||0)/(1+(Number(DB.settings.vatRate)||0)/100))}];
+  (j.variations||[]).filter(v=>v.status==='Approved').forEach(v=>items.push({desc:'Variation: '+v.desc, qty:1, unit:'job', rate:Number(v.amount)||0}));
+  if(!items.length) items.push({desc:'', qty:1, unit:'ea', rate:0});
+  openInvoiceModal(null, j.id);
+  window._editingItems = items;
+  renderLineItems();
+  const due = new Date(); due.setDate(due.getDate()+14);
+  const dueEl = document.getElementById('f-dueDate'); if(dueEl && !dueEl.value) dueEl.value = localDateStr(due);
+  if(quote){ const v = document.getElementById('f-vatRate'); if(v){ v.value = quote.vatRate; updateTotals(); } }
+  window._invoiceFromJobVariations = j.id;
+  toast(already.length ? 'This job already has '+already.length+' invoice'+(already.length===1?'':'s')+' — add only what\'s left' : quote ? 'Filled from '+quote.quoteNumber+' — check and save' : 'Filled from the job value — check and save');
+}
+
+/* ---------- service plans (annual services, landlord gas safety …) ---------- */
+const SW_SERVICE_TYPES = ['Annual boiler service','Landlord gas safety (CP12)','Unvented cylinder service','Power flush','Back-flow / water safety check','Other'];
+function swAddMonths(ds, n){ const d = tgDate(ds); const day = d.getDate(); d.setDate(1); d.setMonth(d.getMonth()+n); d.setDate(Math.min(day, new Date(d.getFullYear(), d.getMonth()+1, 0).getDate())); return localDateStr(d); }
+function swServiceStatus(sv){
+  if(sv.status==='paused') return {label:'Paused', cls:'st-cancelled', due:false, days:null};
+  const d = daysUntil(sv.nextDue);
+  if(d===null) return {label:'No date', cls:'st-draft', due:false, days:null};
+  if(sv.bookedJobId){ const j = DB.jobs.find(x=>x.id===sv.bookedJobId); if(j && !['completed','invoiced','cancelled'].includes(j.status)) return {label:'Booked '+fmtDate(j.startDate), cls:'st-scheduled', due:false, days:d}; }
+  if(d<0) return {label:'Overdue '+(-d)+'d', cls:'st-overdue', due:true, days:d};
+  if(d<=30) return {label:'Due in '+d+'d', cls:'st-onhold', due:true, days:d};
+  return {label:'Due '+fmtDate(sv.nextDue), cls:'st-won', due:false, days:d};
+}
+let SW_SERVICE_FILTER = 'due';
+function view_services(){
+  const list = DB.swServices = DB.swServices||[];
+  const active = list.filter(sv=>sv.status!=='paused');
+  const st = sv => swServiceStatus(sv);
+  const annual = active.reduce((s,sv)=>s+(Number(sv.price)||0)*12/Math.max(1,Number(sv.intervalMonths)||12),0);
+  const due30 = active.filter(sv=>st(sv).due);
+  const overdue = active.filter(sv=>(st(sv).days??1)<0 && st(sv).due);
+  const match = sv => SW_SERVICE_FILTER==='all' ? true : SW_SERVICE_FILTER==='due' ? st(sv).due : SW_SERVICE_FILTER==='overdue' ? st(sv).due && st(sv).days<0 : SW_SERVICE_FILTER==='paused' ? sv.status==='paused' : SW_SERVICE_FILTER==='booked' ? /^Booked/.test(st(sv).label) : true;
+  const rows = list.filter(match).slice().sort((a,b)=>String(a.nextDue).localeCompare(String(b.nextDue))).map(sv=>{
+    const s = st(sv); const lastRem = (sv.reminders||[]).slice(-1)[0];
+    return `<tr>
+      <td><strong>${esc(sv.customerName)}</strong><div class="small muted">${esc(sv.address||'')}</div></td>
+      <td>${esc(sv.type)}<div class="small muted">every ${sv.intervalMonths||12} months</div></td>
+      <td>${fmtDate(sv.lastDone)}</td>
+      <td>${fmtDate(sv.nextDue)}</td>
+      <td><span class="pill ${s.cls}">${esc(s.label)}</span>${lastRem?`<div class="small muted">reminded ${fmtDate(lastRem.date)}</div>`:''}</td>
+      <td>${fmt(sv.price)}</td>
+      <td style="white-space:nowrap;">
+        ${sv.status!=='paused'?`<button class="icon-btn" title="Send reminder" onclick="swOpenChase('service','${sv.id}')">📣</button><button class="icon-btn" title="Book a job" onclick="swBookService('${sv.id}')">📅</button><button class="icon-btn" title="Mark done" onclick="swServiceDone('${sv.id}')">✓</button>`:''}
+        <button class="icon-btn" title="Edit" onclick="swOpenService('${sv.id}')">✎</button>
+      </td></tr>`; }).join('');
+  const filters = [['due','Due (30 days)'],['overdue','Overdue'],['booked','Booked'],['all','All'],['paused','Paused']];
+  return `<div class="grid grid-4" style="margin-bottom:18px;">
+    <div class="card kpi-card"><div class="kpi-label">Active plans</div><div class="kpi-value">${active.length}</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Due in 30 days</div><div class="kpi-value" style="color:${due30.length?'var(--warning)':'inherit'};">${due30.length}</div><div class="small muted mt-10">${fmt(due30.reduce((s,sv)=>s+(Number(sv.price)||0),0))} of work</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Overdue</div><div class="kpi-value" style="color:${overdue.length?'var(--danger)':'inherit'};">${overdue.length}</div></div>
+    <div class="card kpi-card"><div class="kpi-label">Repeat revenue / year</div><div class="kpi-value">${fmt(annual)}</div><div class="small muted mt-10">from active plans</div></div>
+  </div>
+  <div class="tabs">${filters.map(([k,l])=>`<button class="tab-btn ${SW_SERVICE_FILTER===k?'active':''}" onclick="SW_SERVICE_FILTER='${k}'; renderPage();">${l}</button>`).join('')}</div>
+  <div class="card"><table>
+    <thead><tr><th>Customer</th><th>Service</th><th>Last done</th><th>Next due</th><th>Status</th><th>Price</th><th></th></tr></thead>
+    <tbody>${rows || (list.length ? emptyRow(7,'Nothing in this view.') : emptyRow(7,'No service plans yet. Every boiler you install or service, and every landlord certificate, is guaranteed work next year. Add them here and you\'ll be reminded 30 days before they\'re due.','+ New Service Plan','swOpenService()'))}</tbody>
+  </table></div>
+  <p class="small muted mt-10">📣 sends a reminder by email or text · 📅 books it in as a job · ✓ marks it done and rolls the next due date forward. Completing a booked job rolls it forward automatically.</p>`;
+}
+function swOpenService(id, customerId, fromJobId){
+  const sv = id ? (DB.swServices||[]).find(x=>x.id===id) : null;
+  const c = sv ? DB.customers.find(x=>x.id===sv.customerId) : (customerId ? DB.customers.find(x=>x.id===customerId) : null);
+  const job = fromJobId ? DB.jobs.find(x=>x.id===fromJobId) : null;
+  const last = sv ? sv.lastDone : (job ? (job.endDate||localDateStr()) : localDateStr());
+  openModal(`<div class="modal-head"><h2>${sv?'Edit service plan':'New service plan'}</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group"><label>Customer *</label><select id="sv-cust"><option value="">— Pick a customer —</option>${DB.customers.slice().sort((a,b)=>String(a.name).localeCompare(String(b.name))).map(x=>`<option value="${x.id}" ${c&&c.id===x.id?'selected':''}>${esc(x.name)}</option>`).join('')}<option value="__new">+ New customer…</option></select></div>
+        <div class="form-group"><label>Service</label><select id="sv-type">${SW_SERVICE_TYPES.map(t=>`<option ${(sv?sv.type:'Annual boiler service')===t?'selected':''}>${t}</option>`).join('')}</select></div>
+      </div>
+      <div class="form-group" id="sv-newname-wrap" style="display:none;"><label>New customer name</label><input id="sv-newname" type="text"></div>
+      <div class="form-group"><label>Address (if different from customer)</label><input id="sv-address" type="text" value="${esc(sv?sv.address||'':(c?c.address||'':(job?job.address||'':'')))}"></div>
+      <div class="form-row form-row-3">
+        <div class="form-group"><label>Last done</label><input id="sv-last" type="date" value="${last||''}" onchange="swServiceRecalc()"></div>
+        <div class="form-group"><label>Every (months)</label><input id="sv-interval" type="number" min="1" value="${sv?sv.intervalMonths||12:12}" oninput="swServiceRecalc()"></div>
+        <div class="form-group"><label>Next due</label><input id="sv-next" type="date" value="${sv?sv.nextDue:swAddMonths(last||localDateStr(),12)}"></div>
+      </div>
+      <div class="form-row"><div class="form-group"><label>Price (£)</label><input id="sv-price" type="number" min="0" step="0.01" value="${sv?sv.price||'':90}"></div>
+        <div class="form-group"><label>Status</label><select id="sv-status"><option value="active" ${!sv||sv.status!=='paused'?'selected':''}>Active</option><option value="paused" ${sv&&sv.status==='paused'?'selected':''}>Paused</option></select></div></div>
+      <div class="form-group"><label>Notes (boiler make/model, access, landlord contact…)</label><textarea id="sv-notes">${sv?esc(sv.notes||''):''}</textarea></div>
+      ${sv&&(sv.history||[]).length?`<div class="small muted">History: ${(sv.history||[]).map(h=>fmtDate(h.date)).join(' · ')}</div>`:''}
+    </div>
+    <div class="modal-foot">${sv?`<button class="btn btn-danger" onclick="swDeleteService('${sv.id}')">Delete</button>`:''}<button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-gold" onclick="swSaveService('${sv?sv.id:''}','${fromJobId||''}')">Save</button></div>`);
+  document.getElementById('sv-cust').onchange = e=>{ document.getElementById('sv-newname-wrap').style.display = e.target.value==='__new' ? '' : 'none'; const cc = DB.customers.find(x=>x.id===e.target.value); if(cc && !document.getElementById('sv-address').value) document.getElementById('sv-address').value = cc.address||''; };
+}
+function swServiceRecalc(){
+  const last = document.getElementById('sv-last').value, n = Number(document.getElementById('sv-interval').value)||12;
+  if(last) document.getElementById('sv-next').value = swAddMonths(last, n);
+}
+function swSaveService(id, fromJobId){
+  let custId = document.getElementById('sv-cust').value;
+  if(custId==='__new'){
+    const nm = document.getElementById('sv-newname').value.trim();
+    if(!nm){ toast('Enter the new customer\'s name','⚠️'); return; }
+    custId = swEnsureCustomer(nm, {address:document.getElementById('sv-address').value.trim(), from:'a service plan'}).id;
+  }
+  const c = DB.customers.find(x=>x.id===custId);
+  if(!c){ toast('Pick a customer','⚠️'); return; }
+  const next = document.getElementById('sv-next').value;
+  if(!next){ toast('Set the next due date','⚠️'); return; }
+  const interval = Math.floor(Number(document.getElementById('sv-interval').value)||0);
+  if(interval<1){ toast('Interval must be at least 1 month','⚠️'); return; }
+  const price = Number(document.getElementById('sv-price').value)||0;
+  if(price<0){ toast('Price can\'t be negative','⚠️'); return; }
+  const data = {customerId:c.id, customerName:c.name, type:document.getElementById('sv-type').value, address:document.getElementById('sv-address').value.trim()||c.address||'',
+    lastDone:document.getElementById('sv-last').value, intervalMonths:interval, nextDue:next, price, status:document.getElementById('sv-status').value, notes:document.getElementById('sv-notes').value.trim()};
+  DB.swServices = DB.swServices||[];
+  if(id) Object.assign(DB.swServices.find(x=>x.id===id), data);
+  else DB.swServices.push(Object.assign({id:'svc-'+uid(), history:[], reminders:[], createdAt:new Date().toISOString(), sourceJobId:fromJobId||null}, data));
+  save(); closeModal(); renderPage(); renderNav(); toast(id?'Service plan updated':'Service plan added — you\'ll be reminded before '+fmtDate(next));
+}
+function swDeleteService(id){
+  confirmDelete('Delete this service plan?', 'Past history on it will be lost.', ()=>{
+    DB.swServices = (DB.swServices||[]).filter(x=>x.id!==id); save(); renderPage(); renderNav(); toast('Service plan deleted','🗑️');
+  });
+}
+function swServiceDone(id, dateOverride, jobId){
+  const sv = (DB.swServices||[]).find(x=>x.id===id);
+  if(!sv) return;
+  const date = dateOverride || localDateStr();
+  sv.history = sv.history||[]; sv.history.push({date, jobId:jobId||null});
+  sv.lastDone = date; sv.nextDue = swAddMonths(date, Number(sv.intervalMonths)||12); sv.bookedJobId = null;
+  if(!dateOverride){ save(); renderPage(); renderNav(); toast('Done — next due '+fmtDate(sv.nextDue)); }
+}
+// Completing a job booked from a service plan rolls that plan forward.
+function swServiceJobCompleted(j){
+  (DB.swServices||[]).filter(sv=>sv.bookedJobId===j.id || j.serviceId===sv.id).forEach(sv=>swServiceDone(sv.id, j.endDate||localDateStr(), j.id));
+}
+function swBookService(id){
+  const sv = (DB.swServices||[]).find(x=>x.id===id);
+  if(!sv) return;
+  const c = DB.customers.find(x=>x.id===sv.customerId);
+  const jobNumber = nextJobNumber();
+  const start = sv.nextDue && sv.nextDue>=localDateStr() ? sv.nextDue : localDateStr();
+  const job = {id:uid(), jobNumber, customerId:sv.customerId, customerName:sv.customerName, address:sv.address||(c&&c.address)||'', propertyType:(c&&c.propertyType)||'Residential',
+    status:'scheduled', priority:'Medium', assignedTo:'', startDate:start, endDate:start, expectedRevenue:Number(sv.price)||0, actualRevenue:0, source:'Repeat Customer', serviceId:sv.id,
+    notes:[{type:'Site', text:sv.type+(sv.notes?' — '+sv.notes:''), date:localDateStr()}], photos:[], costLines:[], documents:[], variations:[], phases:[], timeline:[{e:'Booked from service plan', d:localDateStr()}]};
+  DB.jobs.push(job);
+  sv.bookedJobId = job.id;
+  logActivity('Service booked', sv.customerName+' — '+sv.type+' ('+jobNumber+')');
+  save(); renderNav();
+  toast(jobNumber+' booked for '+fmtDate(start)+' — set the engineer and time');
+  navigate('jobs', job.id);
+  setTimeout(()=>openJobModal(job.id), 250);
+}
+
+/* ---------- schedule board: who's where this week ---------- */
+function swScheduleWeek(){ if(!window._swWeek) window._swWeek = tgWeekStart(localDateStr(), 1); return window._swWeek; }
+function swScheduleNav(dir){ window._swWeek = dir===0 ? tgWeekStart(localDateStr(),1) : tgAddDays(swScheduleWeek(), 7*dir); renderPage(); }
+function swScheduleBoard(){
+  const ws = swScheduleWeek();
+  const days = Array.from({length:7}, (_,i)=>tgAddDays(ws, i));
+  const today = localDateStr();
+  const people = DB.employees.map(e=>e.name).concat(['Unassigned']);
+  const live = DB.jobs.filter(j=>j.startDate && j.status!=='cancelled');
+  const onDay = (name, d) => live.filter(j=>(name==='Unassigned' ? !j.assignedTo || !DB.employees.some(e=>e.name===j.assignedTo) : j.assignedTo===name) && d>=j.startDate && d<=(j.endDate&&j.endDate>=j.startDate?j.endDate:j.startDate));
+  const colour = {scheduled:'#7DD3FC', active:'#E11D2A', 'on-hold':'#F59E0B', completed:'#22C55E', invoiced:'#818CF8'};
+  const unscheduled = DB.jobs.filter(j=>!j.startDate && !['completed','invoiced','cancelled'].includes(j.status));
+  const weekJobs = new Set(); people.forEach(p=>days.slice(0,5).forEach(d=>onDay(p,d).forEach(j=>weekJobs.add(j.id))));
+  let capInfo = '';
+  try{ const cap = tgCapacity(DB,'sw',new Date()); capInfo = `${weekJobs.size} job${weekJobs.size===1?'':'s'} booked Mon–Fri · capacity about ${cap.m.capacityUnits} · ${cap.next.sales} needed for the next target level`; }catch(e){}
+  return `<div class="card">
+    <div class="flex-between mb-10" style="flex-wrap:wrap;gap:8px;">
+      <div class="flex gap-8"><button class="btn btn-ghost btn-sm" onclick="swScheduleNav(-1)">← Prev</button><button class="btn btn-ghost btn-sm" onclick="swScheduleNav(0)">This week</button><button class="btn btn-ghost btn-sm" onclick="swScheduleNav(1)">Next →</button></div>
+      <strong>Week of ${fmtDate(ws)}</strong>
+      <span class="small muted">${capInfo}</span>
+    </div>
+    <div class="sw-sched" style="grid-template-columns:130px repeat(7,minmax(110px,1fr));">
+      <div class="sw-sched-h"></div>${days.map((d,i)=>`<div class="sw-sched-h ${d===today?'today':''}">${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][i]} <span class="muted">${tgDate(d).getDate()}</span></div>`).join('')}
+      ${people.map(p=>`<div class="sw-sched-p">${esc(p)}</div>${days.map(d=>{ const js = onDay(p,d); return `<div class="sw-sched-c ${d===today?'today':''} ${js.length>1?'busy':''}">${js.map(j=>`<div class="sw-chip" style="--c:${colour[j.status]||'#9CA0AE'}" onclick="navigate('jobs','${j.id}')" title="${esc(j.jobNumber+' — '+j.customerName+(j.address?' · '+j.address:''))}"><strong>${esc(j.jobNumber.replace(/^SW-\d{4}-/,'#'))}</strong> ${esc(j.customerName)}</div>`).join('')}</div>`; }).join('')}`).join('')}
+    </div>
+    ${DB.employees.length?'':'<p class="small muted mt-10">Add team members under Team so each person gets their own row.</p>'}
+  </div>
+  <div class="card mt-10"><div class="card-title">Not scheduled yet <span class="small muted">${unscheduled.length}</span></div>
+    ${unscheduled.length?unscheduled.map(j=>`<div class="flex-between" style="padding:8px 0;border-bottom:1px solid var(--border);gap:8px;"><div><strong>${esc(j.jobNumber)}</strong> · ${esc(j.customerName)} <span class="small muted">${fmt(j.expectedRevenue)}</span></div><button class="btn btn-ghost btn-sm" onclick="openJobModal('${j.id}')">Set date & engineer</button></div>`).join(''):'<p class="small muted">Every open job has a date.</p>'}
+  </div>`;
+}
+
+/* ---------- SteadyWorks dashboard: money waiting on you ---------- */
+function swMoneyWaitingHtml(){
+  const chaseQ = DB.quotes.filter(swQuoteNeedsChase);
+  const overdue = DB.invoices.filter(i=>invoiceStatus(i)==='overdue');
+  const toInvoice = DB.jobs.filter(j=>j.status==='completed' && !swJobInvoiced(j));
+  const services = (DB.swServices||[]).filter(sv=>swServiceStatus(sv).due);
+  const card = (icon, label, n, amount, go, cta) => `<div class="card kpi-card row-link" style="cursor:pointer;" onclick="${go}"><div class="kpi-icon">${icon}</div><div class="kpi-label">${label}</div><div class="kpi-value" style="color:${n?'var(--warning)':'inherit'};">${n}</div><div class="small muted mt-10">${amount} · ${cta} →</div></div>`;
+  return `<div class="card-title" style="margin-bottom:10px;">💷 Money waiting on you</div>
+  <div class="grid grid-4" style="margin-bottom:20px;">
+    ${card('📣','Quotes to chase', chaseQ.length, fmt(chaseQ.reduce((s,q)=>s+calcQuoteTotal(q).total,0)), "SW_QUOTE_FILTER='chase'; navigate('quotes')", 'Chase')}
+    ${card('🧾','Overdue invoices', overdue.length, fmt(overdue.reduce((s,i)=>s+invoiceOutstanding(i),0)), "navigate('invoices')", 'Collect')}
+    ${card('✅','Done, not invoiced', toInvoice.length, fmt(toInvoice.reduce((s,j)=>s+swJobMargin(j).value,0)), "SW_JOB_FILTER='completed'; window._jobsViewMode='list'; navigate('jobs')", 'Invoice')}
+    ${card('🔁','Services due', services.length, fmt(services.reduce((s,sv)=>s+(Number(sv.price)||0),0)), "SW_SERVICE_FILTER='due'; navigate('services')", 'Book')}
+  </div>`;
+}
+
+/* ===================== STEADYWORKS — PRICE BOOK ===================== */
+let PB_SEARCH = '', PB_CAT = 'all';
+const PB_CATEGORIES = ['Labour','Call-outs','Boilers & heating','Bathrooms','Kitchens','Leaks & repairs','Drainage','Materials','Certificates','Other'];
+function pbItems(){ DB.priceBook = DB.priceBook||[]; return DB.priceBook; }
+function pbUsage(id){ return DB.quotes.concat(DB.invoices).reduce((n,d)=>n+(d.items||[]).filter(i=>i.pbId===id).length,0); }
+function pbRows(){
+  const q = PB_SEARCH.trim().toLowerCase();
+  const list = pbItems().filter(i=>(PB_CAT==='all'||i.category===PB_CAT) && (!q || [i.name,i.desc,i.category].join(' ').toLowerCase().includes(q)))
+    .slice().sort((a,b)=>String(a.category).localeCompare(String(b.category))||String(a.name).localeCompare(String(b.name)));
+  if(!list.length) return pbItems().length ? emptyRow(7,'No items match.') : emptyRow(7,'Your price book is empty. Add your standard jobs and materials once, then pick them into any quote or invoice in one click.','+ Add starter items from my rates','pbStarter()');
+  return list.map(i=>{ const m = Number(i.cost)>0 && Number(i.rate)>0 ? (i.rate-i.cost)/i.rate*100 : null; return `<tr class="row-link" onclick="pbOpenItem('${i.id}')">
+    <td><strong>${esc(i.name)}</strong>${i.desc?`<div class="small muted">${esc(i.desc)}</div>`:''}</td>
+    <td><span class="tag-chip">${esc(i.category||'Other')}</span></td>
+    <td>${esc(i.unit||'ea')}</td>
+    <td><strong>${fmt(i.rate)}</strong></td>
+    <td>${Number(i.cost)>0?fmt(i.cost):'—'}</td>
+    <td style="font-weight:700;color:${m==null?'var(--text-soft)':m<20?'var(--danger)':m<35?'var(--warning)':'var(--success)'};">${m==null?'—':Math.round(m)+'%'}</td>
+    <td class="small muted">${pbUsage(i.id)||'—'}</td></tr>`; }).join('');
+}
+function view_price_book(){
+  const cats = [...new Set(pbItems().map(i=>i.category||'Other'))];
+  return `<div class="toolbar">
+    <div class="search-box">🔍<input type="text" placeholder="Search the price book…" value="${esc(PB_SEARCH)}" oninput="PB_SEARCH=this.value; const b=document.getElementById('pb-body'); if(b) b.innerHTML=pbRows();"></div>
+    <select style="width:auto;" onchange="PB_CAT=this.value; renderPage();"><option value="all">All categories</option>${cats.map(c=>`<option ${PB_CAT===c?'selected':''}>${esc(c)}</option>`).join('')}</select>
+    <div class="spacer"></div>
+    ${pbItems().length?'':`<button class="btn btn-ghost btn-sm" onclick="pbStarter()">Add starter items from my rates</button>`}
+  </div>
+  <div class="card"><table>
+    <thead><tr><th>Item</th><th>Category</th><th>Unit</th><th>Price (ex VAT)</th><th>Your cost</th><th>Margin</th><th>Used</th></tr></thead>
+    <tbody id="pb-body">${pbRows()}</tbody>
+  </table></div>
+  <p class="small muted mt-10">Prices are ex VAT. VAT is added on the quote or invoice. Fill in "your cost" and quotes show an estimated margin as you build them.</p>`;
+}
+function pbOpenItem(id){
+  const i = id ? pbItems().find(x=>x.id===id) : null;
+  const markup = Number(DB.settings.rates.markup)||0;
+  openModal(`<div class="modal-head"><h2>${i?'Edit price book item':'New price book item'}</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <div class="form-group"><label>Name *</label><input id="pb-name" type="text" value="${i?esc(i.name):''}" placeholder="e.g. Replace radiator valve"></div>
+      <div class="form-group"><label>Description on quote (optional)</label><input id="pb-desc" type="text" value="${i?esc(i.desc||''):''}" placeholder="e.g. supply & fit, includes drain down and refill"></div>
+      <div class="form-row form-row-3">
+        <div class="form-group"><label>Category</label><select id="pb-cat">${PB_CATEGORIES.map(c=>`<option ${(i?i.category:'Leaks & repairs')===c?'selected':''}>${c}</option>`).join('')}</select></div>
+        <div class="form-group"><label>Unit</label><input id="pb-unit" type="text" value="${i?esc(i.unit||'ea'):'ea'}" placeholder="ea / hr / job / m"></div>
+        <div class="form-group"><label>Your cost (£, optional)</label><input id="pb-cost" type="number" min="0" step="0.01" value="${i&&Number(i.cost)>0?i.cost:''}" oninput="pbSuggest()"></div>
+      </div>
+      <div class="form-group"><label>Price to customer (£ ex VAT) *</label><input id="pb-rate" type="number" min="0" step="0.01" value="${i?i.rate:''}"><div class="small muted mt-10" id="pb-suggest"></div></div>
+    </div>
+    <div class="modal-foot">${i?`<button class="btn btn-danger" onclick="pbDelete('${i.id}')">Delete</button>`:''}<button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-gold" onclick="pbSaveItem('${i?i.id:''}')">Save</button></div>`);
+  window._pbMarkup = markup; pbSuggest();
+}
+function pbSuggest(){
+  const c = Number(document.getElementById('pb-cost').value)||0, el = document.getElementById('pb-suggest');
+  if(!el) return;
+  el.innerHTML = c>0 ? `With your ${window._pbMarkup}% markup: <a style="color:var(--teal);cursor:pointer;" onclick="document.getElementById('pb-rate').value='${(c*(1+window._pbMarkup/100)).toFixed(2)}'">${fmt(c*(1+window._pbMarkup/100))}</a> (click to use)` : '';
+}
+function pbSaveItem(id){
+  if(!requireField('pb-name','Name the item')) return;
+  const rate = Number(document.getElementById('pb-rate').value), cost = Number(document.getElementById('pb-cost').value)||0;
+  if(!(rate>=0) || document.getElementById('pb-rate').value===''){ toast('Enter the price to the customer','⚠️'); return; }
+  if(cost<0){ toast('Cost can\'t be negative','⚠️'); return; }
+  const data = {name:document.getElementById('pb-name').value.trim(), desc:document.getElementById('pb-desc').value.trim(), category:document.getElementById('pb-cat').value,
+    unit:document.getElementById('pb-unit').value.trim()||'ea', rate:Math.round(rate*100)/100, cost:Math.round(cost*100)/100};
+  if(id) Object.assign(pbItems().find(x=>x.id===id), data); else pbItems().push(Object.assign({id:'pb-'+uid()}, data));
+  save(); closeModal(); renderPage(); toast(id?'Item updated':'Added to price book');
+}
+function pbDelete(id){ confirmDelete('Delete this price book item?', 'Quotes and invoices that already use it are not affected.', ()=>{ DB.priceBook = pbItems().filter(x=>x.id!==id); save(); renderPage(); toast('Item deleted','🗑️'); }); }
+// Only uses your own rates from Settings — no invented prices.
+function pbStarter(){
+  const r = DB.settings.rates;
+  const starters = [
+    {name:'Labour', unit:'hr', rate:r.labour, category:'Labour', desc:''},
+    {name:'Day rate', unit:'day', rate:r.dayRate, category:'Labour', desc:''},
+    {name:'Call-out (first hour)', unit:'ea', rate:r.callout, category:'Call-outs', desc:''},
+    {name:'Emergency call-out', unit:'ea', rate:r.emergencyCallout, category:'Call-outs', desc:'Out of hours'}
+  ].filter(x=>Number(x.rate)>0);
+  if(!starters.length){ toast('Set your rates in Settings first','⚠️'); return; }
+  starters.forEach(x=>{ if(!pbItems().some(i=>i.name===x.name)) pbItems().push(Object.assign({id:'pb-'+uid(), cost:0}, x)); });
+  save(); renderPage(); toast('Added '+starters.length+' items from your rates — now add your standard jobs');
+}
+function pbAddToDoc(id){
+  const i = pbItems().find(x=>x.id===id);
+  if(!i) return;
+  const items = window._editingItems;
+  if(items.length===1 && !items[0].desc && !Number(items[0].rate)) items.pop(); // replace the blank starter row
+  items.push({desc:i.name+(i.desc?' — '+i.desc:''), qty:1, unit:i.unit||'ea', rate:Number(i.rate)||0, cost:Number(i.cost)||0, pbId:i.id});
+  renderLineItems();
+}
+function pbMarginHint(sub){
+  const items = (window._editingItems||[]).filter(i=>Number(i.qty)*Number(i.rate));
+  const costed = items.filter(i=>Number(i.cost)>0);
+  if(!costed.length) return '';
+  const cost = costed.reduce((s,i)=>s+Number(i.qty)*Number(i.cost),0);
+  const revenueCosted = costed.reduce((s,i)=>s+Number(i.qty)*Number(i.rate),0);
+  const m = revenueCosted ? (revenueCosted-cost)/revenueCosted*100 : 0;
+  return `<div class="small muted mt-10">Known costs ${fmt(cost)} on ${costed.length} of ${items.length} line${items.length===1?'':'s'} · est. margin <strong style="color:${m<20?'var(--danger)':m<35?'var(--warning)':'var(--success)'};">${Math.round(m)}%</strong></div>`;
+}
+function pbExportCSV(){
+  if(!pbItems().length){ toast('Nothing to export yet','⚠️'); return; }
+  const lines = [['Name','Description','Category','Unit','Price ex VAT','Your cost'].join(',')].concat(pbItems().map(i=>[i.name,i.desc,i.category,i.unit,i.rate,i.cost].map(csvCell).join(',')));
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob(['﻿'+lines.join('\r\n')], {type:'text/csv;charset=utf-8'}));
+  a.download = 'steadyworks-price-book-'+localDateStr()+'.csv'; document.body.appendChild(a); a.click(); a.remove();
+  toast('Price book exported');
+}
+
+/* ===================== STEADYWORKS — PURCHASE ORDERS & MATERIALS ===================== */
+const PO_STATUSES = [['draft','Draft'],['ordered','Ordered'],['received','Received'],['cancelled','Cancelled']];
+function nextPoNumber(){ DB.counters.po = (Number(DB.counters.po)||0)+1; return 'PO-'+new Date().getFullYear()+'-'+String(DB.counters.po).padStart(3,'0'); }
+function poTotals(po){
+  const net = (po.items||[]).reduce((s,i)=>s+(Number(i.qty)||0)*(Number(i.unitCost)||0),0);
+  const vat = net*(Number(po.vatRate)||0)/100;
+  return {net:Math.round(net*100)/100, vat:Math.round(vat*100)/100, gross:Math.round((net+vat)*100)/100};
+}
+// The cost that hits the job: net if you're VAT registered (you reclaim the VAT), gross if not.
+function poJobCost(po){ const t = poTotals(po); return DB.settings.vatRegistered===false ? t.gross : t.net; }
+function poJobPanelHtml(j){
+  const pos = (DB.purchaseOrders||[]).filter(po=>po.jobId===j.id).sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)));
+  const matBudget = (j.costLines||[]).filter(c=>c.category==='Materials').reduce((s,c)=>s+(Number(c.budget)||0),0);
+  const ordered = pos.filter(p=>p.status!=='cancelled').reduce((s,p)=>s+poJobCost(p),0);
+  const received = pos.filter(p=>p.status==='received').reduce((s,p)=>s+poJobCost(p),0);
+  const tone = {draft:'st-draft', ordered:'st-sent', received:'st-won', cancelled:'st-cancelled'};
+  return `<div class="card">
+    <div class="flex-between mb-10" style="flex-wrap:wrap;gap:8px;"><div class="card-title" style="margin:0;">Materials & purchase orders</div><button class="btn btn-dark btn-sm" onclick="poOpen(null,'${j.id}')">+ New PO</button></div>
+    <div class="grid grid-3" style="gap:10px;margin-bottom:12px;">
+      <div>${tgStat('Materials budget', fmt(matBudget), 'from cost lines')}</div>
+      <div>${tgStat('On order', fmt(ordered-received))}</div>
+      <div>${tgStat('Received', fmt(received), matBudget&&received>matBudget?'over budget by '+fmt(received-matBudget):'', matBudget&&received>matBudget?'bad':'')}</div>
+    </div>
+    <table><thead><tr><th>PO #</th><th>Supplier</th><th>Status</th><th>Items</th><th>Total</th><th></th></tr></thead>
+    <tbody>${pos.map(po=>{ const t = poTotals(po); return `<tr class="row-link" onclick="poOpen('${po.id}')"><td><strong>${esc(po.poNumber)}</strong></td><td>${esc(po.supplier||'—')}</td><td><span class="pill ${tone[po.status]||'st-draft'}">${esc((PO_STATUSES.find(s=>s[0]===po.status)||['',po.status])[1])}</span></td><td>${(po.items||[]).length}</td><td>${fmt(t.gross)}</td>
+      <td onclick="event.stopPropagation();" style="white-space:nowrap;">${po.status==='ordered'?`<button class="btn btn-success btn-sm" onclick="poReceive('${po.id}')">Received</button>`:''}<button class="icon-btn" title="Print / PDF" onclick="poPrint('${po.id}')">🖨️</button></td></tr>`; }).join('') || emptyRow(6,'No purchase orders for this job. Raise one when you order materials. Once received, it updates the job\'s materials cost and your expenses automatically.')}</tbody></table>
+  </div>`;
+}
+function poOpen(id, jobId){
+  const po = id ? (DB.purchaseOrders||[]).find(x=>x.id===id) : null;
+  const job = DB.jobs.find(j=>j.id===(po?po.jobId:jobId));
+  window._poItems = po ? po.items.map(i=>Object.assign({},i)) : [{desc:'', qty:1, unitCost:0}];
+  const suppliers = [...new Set((DB.purchaseOrders||[]).map(p=>p.supplier).filter(Boolean))];
+  openModal(`<div class="modal-head"><h2>${po?'Purchase order '+esc(po.poNumber):'New purchase order'}${job?' — '+esc(job.jobNumber):''}</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group"><label>Supplier *</label><input id="po-supplier" type="text" list="po-suppliers" value="${po?esc(po.supplier||''):''}" placeholder="e.g. Plumbase, Screwfix, City Plumbing"><datalist id="po-suppliers">${suppliers.map(x=>`<option value="${esc(x)}">`).join('')}</datalist></div>
+        <div class="form-group"><label>Status</label><select id="po-status">${PO_STATUSES.map(([k,l])=>`<option value="${k}" ${(po?po.status:'ordered')===k?'selected':''}>${l}</option>`).join('')}</select></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Supplier ref / account</label><input id="po-ref" type="text" value="${po?esc(po.ref||''):''}"></div>
+        <div class="form-group"><label>VAT rate (%)</label><input id="po-vat" type="number" min="0" value="${po?po.vatRate:DB.settings.vatRate}" oninput="poRenderItems()"></div>
+      </div>
+      <label>Items</label>
+      <table class="line-items-table"><thead><tr><th>Description</th><th style="width:70px;">Qty</th><th style="width:100px;">Unit cost £</th><th style="width:90px;">Total</th><th></th></tr></thead><tbody id="po-items"></tbody></table>
+      <button class="btn btn-ghost btn-sm mt-10" onclick="window._poItems.push({desc:'',qty:1,unitCost:0}); poRenderItems();">+ Add item</button>
+      <div id="po-totals" style="text-align:right;" class="mt-10"></div>
+      <div class="form-group mt-10"><label>Delivery / notes</label><textarea id="po-notes">${po?esc(po.notes||''):(job&&job.address?'Deliver to: '+esc(job.address):'')}</textarea></div>
+      <label style="display:flex;align-items:center;gap:8px;font-weight:600;color:var(--text);"><input type="checkbox" id="po-expense" ${!po||po.logExpense!==false?'checked':''} style="width:auto;"> When received, also log it as a Materials expense</label>
+    </div>
+    <div class="modal-foot">${po&&po.status!=='received'?`<button class="btn btn-danger" onclick="poDelete('${po.id}')">Delete</button>`:''}${po?`<button class="btn btn-ghost" onclick="poPrint('${po.id}')">🖨️ Print / PDF</button>`:''}<button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-gold" onclick="poSave('${po?po.id:''}','${job?job.id:''}')">Save</button></div>`, true);
+  poRenderItems();
+}
+function poRenderItems(){
+  const body = document.getElementById('po-items');
+  if(!body) return;
+  body.innerHTML = window._poItems.map((it,i)=>`<tr>
+    <td><input type="text" value="${esc(it.desc)}" oninput="window._poItems[${i}].desc=this.value"></td>
+    <td><input type="number" min="0" value="${it.qty}" oninput="window._poItems[${i}].qty=Number(this.value)||0; poRenderTotals()"></td>
+    <td><input type="number" min="0" step="0.01" value="${it.unitCost}" oninput="window._poItems[${i}].unitCost=Number(this.value)||0; poRenderTotals()"></td>
+    <td class="po-line-total" style="font-weight:700;padding-top:14px;">${fmt((Number(it.qty)||0)*(Number(it.unitCost)||0))}</td>
+    <td><button class="icon-btn" onclick="window._poItems.splice(${i},1); poRenderItems();">✕</button></td></tr>`).join('');
+  poRenderTotals();
+}
+function poRenderTotals(){
+  const t = poTotals({items:window._poItems, vatRate:Number(document.getElementById('po-vat').value)||0});
+  document.querySelectorAll('#po-items tr').forEach((tr,i)=>{ const c = tr.querySelector('.po-line-total'); const it = window._poItems[i]; if(c&&it) c.textContent = fmt((Number(it.qty)||0)*(Number(it.unitCost)||0)); });
+  document.getElementById('po-totals').innerHTML = `<div class="small">Net ${fmt(t.net)} · VAT ${fmt(t.vat)}</div><div style="font-size:16px;font-weight:800;">Total ${fmt(t.gross)}</div>`;
+}
+function poSave(id, jobId){
+  if(!requireField('po-supplier','Who are you ordering from?')) return;
+  const items = window._poItems.filter(i=>i.desc || Number(i.unitCost));
+  if(!items.length){ toast('Add at least one item','⚠️'); return; }
+  if(items.some(i=>Number(i.qty)<0 || Number(i.unitCost)<0)){ toast('Quantities and costs can\'t be negative','⚠️'); return; }
+  DB.purchaseOrders = DB.purchaseOrders||[];
+  const data = {supplier:document.getElementById('po-supplier').value.trim(), ref:document.getElementById('po-ref').value.trim(), vatRate:Number(document.getElementById('po-vat').value)||0,
+    items, notes:document.getElementById('po-notes').value.trim(), logExpense:document.getElementById('po-expense').checked};
+  const newStatus = document.getElementById('po-status').value;
+  let po;
+  if(id){ po = DB.purchaseOrders.find(x=>x.id===id); Object.assign(po, data); }
+  else { po = Object.assign({id:'po-'+uid(), poNumber:nextPoNumber(), jobId:jobId||null, status:'draft', createdAt:localDateStr()}, data); DB.purchaseOrders.push(po); logActivity('Purchase order raised', po.poNumber+' — '+po.supplier); }
+  if(newStatus==='ordered' && !po.orderedAt) po.orderedAt = localDateStr();
+  if(newStatus==='received' && po.status!=='received'){ po.status='ordered'; poApplyReceived(po); }
+  else { po.status = newStatus; if(po.status==='received') poApplyReceived(po); }
+  save(); closeModal(); if(po.jobId){ window._jobTab='materials'; navigate('jobs', po.jobId); } else renderPage();
+  toast(id?'Purchase order updated':po.poNumber+' saved');
+}
+function poReceive(id){
+  const po = (DB.purchaseOrders||[]).find(x=>x.id===id);
+  if(!po) return;
+  poApplyReceived(po);
+  save(); window._jobTab='materials'; navigate('jobs', po.jobId); toast(po.poNumber+' received — job costs updated');
+}
+// Received: the job's Materials actual cost and (optionally) an expense are kept in step with the PO.
+function poApplyReceived(po){
+  po.status = 'received';
+  po.receivedAt = po.receivedAt || localDateStr();
+  const cost = poJobCost(po);
+  const j = DB.jobs.find(x=>x.id===po.jobId);
+  if(j){
+    j.costLines = j.costLines||[];
+    let line = po.costLineId && j.costLines.find(c=>c.id===po.costLineId);
+    if(!line){ line = {id:'cl-'+po.id, category:'Materials', desc:po.poNumber+' — '+po.supplier, budget:0, actual:0}; j.costLines.push(line); po.costLineId = line.id; }
+    line.actual = cost; line.desc = po.poNumber+' — '+po.supplier;
+    j.timeline = j.timeline||[]; if(!j.timeline.some(t=>t.e==='Materials received: '+po.poNumber)) j.timeline.push({e:'Materials received: '+po.poNumber, d:po.receivedAt});
+  }
+  if(po.logExpense!==false){
+    DB.expenses = DB.expenses||[];
+    const eid = 'exp-po-'+po.id;
+    let e = DB.expenses.find(x=>x.id===eid);
+    if(!e){ e = {id:eid, category:'Materials'}; DB.expenses.push(e); }
+    Object.assign(e, {amount:cost, desc:po.poNumber+' — '+po.supplier+(j?' ('+j.jobNumber+')':''), date:po.receivedAt});
+  }
+}
+function poDelete(id){
+  confirmDelete('Delete this purchase order?', 'Only draft, ordered or cancelled orders can be deleted.', ()=>{
+    const po = (DB.purchaseOrders||[]).find(x=>x.id===id);
+    DB.purchaseOrders = (DB.purchaseOrders||[]).filter(x=>x.id!==id);
+    save(); if(po && po.jobId){ window._jobTab='materials'; navigate('jobs', po.jobId); } else renderPage(); toast('Purchase order deleted','🗑️');
+  });
+}
+function poPrint(id){
+  const po = (DB.purchaseOrders||[]).find(x=>x.id===id);
+  if(!po) return;
+  const j = DB.jobs.find(x=>x.id===po.jobId), t = poTotals(po), s = DB.settings;
+  const w = window.open('','_blank');
+  if(!w){ toast('Allow pop-ups for this site to print / save as PDF','⚠️'); return; }
+  w.document.write(`<html><head><title>${esc(po.poNumber)}</title><style>
+    body{font-family:Arial,sans-serif;padding:40px;color:#1A1A1A;} h1{color:#E11D2A;margin:0;font-size:22px;} table{width:100%;border-collapse:collapse;margin-top:20px;}
+    th{background:#FDECEC;color:#E11D2A;text-align:left;padding:8px;font-size:11px;text-transform:uppercase;} td{padding:8px;border-bottom:1px solid #eee;font-size:13.5px;}
+    .head{display:flex;justify-content:space-between;border-bottom:3px solid #E11D2A;padding-bottom:12px;} .tot{text-align:right;margin-top:14px;}</style></head><body>
+    <div class="head"><div><h1>${esc(s.businessName)}</h1><div>${esc(s.address)}</div><div>${esc(s.phone)} · ${esc(s.email)}</div></div>
+    <div style="text-align:right;"><h1>PURCHASE ORDER</h1><div><strong>${esc(po.poNumber)}</strong></div><div>${fmtDate(po.orderedAt||po.createdAt)}</div></div></div>
+    <p><strong>Supplier:</strong> ${esc(po.supplier)}${po.ref?' · Ref '+esc(po.ref):''}${j?`<br><strong>Job:</strong> ${esc(j.jobNumber)} — ${esc(j.customerName)}`:''}</p>
+    <table><thead><tr><th>Description</th><th>Qty</th><th>Unit cost</th><th>Total</th></tr></thead><tbody>${po.items.map(i=>`<tr><td>${esc(i.desc)}</td><td>${i.qty}</td><td>${fmt(i.unitCost)}</td><td>${fmt((Number(i.qty)||0)*(Number(i.unitCost)||0))}</td></tr>`).join('')}</tbody></table>
+    <div class="tot">Net ${fmt(t.net)}<br>VAT (${po.vatRate}%) ${fmt(t.vat)}<br><strong style="font-size:18px;">Total ${fmt(t.gross)}</strong></div>
+    ${po.notes?`<p style="margin-top:24px;white-space:pre-wrap;">${esc(po.notes)}</p>`:''}</body></html>`);
+  w.document.close(); w.print();
+}
+
+/* ===================== STEADYWORKS — SITE SHEET (phone-friendly) ===================== */
+const SW_SITE_CHECKS = [
+  ['arrive','Arrived, introduced and confirmed the work with the customer'],
+  ['isolate','Water / gas / power isolated where needed'],
+  ['protect','Work area protected (dust sheets, floor covers)'],
+  ['tested','Work completed and tested (no leaks, pressure / flue checks)'],
+  ['clean','Area cleaned and waste removed'],
+  ['walk','Customer shown the finished work and how to use it']
+];
+function swSiteSheetHtml(j){
+  const ss = j.siteSheet || {};
+  const ck = ss.checklist || {};
+  const before = (j.photos||[]).map((p,i)=>Object.assign({i},p)).filter(p=>p.label==='Before');
+  const after = (j.photos||[]).map((p,i)=>Object.assign({i},p)).filter(p=>p.label==='After');
+  const done = SW_SITE_CHECKS.filter(([k])=>ck[k]).length;
+  const thumbs = list => list.length ? `<div class="sw-thumbs">${list.map(p=>`<img src="${p.data}" alt="" onclick="swViewPhoto('${j.id}',${p.i})">`).join('')}</div>` : '<div class="small muted">None yet</div>';
+  return `<div class="card sw-site">
+    <div class="flex-between" style="flex-wrap:wrap;gap:8px;">
+      <div class="card-title" style="margin:0;">Site sheet — ${esc(j.customerName)}</div>
+      <button class="btn btn-ghost btn-sm" onclick="swPrintJobSheet('${j.id}')">🖨️ Job sheet / PDF</button>
+    </div>
+    <div class="small muted mb-10">${esc(j.address||'No address')} ${j.address?`· <a style="color:var(--teal);" target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(j.address)}">Directions ↗</a>`:''}</div>
+    <div class="flex gap-8 mb-10" style="flex-wrap:wrap;">
+      <button class="btn ${ss.arrivedAt?'btn-ghost':'btn-gold'} sw-big" onclick="swSiteStamp('${j.id}','arrivedAt')">${ss.arrivedAt?'✓ Arrived '+fmtDateTime(ss.arrivedAt):'📍 I\'ve arrived'}</button>
+      <button class="btn btn-ghost sw-big" onclick="swSiteStamp('${j.id}','leftAt')" ${ss.arrivedAt?'':'disabled'}>${ss.leftAt?'✓ Left '+fmtDateTime(ss.leftAt):'🚐 Leaving site'}</button>
+    </div>
+    <div class="card-title mt-10" style="margin-bottom:6px;">Checklist <span class="small muted">${done}/${SW_SITE_CHECKS.length}</span></div>
+    ${SW_SITE_CHECKS.map(([k,l])=>`<label class="sw-check ${ck[k]?'done':''}"><input type="checkbox" ${ck[k]?'checked':''} onchange="swSiteCheck('${j.id}','${k}',this.checked)"><span>${l}</span></label>`).join('')}
+    <div class="grid grid-2 mt-10" style="gap:12px;">
+      <div><div class="flex-between"><strong class="small">Before photos</strong><label class="btn btn-ghost btn-sm" style="cursor:pointer;">📷 Add<input type="file" accept="image/*" capture="environment" multiple style="display:none" onchange="uploadJobPhoto('${j.id}',this.files,'Before')"></label></div>${thumbs(before)}</div>
+      <div><div class="flex-between"><strong class="small">After photos</strong><label class="btn btn-ghost btn-sm" style="cursor:pointer;">📷 Add<input type="file" accept="image/*" capture="environment" multiple style="display:none" onchange="uploadJobPhoto('${j.id}',this.files,'After')"></label></div>${thumbs(after)}</div>
+    </div>
+    <div class="form-group mt-10"><label>Work carried out</label><textarea id="ss-notes" style="min-height:90px;" placeholder="What was done, parts fitted, anything to watch…">${esc(ss.notes||'')}</textarea>
+      <button class="btn btn-ghost btn-sm mt-10" onclick="swSiteNotes('${j.id}')">Save notes</button></div>
+    <div class="divider"></div>
+    <div class="card-title">Customer sign-off</div>
+    ${j.signoff ? `<div class="sw-signed"><img src="${j.signoff.signature}" alt="Customer signature"><div><strong>${esc(j.signoff.name)}</strong><div class="small muted">Signed ${fmtDateTime(j.signoff.at)}${j.signoff.satisfied?' · confirmed work completed to their satisfaction':''}</div>
+        <button class="btn btn-ghost btn-sm mt-10" onclick="swClearSignoff('${j.id}')">Re-do sign-off</button></div></div>`
+    : `<div class="form-group"><label>Customer name</label><input id="ss-name" type="text" value="${esc(j.customerName||'')}"></div>
+      <label class="sw-check"><input type="checkbox" id="ss-satisfied" checked><span>I confirm the work has been completed to my satisfaction</span></label>
+      <div class="sw-sigpad-wrap"><canvas id="ss-sig" class="sw-sigpad"></canvas><div class="sw-sigpad-hint">Sign here</div></div>
+      <div class="flex gap-8 mt-10" style="flex-wrap:wrap;"><button class="btn btn-ghost btn-sm" onclick="swClearPad()">Clear</button><button class="btn btn-gold sw-big" onclick="swSaveSignoff('${j.id}')">✍️ Save sign-off</button></div>`}
+  </div>`;
+}
+function swSiteSheet(j){ j.siteSheet = j.siteSheet || {checklist:{}}; j.siteSheet.checklist = j.siteSheet.checklist||{}; return j.siteSheet; }
+function swSiteStamp(id, field){
+  const j = DB.jobs.find(x=>x.id===id); if(!j) return;
+  const ss = swSiteSheet(j);
+  ss[field] = new Date().toISOString();
+  j.timeline = j.timeline||[]; j.timeline.push({e: field==='arrivedAt'?'Engineer arrived on site':'Engineer left site', d:localDateStr()});
+  if(field==='arrivedAt' && j.status==='scheduled') j.status = 'active';
+  save(); window._jobTab='sitesheet'; navigate('jobs', id); toast(field==='arrivedAt'?'Arrival logged — job marked on site':'Departure logged');
+}
+function swSiteCheck(id, key, val){
+  const j = DB.jobs.find(x=>x.id===id); if(!j) return;
+  swSiteSheet(j).checklist[key] = val;
+  save();
+  const lbl = document.querySelector(`#jobtab-sitesheet input[onchange*="'${key}'"]`); if(lbl) lbl.parentElement.classList.toggle('done', val);
+}
+function swSiteNotes(id){
+  const j = DB.jobs.find(x=>x.id===id); if(!j) return;
+  swSiteSheet(j).notes = document.getElementById('ss-notes').value;
+  save(); toast('Notes saved');
+}
+// Signature pad: pointer events work for finger, stylus and mouse.
+function swInitSignaturePad(){
+  const c = document.getElementById('ss-sig');
+  if(!c || c._ready) return;
+  const ratio = window.devicePixelRatio || 1;
+  c.width = c.clientWidth*ratio; c.height = c.clientHeight*ratio;
+  const ctx = c.getContext('2d');
+  ctx.scale(ratio, ratio); ctx.fillStyle = '#F7F7F5'; ctx.fillRect(0,0,c.width,c.height);
+  ctx.strokeStyle = '#111'; ctx.lineWidth = 2.2; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  let drawing = false, last = null;
+  const pos = e => { const r = c.getBoundingClientRect(); return {x:e.clientX-r.left, y:e.clientY-r.top}; };
+  c.addEventListener('pointerdown', e=>{ drawing = true; last = pos(e); c.setPointerCapture(e.pointerId); c._dirty = true; const h = c.parentElement.querySelector('.sw-sigpad-hint'); if(h) h.style.display='none'; e.preventDefault(); });
+  c.addEventListener('pointermove', e=>{ if(!drawing) return; const p = pos(e); ctx.beginPath(); ctx.moveTo(last.x,last.y); ctx.lineTo(p.x,p.y); ctx.stroke(); last = p; e.preventDefault(); });
+  ['pointerup','pointercancel','pointerleave'].forEach(ev=>c.addEventListener(ev, ()=>{ drawing = false; }));
+  c._ready = true;
+}
+function swClearPad(){
+  const c = document.getElementById('ss-sig'); if(!c) return;
+  c._ready = false; c._dirty = false;
+  const fresh = c.cloneNode(false); c.parentNode.replaceChild(fresh, c);
+  const h = fresh.parentElement.querySelector('.sw-sigpad-hint'); if(h) h.style.display='';
+  swInitSignaturePad();
+}
+function swSaveSignoff(id){
+  const j = DB.jobs.find(x=>x.id===id); if(!j) return;
+  const c = document.getElementById('ss-sig');
+  if(!requireField('ss-name','Add the customer\'s name')) return;
+  if(!c || !c._dirty){ toast('Ask the customer to sign in the box first','⚠️'); return; }
+  // shrink to a small JPEG so it stores and syncs easily
+  const out = document.createElement('canvas'); out.width = 600; out.height = Math.round(600*c.height/c.width);
+  const octx = out.getContext('2d'); octx.fillStyle = '#fff'; octx.fillRect(0,0,out.width,out.height); octx.drawImage(c, 0, 0, out.width, out.height);
+  j.signoff = {name:document.getElementById('ss-name').value.trim(), satisfied:document.getElementById('ss-satisfied').checked, at:new Date().toISOString(), signature:out.toDataURL('image/jpeg', 0.8)};
+  j.timeline = j.timeline||[]; j.timeline.push({e:'Customer signed off', d:localDateStr()});
+  logActivity('Customer sign-off', j.jobNumber+' — '+j.signoff.name);
+  save(); window._jobTab='sitesheet'; navigate('jobs', id);
+  toast('Signed off — mark the job complete when you\'re ready');
+}
+function swClearSignoff(id){
+  confirmDelete('Re-do the customer sign-off?', 'The current signature will be removed.', ()=>{ const j = DB.jobs.find(x=>x.id===id); if(j){ delete j.signoff; save(); window._jobTab='sitesheet'; navigate('jobs', id); } });
+}
+function swViewPhoto(jobId, i){
+  const j = DB.jobs.find(x=>x.id===jobId); const p = j && (j.photos||[])[i];
+  if(!p || !p.data) return;
+  openModal(`<div class="modal-head"><h2>${esc(p.label?p.label+' — ':'')}${esc(p.name||'Photo')}</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+    <div class="modal-body" style="text-align:center;"><img src="${p.data}" alt="" style="max-width:100%;max-height:70vh;border-radius:10px;"><div class="small muted mt-10">${p.date?fmtDate(p.date):''}</div></div>`, true);
+}
+function swRemovePhoto(jobId, i){
+  confirmDelete('Remove this file?', 'It will be deleted from the job.', ()=>{ const j = DB.jobs.find(x=>x.id===jobId); if(j){ j.photos.splice(i,1); save(); window._jobTab='photos'; navigate('jobs', jobId); } });
+}
+function swPrintJobSheet(id){
+  const j = DB.jobs.find(x=>x.id===id); if(!j) return;
+  const ss = j.siteSheet||{}, ck = ss.checklist||{}, s = DB.settings;
+  const photos = (j.photos||[]).filter(p=>p.data && (p.label==='Before'||p.label==='After'));
+  const w = window.open('','_blank');
+  if(!w){ toast('Allow pop-ups for this site to print / save as PDF','⚠️'); return; }
+  w.document.write(`<html><head><title>Job sheet ${esc(j.jobNumber)}</title><style>
+    body{font-family:Arial,sans-serif;padding:36px;color:#1A1A1A;font-size:13.5px;} h1{color:#E11D2A;margin:0;font-size:22px;} h2{font-size:13px;text-transform:uppercase;letter-spacing:1px;color:#E11D2A;margin:22px 0 8px;}
+    .head{display:flex;justify-content:space-between;border-bottom:3px solid #E11D2A;padding-bottom:12px;} .grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 24px;}
+    .ck{margin:4px 0;} .photos{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;} .photos figure{margin:0;} .photos img{width:100%;height:150px;object-fit:cover;border-radius:6px;} figcaption{font-size:11px;color:#666;}
+    .sig{border:1px solid #ddd;border-radius:8px;padding:10px;display:inline-block;} .sig img{height:90px;display:block;}</style></head><body>
+    <div class="head"><div><h1>${esc(s.businessName)}</h1><div>${esc(s.phone)} · ${esc(s.email)}</div></div><div style="text-align:right;"><h1>JOB SHEET</h1><strong>${esc(j.jobNumber)}</strong><div>${fmtDate(j.endDate||j.startDate)}</div></div></div>
+    <h2>Job</h2><div class="grid"><div><strong>Customer:</strong> ${esc(j.customerName)}</div><div><strong>Engineer:</strong> ${esc(j.assignedTo||'—')}</div>
+      <div><strong>Address:</strong> ${esc(j.address||'—')}</div><div><strong>On site:</strong> ${ss.arrivedAt?fmtDateTime(ss.arrivedAt):'—'} → ${ss.leftAt?fmtDateTime(ss.leftAt):'—'}</div></div>
+    <h2>Work carried out</h2><div style="white-space:pre-wrap;">${esc(ss.notes||'—')}</div>
+    <h2>Checklist</h2>${SW_SITE_CHECKS.map(([k,l])=>`<div class="ck">${ck[k]?'☑':'☐'} ${l}</div>`).join('')}
+    ${photos.length?`<h2>Photos</h2><div class="photos">${photos.map(p=>`<figure><img src="${p.data}"><figcaption>${esc(p.label)} · ${p.date?fmtDate(p.date):''}</figcaption></figure>`).join('')}</div>`:''}
+    <h2>Customer sign-off</h2>${j.signoff?`<div class="sig"><img src="${j.signoff.signature}"><div>${esc(j.signoff.name)} · ${fmtDateTime(j.signoff.at)}</div>${j.signoff.satisfied?'<div style="font-size:11px;color:#666;">Confirmed work completed to their satisfaction</div>':''}</div>`:'<div>Not signed</div>'}
+    </body></html>`);
+  w.document.close(); setTimeout(()=>w.print(), 300);
+}
+
+/* ===================== GETTING PAID — bank details & payment links ===================== */
+function payLinkFor(inv){ return (inv && inv.paymentLink) || DB.settings.paymentLink || ''; }
+function payDetailsText(inv, short){
+  const b = DB.settings.bank||{}, link = payLinkFor(inv), ref = inv ? inv.invoiceNumber : '';
+  const parts = [];
+  if(b.sortCode && b.accountNumber) parts.push(short ? `Bank: ${b.accountName||DB.settings.businessName}, ${b.sortCode}, ${b.accountNumber}, ref ${ref}.` : `Pay by bank transfer:\n${b.accountName||DB.settings.businessName}${b.bankName?' ('+b.bankName+')':''}\nSort code ${b.sortCode} · Account ${b.accountNumber}\nReference: ${ref}`);
+  if(link) parts.push(short ? `Pay by card: ${link}` : `Or pay by card: ${link}`);
+  return parts.join(short?' ':'\n\n');
+}
+function payDetailsPrintHtml(doc, accent, soft){
+  const b = DB.settings.bank||{}, link = payLinkFor(doc);
+  if(!(b.sortCode && b.accountNumber) && !link) return '';
+  return `<div style="margin-top:26px;padding:14px 16px;border-radius:10px;background:${soft};border-left:4px solid ${accent};font-size:13px;">
+    <div style="font-weight:800;color:${accent};text-transform:uppercase;letter-spacing:1px;font-size:11.5px;margin-bottom:6px;">How to pay</div>
+    ${b.sortCode&&b.accountNumber?`<div><strong>Bank transfer:</strong> ${esc(b.accountName||DB.settings.businessName)}${b.bankName?' · '+esc(b.bankName):''} · Sort code <strong>${esc(b.sortCode)}</strong> · Account <strong>${esc(b.accountNumber)}</strong> · Reference <strong>${esc(doc.invoiceNumber)}</strong></div>`:''}
+    ${link?`<div style="margin-top:4px;"><strong>Pay by card:</strong> <a href="${esc(link)}" style="color:${accent};">${esc(link)}</a></div>`:''}
+  </div>`;
+}
+function copyPayDetails(id){
+  const inv = DB.invoices.find(x=>x.id===id);
+  const text = payDetailsText(inv, false);
+  if(!text){ toast('Add your bank details or a payment link in Settings first','⚠️'); return; }
+  acqCopy(`${inv.invoiceNumber} — ${fmt(invoiceOutstanding(inv))} due ${fmtDate(inv.dueDate)}\n\n${text}`, 'Payment details');
 }
