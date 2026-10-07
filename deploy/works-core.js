@@ -105,29 +105,37 @@ const SIGNALS = [
   S('subcontractors','Uses subcontractors',/sub-?contractors?|supply chain partners/i,'contractors',0.6,[]),
   S('void-works','Void / turnaround works',/void (works|property|properties|turnaround|management)|between tenancies|end of tenancy (works|refurb)/i,'turnover',0.8,['void','decorating']),
   S('inspections','Property inspections',/property inspections?|periodic inspections?|mid[\s-]term inspections?/i,'turnover',0.5,['general']),
-  S('check-in-out','Check-in / check-out / inventories',/check[\s-]?in|check[\s-]?out|inventor(y|ies)/i,'turnover',0.45,['decorating']),
+  S('check-in-out','Check-in / check-out / inventories',/check[\s-]?ins? (and|&|\/) check[\s-]?outs?|check[\s-]?out (reports?|inspections?|inventor)|inventor(y|ies) (and|&|reports?|services?|fees?|clerk)|property inventor(y|ies)/i,'turnover',0.45,['decorating']),
   S('refurbishment','Refurbishment activity',/refurbish(ment|ed|ing)|renovation projects?/i,'turnover',0.55,['refurb','decorating','tiling','flooring']),
   S('serviced-apartments','Serviced apartments / rooms',/serviced apartments?|guest rooms|en[\s-]?suite rooms|bedrooms? and suites/i,'facility',0.55,['bathroom','reactive-plumbing']),
   S('multiple-sites','Multiple sites / locations',/(\d+|several|multiple) (sites|locations|branches|offices|homes|nurseries|schools|hotels|centres|properties) across/i,'facility',0.6,['planned-plumbing']),
-  S('developments','Developments / new builds',/developments?|new[\s-]build|apartments? block/i,'facility',0.35,['decorating','flooring']),
+  S('developments','Developments / new builds',/(our|residential|managed|new[\s-]build) developments|developments (we|that we) (manage|look after|built)|new[\s-]build (homes|schemes|apartments)|apartment blocks? (we|that we) manage/i,'facility',0.35,['decorating','flooring']),
   S('premises','Commercial premises managed',/(commercial|office|retail|industrial) (premises|units|space)/i,'facility',0.45,['general']),
   S('role-property-manager','Property manager role',/property manager|head of property management|lettings? manager/i,'roles',0.45,[]),
   S('role-maintenance','Maintenance / facilities role',/maintenance (manager|coordinator|co-ordinator|team|operative)|facilities manager|estates manager|site manager/i,'roles',0.6,[]),
-  S('inhouse','In-house maintenance team',/in[\s-]house (maintenance|team of (trades|engineers|operatives))|our own (maintenance|trades) team/i,'inhouse',0,[])
+  S('inhouse','In-house maintenance team',/in[\s-]house (maintenance|team of (trades|engineers|operatives))|our own (maintenance|trades) team/i,'inhouse',0,[]),
+  // Not demand: they SELL trades/maintenance (a competitor or a possible subcontracting partner, not a client).
+  S('trades-provider','Provides trades / maintenance services itself',/(our|qualified|experienced|professional) (team of )?(plumbers|heating engineers|gas engineers|electricians|tradesmen|tradespeople|decorators)|gas safe registered (engineers|plumbers)|plumbing (and|&) heating (services|engineers|company)|we (are|'re) (a|an) (local )?(plumbing|building|maintenance|decorating|handyman) (company|firm|business)/i,'provider',0,[])
 ];
+// A match inside a property advert ("potential for refurbishment", "new-build detached home") is about
+// the property for sale, not the organisation — those occurrences are skipped.
+const ADVERT_CONTEXT = /£\s?\d|\bbedroom|\bbed\b|\bSTPP\b|guide price|offers (in excess|over)|for sale|to let\b|pcm\b|per week|sq\.? ?ft|freehold|leasehold\b|chain free|read more/i;
+const ADVERT_SENSITIVE = new Set(['refurbishment','developments','serviced-apartments','check-in-out','inspections','premises']);
 // Extracts signals with the exact words found, so every claim can be checked.
 function extractMaintenanceSignals(pages, at){
   at = at || new Date().toISOString();
   const found = {};
   (pages||[]).forEach(p=>{
-    const text = p.text || LC.stripTags(p.html||'');
+    const text = p.text || LC.contentText(p.html||'');
     SIGNALS.forEach(s=>{
       if(found[s.key]) return;
-      const m = text.match(s.rx);
-      if(m){
+      const rx = new RegExp(s.rx.source, s.rx.flags.includes('g') ? s.rx.flags : s.rx.flags+'g');
+      for(const m of text.matchAll(rx)){
         const i = m.index||0;
         const snippet = text.slice(Math.max(0,i-70), Math.min(text.length, i+m[0].length+70)).replace(/\s+/g,' ').trim();
+        if(ADVERT_SENSITIVE.has(s.key) && ADVERT_CONTEXT.test(text.slice(Math.max(0,i-120), Math.min(text.length, i+m[0].length+120)))) continue;
         found[s.key] = {key:s.key, label:s.label, category:s.category, weight:s.weight, services:s.services, snippet, source:p.url, checkedAt:at, status:STATUS.VERIFIED, confidence:0.9};
+        break;
       }
     });
   });
@@ -137,7 +145,7 @@ function extractMaintenanceSignals(pages, at){
   F['sw.signals'] = makeFact(signals, STATUS.VERIFIED, 0.9, src, at, signals.length+' maintenance signals across '+pages.length+' pages');
   F['sw.pagesRead'] = makeFact(pages.map(p=>p.url), STATUS.VERIFIED, 1, src, at);
   // Self-reported footprint numbers → LIKELY ("stated on their website"), with the quote.
-  const all = pages.map(p=>({url:p.url, text:p.text||LC.stripTags(p.html||'')}));
+  const all = pages.map(p=>({url:p.url, text:p.text||LC.contentText(p.html||'')}));
   const grab = (rx, key, min, max, pick)=>{
     for(const p of all){ const m = p.text.match(rx); if(m){ const n = Number(String(pick(m)).replace(/,/g,'')); if(n>=min && n<=max){ const i = m.index||0;
       F[key] = makeFact(n, STATUS.LIKELY, 0.75, p.url, at, 'Stated on their website: "'+p.text.slice(Math.max(0,i-30), i+m[0].length+30).replace(/\s+/g,' ').trim()+'"'); return; } } }
@@ -152,6 +160,7 @@ function extractMaintenanceSignals(pages, at){
   const inh = has('inhouse');
   const status = inh && ext ? 'MIXED' : inh ? 'IN-HOUSE' : ext ? 'EVIDENCE OF EXTERNAL CONTRACTORS' : 'UNKNOWN';
   F['sw.contractorStatus'] = makeFact(status, status==='UNKNOWN'?STATUS.UNKNOWN:STATUS.LIKELY, status==='UNKNOWN'?0:0.75, src, at, status==='UNKNOWN'?'Nothing on their site says how repairs are staffed':'From their own wording');
+  if(has('trades-provider')) F['sw.tradesProvider'] = makeFact(true, STATUS.VERIFIED, 0.85, found['trades-provider'].source, at, found['trades-provider'].snippet);
   if(has('supplier-route')) F['sw.supplierRoute'] = makeFact(true, STATUS.VERIFIED, 0.9, found['supplier-route'].source, at, found['supplier-route'].snippet);
   return {signals, facts:F};
 }
@@ -159,8 +168,10 @@ function extractMaintenanceSignals(pages, at){
 function maintenancePages(links, base){
   const host = LC.normaliseDomain(base);
   const same = (links||[]).filter(u=>LC.normaliseDomain(u)===host);
-  const rx = /\/(landlords?|landlord-services|property-management|management|services|lettings|maintenance|repairs?|report-(a-)?repair|tenants?|residents?|block-management|facilities|about|about-us|our-services|suppliers?|contractors?|procurement|careers|jobs|vacancies|our-homes|locations|sites|rooms|accommodation)(\/|$|\?)/i;
-  const scored = same.filter(u=>rx.test(u)).map(u=>({u, s: /repair|maintenance|supplier|contractor|procurement|property-management|block/i.test(u)?3 : /landlord|services|management|facilities/i.test(u)?2 : 1}));
+  // any path segment naming one of these topics, with or without .html/.php/.aspx
+  const rx = /\/[^\/?#]*(landlord|property-management|management|services|lettings|maintenance|repair|tenant|resident|block|facilit|about|supplier|contractor|procurement|career|jobs|vacanc|our-homes|locations|sites|rooms|accommodation)[^\/?#]*(\.(html?|php|aspx?))?\/?(\?|#|$)/i;
+  const skip = /\/(property|properties|listing|for-sale|to-rent|blog|news\/|tag|category|wp-content|login|account)(\/|-)/i;
+  const scored = same.filter(u=>rx.test(u) && !skip.test(u)).map(u=>({u, s: /repair|maintenance|supplier|contractor|procurement|property-management|block/i.test(u)?3 : /landlord|services|management|facilit/i.test(u)?2 : 1}));
   return Array.from(new Set(scored.sort((a,b)=>b.s-a.s).map(x=>x.u))).slice(0,6);
 }
 
@@ -290,7 +301,7 @@ function miles(a, b){ const R = 3958.8, rad = x=>x*Math.PI/180; const dLat = rad
 function computeGeo(lead, settings, ctx){
   const G = settings.geo;
   const area = LC.postcodeArea(lead.postcode);
-  const grp = G.areas.find(a=>a.prefixes.includes(area));
+  const grp = LC.outsideTargetCounty(lead) ? null : G.areas.find(a=>a.prefixes.includes(area));
   const areaPri = grp ? grp.priority : G.defaultAreaPriority;
   const here = (lead.lat!=null && lead.lng!=null) ? [lead.lat, lead.lng] : null;
   const base = G.base && G.base.lat!=null ? [G.base.lat, G.base.lng] : null;
@@ -348,6 +359,7 @@ function disqualify(lead, typeId, settings, ctx, geo){
   if(!lead.phone && !lead.email && !(lead.contacts||[]).some(c=>c.phone||c.email) && val(lead,'website.hasContactForm')!==true && val(lead,'sw.supplierRoute')!==true) add('no-contact-route','No phone, email, form or supplier route found.');
   const knownCount = Object.keys(lead.facts||{}).filter(k=>known(lead,k)).length;
   if(knownCount < settings.thresholds.minKnownFacts) add('insufficient-evidence','Only '+knownCount+' facts — not enough to judge.');
+  if(val(lead,'sw.tradesProvider')===true && orgType(typeId).group!=='construction') add('trades-provider','Provides trades / maintenance itself — a competitor or possible subcontracting partner, not a client.');
   return out;
 }
 
@@ -518,7 +530,7 @@ const STAGES = [
   {id:'dormant', label:'Dormant', contacted:true}, {id:'lost', label:'Lost', contacted:true}
 ];
 const CONTACTED = STAGES.filter(s=>s.contacted).map(s=>s.id);
-function preContactStage(lead, r){ if(r.disqualifications.length) return 'rejected'; if(r.gate.pass) return 'ready'; if(lead.researchedAt) return 'qualified'; if(lead.auditedAt) return 'researching'; return 'discovered'; }
+function preContactStage(lead, r){ if(LC.activeDisqualifications(lead, r).length) return 'rejected'; if(r.gate.pass) return 'ready'; if(lead.researchedAt) return 'qualified'; if(lead.auditedAt) return 'researching'; return 'discovered'; }
 // Conversion funnel from stage history (touches with outcome "stage:<id>").
 const FUNNEL = [['contacted','Contacted',['introduced','contact-made','dm-found','capability-sent','follow-up','meeting','supplier-application','approved','first-job','active-account']],
   ['conversation','Conversation',['contact-made','dm-found','capability-sent','meeting','supplier-application','approved','first-job','active-account']],

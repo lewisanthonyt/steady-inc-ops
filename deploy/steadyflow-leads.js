@@ -684,7 +684,7 @@ function leDashCounts(){
   const t = leToday();
   const stages = LE.leads.map(l=>leStage(l));
   const cnt = s=>stages.filter(x=>x===s).length;
-  return {hot: LE.leads.filter(l=>leScore(l).band==='HOT' && !LE_CORE.POST_CONTACT.includes(leStage(l)) && !leScore(l).disqualifications.length).length,
+  return {hot: LE.leads.filter(l=>leScore(l).band==='HOT' && !LE_CORE.POST_CONTACT.includes(leStage(l)) && !LE_CORE.activeDisqualifications(l, leScore(l)).length).length,
     fresh: LE.leads.filter(l=>Date.now()-new Date(l.discoveredAt).getTime()<7*86400000).length,
     contacted: stages.filter(s=>['contacted','replied'].includes(s)).length, followToday: leFollowupsDue().length,
     meetings: cnt('meeting'), proposals: cnt('proposal')+cnt('negotiating'), won: cnt('won'), lost: cnt('lost')};
@@ -763,7 +763,7 @@ function leSmallCard(l){
     <div class="le-small-opp"><span class="le-label">Opportunity</span> ${r.primaryService && r.need.byService[r.primaryService].score>=LE.settings.thresholds.minNeed ? esc(r.offer) : '<span class="muted">No clear fit yet</span>'}</div>
     <div class="small">${esc(r.deal.label)}</div>
     <div class="le-small-foot"><span class="le-stage-pill">${esc((LE_CORE.PIPELINE_STAGES.find(s=>s.id===st)||{label:st==='rejected'?'Rejected':st}).label)}</span>
-      ${r.disqualifications.length?`<span class="small" style="color:var(--danger);" title="${esc(r.disqualifications.map(d=>d.reason).join(' · '))}">${esc(r.disqualifications[0].reason)}</span>`:''}</div>
+      ${(()=>{ const dq = LE_CORE.activeDisqualifications(l, r); return dq.length?`<span class="small" style="color:var(--danger);" title="${esc(dq.map(d=>d.reason).join(' · '))}">${esc(dq[0].reason)}</span>`:(!l.auditedAt&&!l.researchedAt?'<span class="small muted">not researched yet</span>':''); })()}</div>
     <div class="le-small-actions" onclick="event.stopPropagation()">
       <button class="btn btn-ghost btn-sm" onclick="openLeBrief('${l.id}')">View audit</button>
       <button class="btn btn-ghost btn-sm" onclick="openLeBrief('${l.id}');setTimeout(()=>{const e=document.getElementById('le-em')||document.getElementById('le-op');e&&e.scrollIntoView({block:'center'})},50)">Pitch</button>

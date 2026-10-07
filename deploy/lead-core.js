@@ -393,13 +393,22 @@ function computeContact(lead){
 function emailIsGeneric(e){ return /^(info|hello|enquiries|enquiry|contact|office|admin|sales|lettings|mail|bookings|reception|team)@/i.test(String(e||'')); }
 
 /* ---------- 7. strategic fit ---------- */
+// Postcode areas cross county lines (CO10 = Sudbury, Suffolk; CM23 = Bishop's Stortford, Herts).
+// When the postcode lookup gave us the real county/region, a mismatch overrides the prefix match.
+function outsideTargetCounty(lead){
+  const c = val(lead,'geo.county'), reg = val(lead,'geo.region');
+  if(!c && !reg) return false;
+  if(reg==='London') return false;
+  return !!c && !/essex/i.test(c);
+}
 function computeFit(lead, settings){
   const area = postcodeArea(lead.postcode);
-  const grp = settings.areas.find(a=>a.enabled!==false && a.prefixes.includes(area)) || settings.areas.find(a=>a.prefixes.includes(area));
+  const outside = outsideTargetCounty(lead);
+  const grp = outside ? null : (settings.areas.find(a=>a.enabled!==false && a.prefixes.includes(area)) || settings.areas.find(a=>a.prefixes.includes(area)));
   const areaPts = grp ? grp.priority : settings.defaultAreaPriority;
   const indSet = settings.industries.find(i=>i.id===lead.industry);
   const indP = indSet ? Number(indSet.priority) : industry(lead.industry).priority;
-  return {score: round(areaPts*clamp(indP,0,1)), area: grp ? grp.label : (area||'Unknown area'), known: !!area};
+  return {score: round(areaPts*clamp(indP,0,1)), area: grp ? grp.label : outside ? val(lead,'geo.county')+' (outside target area)' : (area||'Unknown area'), known: !!area};
 }
 
 /* ---------- 8. hard disqualification ---------- */
@@ -596,16 +605,17 @@ function selectionReason(x){
 /* ---------- 16. funnel summary (for the Funnel tab) ---------- */
 function funnel(leads, settings, ctx){
   const scored = leads.map(l=>({lead:l, r: scoreLead(l, settings, ctx)}));
+  const ok = x=>!activeDisqualifications(x.lead, x.r).length;
   const stages = [
     {id:'discovered', label:'Discovered', n: scored.length},
-    {id:'filtered', label:'Passed hard filter', n: scored.filter(x=>!x.r.disqualifications.length).length},
-    {id:'audited', label:'Website audited', n: scored.filter(x=>!x.r.disqualifications.length && known(x.lead,'website.reachable')).length},
-    {id:'strong', label:'Strong candidates (score ≥ 65)', n: scored.filter(x=>!x.r.disqualifications.length && x.r.leadScore>=65).length},
-    {id:'researched', label:'Deep researched', n: scored.filter(x=>!x.r.disqualifications.length && x.lead.researchedAt).length},
+    {id:'filtered', label:'Passed hard filter', n: scored.filter(ok).length},
+    {id:'audited', label:'Website audited', n: scored.filter(x=>ok(x) && (x.lead.auditedAt || known(x.lead,'website.reachable'))).length},
+    {id:'strong', label:'Strong candidates (score ≥ 65)', n: scored.filter(x=>ok(x) && x.r.leadScore>=65).length},
+    {id:'researched', label:'Deep researched', n: scored.filter(x=>ok(x) && x.lead.researchedAt).length},
     {id:'passed', label:'Passed quality gate', n: scored.filter(x=>x.r.gate.pass).length}
   ];
   const reasons = {};
-  scored.forEach(x=>x.r.disqualifications.forEach(d=>{ reasons[d.code] = (reasons[d.code]||0)+1; }));
+  scored.forEach(x=>activeDisqualifications(x.lead, x.r).forEach(d=>{ reasons[d.code] = (reasons[d.code]||0)+1; }));
   return {stages, rejectionReasons: reasons, scored};
 }
 
@@ -789,6 +799,15 @@ const TOUR_VENDORS = [
 const BOOKING_RX = /calendly\.com|resdiary|opentable|sevenrooms|fresha\.com|treatwell|mindbody|glofox|cloudbeds|littlehotelier|siteminder|simplybook|setmore|acuityscheduling|bookingbug|beds24|guesty|hostaway|lodgify|nightsbridge|tablein|designmynight|booking-widget|check-?availability/i;
 const ANALYTICS_RX = /googletagmanager\.com|google-analytics\.com|gtag\(|plausible\.io|usefathom|clarity\.ms|hotjar\.com|connect\.facebook\.net\/[^"']*fbevents|matomo/i;
 const CTA_RX = /(book (a |an |your )?(viewing|valuation|now|online|a visit|a tour)|get (a |your )?(free )?(valuation|quote|in touch)|request (a |your )?(valuation|callback|viewing|brochure)|arrange (a )?(viewing|valuation|visit)|enquire( now)?|call (us|now)|contact us|check availability|book now|instant valuation|schedule a (visit|tour))/ig;
+// Main content only: drops nav menus, headers, footers and menu-like blocks, so a menu link
+// ("Landlord services", "Tenant portal") on every page isn't mistaken for evidence.
+function contentText(html){
+  let h = String(html||'').replace(/<script[\s\S]*?<\/script>/gi,' ').replace(/<style[\s\S]*?<\/style>/gi,' ').replace(/<noscript[\s\S]*?<\/noscript>/gi,' ');
+  h = h.replace(/<(nav|header|footer)\b[\s\S]*?<\/\1>/gi,' ');
+  // <ul>/<div> blocks whose class or id says menu / nav / dropdown
+  h = h.replace(/<(ul|div)\b[^>]*(class|id)=["'][^"']*\b(menu|nav|navbar|navigation|dropdown|megamenu)\b[^"']*["'][^>]*>[\s\S]*?<\/\1>/gi,' ');
+  return stripTags(h);
+}
 function stripTags(html){ return String(html||'').replace(/<script[\s\S]*?<\/script>/gi,' ').replace(/<style[\s\S]*?<\/style>/gi,' ').replace(/<[^>]+>/g,' ').replace(/&nbsp;|&#160;/g,' ').replace(/\s+/g,' ').trim(); }
 function extractSignals(html, finalUrl, opts){
   opts = opts||{};
@@ -924,8 +943,12 @@ const PIPELINE_STAGES = [
 ];
 const POST_CONTACT = ['contacted','replied','meeting','proposal','negotiating','won','lost','later'];
 function stageFromAcqStatus(st){ return ({'Emailed':'contacted','Called':'contacted','Replied':'replied','Call Booked':'meeting','Proposal Sent':'proposal','Negotiating':'negotiating','Won':'won','Lost':'lost','On Hold':'later'})[st] || null; }
+// Hard rejections apply at any time; evidence-based ones only once the website has been audited
+// (before that, "not enough evidence" just means "not researched yet").
+const EVIDENCE_DQ = ['insufficient-evidence','no-contact-route','weak-presence','too-small','trades-provider','no-website'];
+function activeDisqualifications(lead, r){ return (lead.auditedAt || lead.researchedAt) ? r.disqualifications : r.disqualifications.filter(d=>!EVIDENCE_DQ.includes(d.code)); }
 function preContactStage(lead, r){
-  if(r.disqualifications.length) return 'rejected';
+  if(activeDisqualifications(lead, r).length) return 'rejected';
   if(r.gate.pass) return 'ready';
   if(lead.auditedAt || known(lead,'website.reachable')) return 'qualified';
   return 'discovered';
@@ -965,10 +988,10 @@ function mockLeads(now){
 const LeadCore = {VERSION, STATUS, SERVICES, OFFERS, INDUSTRIES, AREA_GROUPS, FACT_LABELS, PROBLEM_RULES, TOUR_VENDORS, THEME_TITLES,
   industry, service, offerFor, defaultSettings, mergeSettings, postcodeArea, normaliseDomain, normalisePhone, normaliseName, dedupeKeys, findDuplicates,
   fact, val, known, factConf, makeFact, computeStrength, detectFindings, websiteScore, compute360, computeNeed, computeBuying, computeContact, bestContact, emailIsGeneric,
-  computeFit, disqualify, computeConfidence, dealValue, allowedChannels, scoreLead, band, qualityGate, whyNow, selectDaily, funnel,
+  computeFit, outsideTargetCounty, disqualify, computeConfidence, dealValue, allowedChannels, scoreLead, band, qualityGate, whyNow, selectDaily, funnel,
   outreach, microAudit, targetFeasibility, wilson, conversionBy, observedRates, costMetrics,
-  extractSignals, extractLinks, classifyLinks, summariseListingPages, listingPageSignals, teamSignals, stripTags, mockLeads, todayStr, daysBetween,
-  rowToLead, leadToRow, scoreSummary, preContactStage, PIPELINE_STAGES, POST_CONTACT, stageFromAcqStatus};
+  extractSignals, extractLinks, classifyLinks, summariseListingPages, listingPageSignals, teamSignals, stripTags, contentText, mockLeads, todayStr, daysBetween,
+  rowToLead, leadToRow, scoreSummary, preContactStage, activeDisqualifications, EVIDENCE_DQ, PIPELINE_STAGES, POST_CONTACT, stageFromAcqStatus};
 root.LeadCore = LeadCore;
 if(typeof module!=='undefined' && module.exports) module.exports = LeadCore;
 })(typeof globalThis!=='undefined' ? globalThis : this);

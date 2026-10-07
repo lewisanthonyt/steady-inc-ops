@@ -525,7 +525,7 @@ function swSmallCard(l){
     <div class="le-small-metrics"><span>Demand ${r.demand.score}${r.demand.corroborated?'':' ⚠'}</span><span>Footprint ${r.footprint.score==null?'?':r.footprint.score}</span></div>
     <div class="le-small-opp"><span class="le-label">Entry</span> ${esc(r.fit.entry?r.fit.entry.label.replace(/ \(.*\)/,''):'—')}</div>
     <div class="small">${esc(r.goal.label)}</div>
-    <div class="le-small-foot"><span class="le-stage-pill">${esc(swStageLabel(st))}</span>${r.disqualifications.length?`<span class="small" style="color:var(--danger);">${esc(r.disqualifications[0].reason)}</span>`:''}</div>
+    <div class="le-small-foot"><span class="le-stage-pill">${esc(swStageLabel(st))}</span>${(()=>{ const dq = LE_CORE.activeDisqualifications(l, r); return dq.length?`<span class="small" style="color:var(--danger);">${esc(dq[0].reason)}</span>`:(!l.auditedAt?'<span class="small muted">not researched yet</span>':''); })()}</div>
   </div>`;
 }
 
