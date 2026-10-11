@@ -104,6 +104,7 @@ async function dobLoad(){
   }catch(e){ DOB.error = e.message || String(e); console.warn('Do Better load failed', e); }
   DOB.loading = false;
   if(currentRoute==='do-better') renderPage();
+  else { const m = document.getElementById('dob-mini'); if(m) m.outerHTML = dobMiniHtml(); }
 }
 async function dobSaveProfile(){
   const row = {user_id: DOB.userId, start_date: DOB.profile.start_date, schedule: DOB.profile.schedule, updated_at: new Date().toISOString()};
@@ -148,7 +149,10 @@ async function dobSetStart(val){
   if(await dobSaveProfile()){ DOB.week = dobCurrentWeek(mon); toast('Start date set to Monday '+dobFmt(dobParse(mon)),'✅'); } else DOB.profile.start_date = prev;
   dobRefresh();
 }
-function dobRefresh(){ if(currentRoute==='do-better'){ const c = document.getElementById('content'); if(c) c.innerHTML = view_do_better(); } }
+function dobRefresh(){
+  if(currentRoute==='do-better'){ const c = document.getElementById('content'); if(c) c.innerHTML = view_do_better(); }
+  const m = document.getElementById('dob-mini'); if(m) m.outerHTML = dobMiniHtml();
+}
 
 /* ---------- views ---------- */
 function view_do_better(){
@@ -234,11 +238,62 @@ function dobTrackerView(){
 
 function afterRender_do_better(){}
 
+/* ---------- Dashboard mini window: today's habits, tick without leaving the dashboard ---------- */
+function dobMiniHtml(){
+  dobInjectStyle();
+  const shell = (body, cls='')=>`<div id="dob-mini" class="card dob-mini fx-card fx-glow ${cls}" style="--i:1">
+    <div class="dob-mini-head"><span>💪 DO BETTER</span><button type="button" class="dob-mini-open" onclick="navigate('do-better')">Open →</button></div>${body}</div>`;
+  if(!DOB.loaded){
+    if(typeof CURRENT_USER_ID==='undefined' || !CURRENT_USER_ID) return '';
+    if(!DOB.loading && !DOB.error) setTimeout(dobLoad, 0);
+    return shell(DOB.error ? `<div class="muted small">Couldn't load your plan. <a href="#" onclick="DOB.error=null;dobLoad();return false;">Retry</a></div>` : `<div class="muted small">Loading today…</div>`);
+  }
+  if(dobScheduleGaps(DOB.profile.schedule).length)
+    return shell(`<p class="dob-mini-quote">Do what you say, or don't say it.</p><button class="btn btn-gold" style="width:100%" onclick="DOB.setup=true;navigate('do-better')">Set your days to start →</button>`);
+  const P = DOB.profile, S = P.schedule, today = dobToday(), iso = dobIso(today);
+  const offset = dobDaysBetween(dobParse(P.start_date), today);
+  if(offset < 0) return shell(`<p class="dob-mini-quote">Your plan starts ${dobFmt(dobParse(P.start_date))}.</p><div class="muted small">Do what you say, or don't say it.</div>`);
+  const week = Math.min(DOB_WEEKS, Math.floor(offset/7)+1);
+  const due = DOB_ITEMS.filter(i=>i.type!=='oneoff' && dobUnlocked(i, week) && dobIsDue(i, today, S));
+  const done = due.filter(i=>DOB.done[iso+'|'+i.id]).length, pct = due.length ? done/due.length : 1;
+  const st = dobWeekStats(week, P.start_date, S, DOB.done);
+  const C = 2*Math.PI*30;
+  const ring = `<svg class="dob-ring" viewBox="0 0 72 72" aria-hidden="true"><circle cx="36" cy="36" r="30" class="trk"/><circle cx="36" cy="36" r="30" class="val" style="stroke-dasharray:${C};stroke-dashoffset:${(C*(1-pct)).toFixed(1)}"/></svg>
+    <div class="dob-ring-txt"><b>${done}/${due.length}</b><small>today</small></div>`;
+  const list = due.length ? due.map(i=>{ const on = !!DOB.done[iso+'|'+i.id];
+    return `<button type="button" class="dob-mini-item ${on?'on':''}" onclick="dobToggle('${i.id}','${iso}')" aria-pressed="${on}"><span class="dob-c ${on?'done':'due'}">${on?'✓':''}</span><span>${esc(i.label)}</span></button>`; }).join('')
+    : `<div class="muted small">Nothing due today.</div>`;
+  return shell(`<div class="dob-mini-top"><div class="dob-ring-wrap ${pct>=1&&due.length?'full':''}">${ring}</div>
+      <div><div class="dob-mini-week">Week ${week} · ${esc(dobPhase(week))}</div><div class="dob-mini-stat"><b>${st.pct}%</b> this week</div>
+      <div class="dob-mini-stat ${st.missed?'miss':''}">${st.missed} missed so far</div></div></div>
+    <div class="dob-mini-list">${list}</div>`, pct>=1&&due.length ? 'all-done' : '');
+}
+
 function dobInjectStyle(){
   if(document.getElementById('dob-style')) return;
   const s = document.createElement('style'); s.id = 'dob-style';
   s.textContent = `
   .dob-wrap{max-width:820px;margin:0 auto;}
+  .dob-mini{display:flex;flex-direction:column;gap:12px;}
+  .dob-mini-head{display:flex;justify-content:space-between;align-items:center;font-size:12px;font-weight:800;letter-spacing:1.5px;color:var(--warning);}
+  .dob-mini-open{background:none;border:0;color:var(--gold-light);font-weight:800;font-size:13px;}
+  .dob-mini-quote{font-weight:700;font-size:15px;}
+  .dob-mini-top{display:flex;gap:14px;align-items:center;}
+  .dob-ring-wrap{position:relative;width:72px;height:72px;flex:none;}
+  .dob-ring{width:72px;height:72px;transform:rotate(-90deg);}
+  .dob-ring .trk{fill:none;stroke:var(--input-bg);stroke-width:7;}
+  .dob-ring .val{fill:none;stroke:var(--gold);stroke-width:7;stroke-linecap:round;transition:stroke-dashoffset .6s cubic-bezier(.2,.8,.2,1);filter:drop-shadow(0 0 6px rgba(225,29,42,.7));}
+  .dob-ring-wrap.full .val{stroke:var(--warning);filter:drop-shadow(0 0 8px rgba(245,158,11,.8));}
+  .dob-ring-txt{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1;}
+  .dob-ring-txt b{font-size:17px;font-weight:900;} .dob-ring-txt small{font-size:10px;color:var(--text-soft);margin-top:3px;}
+  .dob-mini-week{font-size:12px;font-weight:800;color:var(--warning);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;}
+  .dob-mini-stat{font-size:13px;color:var(--text-soft);} .dob-mini-stat b{color:var(--text);} .dob-mini-stat.miss{color:var(--gold-light);font-weight:700;}
+  .dob-mini-list{display:flex;flex-direction:column;gap:6px;max-height:228px;overflow:auto;}
+  .dob-mini-item{display:flex;align-items:center;gap:10px;background:var(--card-alt);border:1px solid var(--border);border-radius:10px;padding:6px 10px;color:var(--text);font-size:13px;font-weight:600;text-align:left;transition:transform .15s,border-color .15s;}
+  .dob-mini-item:hover{border-color:var(--warning);transform:translateX(2px);}
+  .dob-mini-item .dob-c{width:24px;height:24px;font-size:12px;}
+  .dob-mini-item.on span:last-child{color:var(--text-soft);text-decoration:line-through;}
+  .dob-mini.all-done{box-shadow:0 0 0 1px rgba(245,158,11,.5),0 0 36px rgba(245,158,11,.18);}
   .dob-card{padding:18px;}
   .dob-strap{text-align:center;font-size:11px;font-weight:800;letter-spacing:2px;text-transform:uppercase;color:var(--text-soft);margin-bottom:10px;}
   .dob-title{font-size:26px;font-weight:800;letter-spacing:.3px;}
@@ -304,4 +359,4 @@ function dobInjectStyle(){
 }
 
 // Exposed for tests.
-window.DOB_LOGIC = {DOB_ITEMS, dobIsDue, dobCellState, dobWeekStats, dobScheduleGaps, dobNextInterval, dobCurrentWeek, dobPhase, dobWeekDates, dobMonday, dobIso, dobParse};
+window.DOB_LOGIC = {dobMiniHtml, DOB_ITEMS, dobIsDue, dobCellState, dobWeekStats, dobScheduleGaps, dobNextInterval, dobCurrentWeek, dobPhase, dobWeekDates, dobMonday, dobIso, dobParse};

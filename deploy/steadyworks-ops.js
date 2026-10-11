@@ -657,6 +657,7 @@ const ROUTES = [
   {id:'forecast', label:'Forecast', section:'accounting'},
   {id:'balance-sheet', label:'Balance Sheet', section:'accounting'},
   {id:'assets-liabilities', label:'Assets & Liabilities', section:'accounting'},
+  {id:'sw-finance', label:'SteadyWorks Finance', section:'accounting'},
   {id:'activity', label:'Activity Log', section:'system'},
   {id:'bugs', label:'Bugs', section:'system'},
   {id:'settings', label:'Settings', section:'system'}
@@ -671,7 +672,7 @@ const SECTION_LABELS = {
 };
 const SECTION_ACCENT = { overview:'var(--gold-light)', steadyworks:'var(--gold-light)', steadyflow:'var(--teal)', collaborations:'#A78BFA', accounting:'#22C55E', system:'#999' };
 const ICONS = {
-  dashboard:'🏠', targets:'🏁', 'do-better':'💪', services:'🔁', 'price-book':'📒', tasks:'✅', goals:'🎯', budget:'🧮', 'sw-dashboard':'📊', 'sf-dashboard':'📊', 'sf-acquisition':'🎯', 'sf-leads':'🧭', 'sw-desk':'🏢', 'sf-clients':'💻', 'sf-quotes':'📝', 'sf-invoices':'🧾', 'sf-expenses':'💷', 'sf-compliance':'🛡️', leads:'📥', followups:'📞', jobs:'🛠️', 'job-sources':'📍', quotes:'📝', invoices:'🧾', calendar:'📅',
+  dashboard:'🏠', targets:'🏁', 'do-better':'💪', 'sw-finance':'💳', services:'🔁', 'price-book':'📒', tasks:'✅', goals:'🎯', budget:'🧮', 'sw-dashboard':'📊', 'sf-dashboard':'📊', 'sf-acquisition':'🎯', 'sf-leads':'🧭', 'sw-desk':'🏢', 'sf-clients':'💻', 'sf-quotes':'📝', 'sf-invoices':'🧾', 'sf-expenses':'💷', 'sf-compliance':'🛡️', leads:'📥', followups:'📞', jobs:'🛠️', 'job-sources':'📍', quotes:'📝', invoices:'🧾', calendar:'📅',
   customers:'👥', team:'👷', timesheets:'🕒', subcontractors:'🦺', expenses:'💷', compliance:'🛡️', reports:'📈', activity:'🕐', bugs:'🐞', settings:'⚙️', pipeline:'📝',
   accounting:'💰', forecast:'📈', 'balance-sheet':'⚖️', 'assets-liabilities':'🏦'
 };
@@ -720,7 +721,7 @@ function toggleNavSection(section){
 // Pages used day to day. Everything else is one click away under "Show all pages",
 // and any hidden page that needs attention (has a badge) still shows.
 const NAV_CORE = new Set(['dashboard','targets','tasks','do-better','calendar','sw-dashboard','leads','quotes','followups','jobs','pipeline','invoices','customers','services','expenses',
-  'sf-dashboard','sf-acquisition','sf-clients','sf-quotes','sf-invoices','sf-expenses','accounting','settings']);
+  'sf-dashboard','sf-acquisition','sf-clients','sf-quotes','sf-invoices','sf-expenses','accounting','sw-finance','settings']);
 let NAV_SIMPLE = true;
 try{ NAV_SIMPLE = localStorage.getItem('steadyworks_nav_simple')!=='0'; }catch(e){}
 function toggleNavSimple(){ NAV_SIMPLE = !NAV_SIMPLE; try{ localStorage.setItem('steadyworks_nav_simple', NAV_SIMPLE?'1':'0'); }catch(e){} renderNav(); }
@@ -817,6 +818,7 @@ const PAGE_META = {
   dashboard:['Dashboard','Steady Inc — combined performance across every business'],
   targets:['Targets','Target → actions → cash → reinvestment → capacity → next level'],
   'do-better':['Do Better','Do what you say, or don\'t say it.'],
+  'sw-finance':['SteadyWorks Finance','Bank statement → income, costs, salary and profit (estimates)'],
   tasks:['Tasks','Day-by-day checklist across SteadyWorks, SteadyFlow, Cookbook & Animation'],
   goals:['Goals & Roadmap','Long-term goals and revenue targets, month by month'],
   budget:['Budget','Plan spend by category and track it against your income targets'],
@@ -890,6 +892,7 @@ function afterRender(route){
     'sf-leads': typeof afterRender_sf_leads==='function' ? afterRender_sf_leads : null,
     'sw-desk': typeof afterRender_sw_desk==='function' ? afterRender_sw_desk : null,
     'do-better': typeof afterRender_do_better==='function' ? afterRender_do_better : null,
+    'sw-finance': typeof afterRender_sw_finance==='function' ? afterRender_sw_finance : null,
     targets: afterRender_targets
   };
   if(hooks[route]) hooks[route]();
@@ -912,6 +915,7 @@ function afterRender(route){
     'sf-invoices': `<button class="btn btn-gold" onclick="openSfInvoiceModal()">+ New Invoice</button>`,
     'sf-expenses': `<button class="btn btn-ghost" onclick="openImportExpensesModal('sf')">📥 Import CSV</button> <button class="btn btn-gold" onclick="openSfExpenseModal()">+ New Expense</button>`,
     'sf-compliance': `<button class="btn btn-gold" onclick="openSfComplianceModal()">+ Add Document</button>`,
+    'sw-finance': `<button class="btn btn-ghost" onclick="finExport()">⬇️ Export CSV</button><button class="btn btn-gold" onclick="finOpenImport()">📥 Import statement</button>`,
     accounting: `<button class="btn btn-gold" onclick="printAccountingReport('snapshot')">🖨️ Export PDF</button>`,
     forecast: `<button class="btn btn-gold" onclick="printAccountingReport('forecast')">🖨️ Export PDF</button>`,
     'balance-sheet': `<button class="btn btn-gold" onclick="printAccountingReport('balance-sheet')">🖨️ Export PDF</button>`,
@@ -2463,27 +2467,34 @@ function view_dashboard(){
     {label:'Active Goals', value: goalsCount===null?'…':goalsCount, delta:'Across both businesses', up:true, icon:'🎯', bg:'#EFF6FF'},
     {label:'SteadyFlow MRR', value:fmt(sfMrr), delta:'Active clients', up:true, icon:'💻', bg:'#F5F3FF'}
   ];
-  const kpiHtml = kpis.map(k=>`
-    <div class="card kpi-card">
+  const counts = [{n:combinedMonthRevenue,k:'money'},{n:combinedYtdRevenue,k:'money'},{n:combinedOutstanding,k:'money'},{n:streak,k:'days'},{n:goalsCount,k:'int'},{n:sfMrr,k:'money'}];
+  const kpiHtml = kpis.map((k,i)=>`
+    <div class="card kpi-card fx-card fx-tilt fx-glow" style="--i:${i+2}">
       <div class="kpi-icon" style="background:${k.bg}">${k.icon}</div>
       <div class="kpi-label">${k.label}</div>
-      <div class="kpi-value">${k.value}</div>
+      <div class="kpi-value"${counts[i].n!=null?` data-count="${Number(counts[i].n)||0}" data-kind="${counts[i].k}"`:''}>${k.value}</div>
       <span class="kpi-delta ${k.up?'up':'down'}">${k.up?'▲':'▼'} ${k.delta}</span>
     </div>`).join('');
 
-  return `
-  ${motdBanner()}
+  return `<div class="dash-fx">
+  ${dashHeroHtml()}
+  ${dashLaunchHtml()}
+  <div class="dash-top">
+    ${dashPrioritiesHtml()}
+    ${typeof dobMiniHtml==='function' ? dobMiniHtml() : ''}
+  </div>
+  <div class="fx-card" style="--i:1">${motdBanner()}</div>
   <div class="grid grid-3" style="margin-bottom:20px;">${kpiHtml}</div>
 
   <div class="grid grid-2" style="margin-bottom:20px;align-items:start;">
-    <div class="card" style="cursor:pointer;" onclick="navigate('sw-dashboard')">
+    <div class="card fx-card fx-tilt fx-glow fx-red" style="cursor:pointer;--i:8" onclick="navigate('sw-dashboard')">
       <div class="card-title">🛠️ SteadyWorks <span class="small" style="color:var(--gold);font-weight:700;">Open dashboard →</span></div>
       <div class="grid grid-2" style="gap:10px;">
         <div><div class="small muted">Revenue this month</div><div style="font-size:20px;font-weight:800;">${fmt(swMonthRevenue)}</div></div>
         <div><div class="small muted">Outstanding</div><div style="font-size:20px;font-weight:800;">${fmt(swOutstanding)}</div></div>
       </div>
     </div>
-    <div class="card" style="cursor:pointer;" onclick="navigate('sf-dashboard')">
+    <div class="card fx-card fx-tilt fx-glow" style="cursor:pointer;--i:9" onclick="navigate('sf-dashboard')">
       <div class="card-title">💻 SteadyFlow <span class="small" style="color:var(--teal);font-weight:700;">Open dashboard →</span></div>
       <div class="grid grid-2" style="gap:10px;">
         <div><div class="small muted">MRR (active)</div><div style="font-size:20px;font-weight:800;">${fmt(sfMrr)}</div></div>
@@ -2501,7 +2512,116 @@ function view_dashboard(){
   <div class="grid grid-3" style="margin-bottom:20px;align-items:start;">
     ${dashboardGoalsHtml('all','dashboard')}
   </div>
-  `;
+  </div>`;
+}
+
+/* ---------- PRIORITY STRIP — what needs you today, most urgent first, each a link ---------- */
+function dashPriorities(){
+  const P = [], safe = f=>{ try{ return f(); }catch(e){ return null; } };
+  const sum = arr=>arr.reduce((s,i)=>s+invoiceOutstanding(i),0);
+  const swOver = DB.invoices.filter(i=>invoiceStatus(i)==='overdue');
+  const sfOver = (DB.sfInvoices||[]).filter(i=>invoiceStatus(i)==='overdue');
+  if(swOver.length) P.push({lvl:3, icon:'🧾', n:swOver.length, label:'Overdue invoices', sub:fmt(sum(swOver))+' · SteadyWorks', route:'invoices'});
+  if(sfOver.length) P.push({lvl:3, icon:'🧾', n:sfOver.length, label:'Overdue invoices', sub:fmt(sum(sfOver))+' · SteadyFlow', route:'sf-invoices'});
+  const chase = safe(()=>DB.quotes.filter(swQuoteNeedsChase)) || [];
+  if(chase.length) P.push({lvl:2, icon:'📣', n:chase.length, label:'Quotes to chase', sub:(safe(()=>fmt(chase.reduce((s,q)=>s+calcQuoteTotal(q).total,0))) || '')+' waiting', route:'quotes'});
+  const fu = (DB.followUps||[]).filter(f=>f.status!=='done');
+  if(fu.length) P.push({lvl:2, icon:'📞', n:fu.length, label:'Follow-ups open', sub:'Calls & messages to return', route:'followups'});
+  const svc = safe(()=>(DB.swServices||[]).filter(sv=>swServiceStatus(sv).due)) || [];
+  if(svc.length) P.push({lvl:2, icon:'🔁', n:svc.length, label:'Services due', sub:'Book them in', route:'services'});
+  const comp = DB.compliance.filter(c=>{ const d = daysUntil(c.expiryDate); return d!==null && d<30; }).length;
+  if(comp) P.push({lvl:2, icon:'🛡️', n:comp, label:'Compliance expiring', sub:'Within 30 days', route:'compliance'});
+  const desk = safe(()=>typeof swNavBadge==='function' ? swNavBadge() : 0);
+  if(desk) P.push({lvl:1, icon:'🏢', n:desk, label:'Commercial follow-ups', sub:'Commercial Desk', route:'sw-desk'});
+  const le = safe(()=>typeof leNavBadge==='function' ? leNavBadge() : 0);
+  if(le) P.push({lvl:1, icon:'🧭', n:le, label:'Lead Engine follow-ups', sub:'SteadyFlow', route:'sf-leads'});
+  const sfLeads = (DB.sfClients||[]).filter(c=>c.status==='lead').length;
+  if(sfLeads) P.push({lvl:1, icon:'💻', n:sfLeads, label:'SteadyFlow leads', sub:'Turn into clients', route:'sf-clients'});
+  const stale = safe(()=>(DB.sfProspects||[]).filter(acqIsStale).length);
+  if(stale) P.push({lvl:1, icon:'🎯', n:stale, label:'Stale prospects', sub:'No update for 7+ days', route:'sf-acquisition'});
+  const docs = safe(()=>DB.jobs.filter(j=>!['completed','invoiced','cancelled'].includes(j.status) && jobMissingDocs(j)).length);
+  if(docs) P.push({lvl:1, icon:'🛠️', n:docs, label:'Jobs missing paperwork', sub:'RAMS, certs or photos', route:'jobs'});
+  const lvlUp = new Set((DB.tgCycles||[]).filter(c=>c.achieved && !c.ack).map(c=>c.biz)).size;
+  if(lvlUp) P.push({lvl:0, icon:'🏆', n:lvlUp, label:'Level complete', sub:'See what changes next', route:'targets'});
+  return P.sort((a,b)=>b.lvl-a.lvl || b.n-a.n);
+}
+function dashPrioritiesHtml(){
+  const P = dashPriorities();
+  const tiles = P.length ? P.slice(0,8).map((p,i)=>`<button type="button" class="prio-tile lvl${p.lvl} fx-tilt" style="--i:${i}" onclick="navigate('${p.route}')">
+      <span class="prio-ic">${p.icon}</span><span class="prio-n">${p.n}</span>
+      <span class="prio-txt"><b>${esc(p.label)}</b><small>${esc(p.sub)}</small></span><span class="prio-go">→</span></button>`).join('')
+    : `<div class="prio-clear">✅ Nothing urgent — every list is clear. Go build something.</div>`;
+  return `<div class="card prio-card fx-card fx-glow" style="--i:0">
+    <div class="prio-head"><span>⚡ PRIORITIES</span><span class="muted small">${P.length ? P.length+' need you · most urgent first' : 'All clear'}</span></div>
+    <div class="prio-grid">${tiles}</div></div>`;
+}
+
+/* ---------- FOCUS HERO — the one task and the one priority that matter most right now ---------- */
+function dashHeroHtml(){
+  const now = new Date(), h = now.getHours();
+  const hi = h<12 ? 'Good morning' : h<18 ? 'Good afternoon' : 'Good evening';
+  const name = ((CURRENT_PROFILE && CURRENT_PROFILE.name) || '').split(' ')[0];
+  if(TASKS_CACHE===null && !window._tasksLoading && typeof loadTasks==='function'){
+    window._tasksLoading = true;
+    loadTasks().then(()=>{ window._tasksLoading = false; refreshIfCurrent('dashboard'); }).catch(()=>{ window._tasksLoading = false; });
+  }
+  let task = null;
+  try{ task = (TASKS_CACHE||[]).filter(t=>t.status!=='done').map(t=>Object.assign({}, t, {_s:taskScore(t)})).sort((a,b)=>b._s-a._s)[0] || null; }catch(e){}
+  const P = dashPriorities(), top = P[0];
+  const taskHtml = task
+    ? `<button type="button" class="hero-focus fx-tilt" onclick="navigate('tasks')"><span class="hero-tag">🎯 #1 TASK</span>
+        <b>${esc(task.title||'Untitled task')}</b><small>${task.due_date ? 'Due '+esc(fmtDate(task.due_date)) : 'Top of your plan'} · open Tasks →</small></button>`
+    : `<button type="button" class="hero-focus fx-tilt" onclick="navigate('tasks')"><span class="hero-tag">🎯 #1 TASK</span>
+        <b>${TASKS_CACHE===null ? 'Loading your plan…' : 'Nothing on the list'}</b><small>Open Tasks →</small></button>`;
+  const prioHtml = top
+    ? `<button type="button" class="hero-focus hero-urgent lvl${top.lvl} fx-tilt" onclick="navigate('${top.route}')"><span class="hero-tag">⚡ MOST URGENT</span>
+        <b>${top.n} × ${esc(top.label)}</b><small>${esc(top.sub)} · fix it →</small></button>`
+    : `<div class="hero-focus hero-clear"><span class="hero-tag">⚡ MOST URGENT</span><b>All clear ✅</b><small>Nothing overdue. Go win work.</small></div>`;
+  return `<div class="dash-hero fx-card" style="--i:0">
+    <div class="hero-bg" aria-hidden="true"><i class="orb o1"></i><i class="orb o2"></i><i class="orb o3"></i></div>
+    <div class="hero-left">
+      <div class="hero-date">${now.toLocaleDateString('en-GB',{weekday:'long', day:'numeric', month:'long'})}</div>
+      <h2 class="hero-hi">${hi}${name ? ', '+esc(name) : ''}.</h2>
+      <div class="hero-sub">${P.length ? `<b>${P.length}</b> things need you. Start with the first one.` : 'Everything is under control.'}</div>
+    </div>
+    <div class="hero-right">${taskHtml}${prioHtml}</div>
+  </div>`;
+}
+
+/* ---------- QUICK LAUNCH — 3D tiles to the pages used most ---------- */
+function dashLaunchHtml(){
+  const n = f=>{ try{ return f()||0; }catch(e){ return 0; } };
+  const T = [
+    ['leads','📥','Leads', n(()=>(DB.leads||[]).filter(l=>!['won','lost'].includes(String(l.stage||'').toLowerCase())).length), '#00E5CC'],
+    ['quotes','📝','Quotes', n(()=>DB.quotes.filter(swQuoteNeedsChase).length), '#F59E0B'],
+    ['jobs','🛠️','Jobs', n(()=>DB.jobs.filter(j=>!['completed','invoiced','cancelled'].includes(j.status)).length), '#E11D2A'],
+    ['invoices','🧾','Invoices', n(()=>DB.invoices.filter(i=>invoiceStatus(i)==='overdue').length), '#EF4444'],
+    ['calendar','📅','Calendar', 0, '#60A5FA'],
+    ['do-better','💪','Do Better', 0, '#22C55E'],
+    ['sw-finance','💳','Finance', 0, '#A78BFA'],
+    ['targets','🏁','Targets', 0, '#E8C468']
+  ].filter(t=>PAGE_META[t[0]]);
+  return `<div class="dash-launch">${T.map(([r,ic,l,c,col],i)=>`<button type="button" class="launch-tile fx-tilt" style="--i:${i};--lc:${col}" onclick="navigate('${r}')">
+      <span class="launch-ic">${ic}</span><span class="launch-l">${l}</span>${c?`<span class="launch-n">${c}</span>`:''}</button>`).join('')}</div>`;
+}
+
+/* ---------- DASHBOARD FX — count-up numbers + 3D tilt (skipped for reduced motion / touch) ---------- */
+function dashFx(){
+  const root = document.querySelector('.dash-fx'); if(!root) return;
+  const calm = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if(!calm) root.querySelectorAll('[data-count]').forEach(el=>{
+    const to = Number(el.dataset.count)||0, kind = el.dataset.kind, t0 = performance.now(), dur = 900;
+    const show = v=> kind==='money' ? fmt(v) : kind==='days' ? Math.round(v)+(Math.round(v)===1?' day':' days') : String(Math.round(v));
+    const step = now=>{ const p = Math.min(1,(now-t0)/dur), e = 1-Math.pow(1-p,3); el.textContent = show(to*e); if(p<1) requestAnimationFrame(step); else el.textContent = show(to); };
+    requestAnimationFrame(step);
+  });
+  if(calm || !(window.matchMedia && matchMedia('(hover: hover)').matches)) return;
+  root.querySelectorAll('.fx-tilt').forEach(el=>{
+    el.addEventListener('mousemove', e=>{ const r = el.getBoundingClientRect(), x = (e.clientX-r.left)/r.width-.5, y = (e.clientY-r.top)/r.height-.5;
+      el.style.transform = `perspective(900px) rotateX(${(-y*7).toFixed(2)}deg) rotateY(${(x*9).toFixed(2)}deg) translateY(-3px)`;
+      el.style.setProperty('--mx', ((x+.5)*100).toFixed(1)+'%'); el.style.setProperty('--my', ((y+.5)*100).toFixed(1)+'%'); });
+    el.addEventListener('mouseleave', ()=>{ el.style.transform = ''; });
+  });
 }
 function dashboardTargetsHtml(){
   try{
@@ -2510,6 +2630,7 @@ function dashboardTargetsHtml(){
   }catch(e){ return ''; }
 }
 function afterRender_dashboard(){
+  dashFx();
   const months = [];
   const now = new Date();
   for(let i=5;i>=0;i--){ months.push(new Date(now.getFullYear(), now.getMonth()-i, 1)); }
