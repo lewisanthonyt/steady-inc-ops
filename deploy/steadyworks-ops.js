@@ -623,6 +623,7 @@ const ROUTES = [
   {id:'dashboard', label:'Dashboard', section:'overview'},
   {id:'targets', label:'Targets', section:'overview'},
   {id:'tasks', label:'Tasks', section:'overview'},
+  {id:'do-better', label:'Do Better', section:'overview'},
   {id:'goals', label:'Goals & Roadmap', section:'overview'},
   {id:'calendar', label:'Calendar', section:'overview'},
   {id:'budget', label:'Budget', section:'overview'},
@@ -670,7 +671,7 @@ const SECTION_LABELS = {
 };
 const SECTION_ACCENT = { overview:'var(--gold-light)', steadyworks:'var(--gold-light)', steadyflow:'var(--teal)', collaborations:'#A78BFA', accounting:'#22C55E', system:'#999' };
 const ICONS = {
-  dashboard:'🏠', targets:'🏁', services:'🔁', 'price-book':'📒', tasks:'✅', goals:'🎯', budget:'🧮', 'sw-dashboard':'📊', 'sf-dashboard':'📊', 'sf-acquisition':'🎯', 'sf-leads':'🧭', 'sw-desk':'🏢', 'sf-clients':'💻', 'sf-quotes':'📝', 'sf-invoices':'🧾', 'sf-expenses':'💷', 'sf-compliance':'🛡️', leads:'📥', followups:'📞', jobs:'🛠️', 'job-sources':'📍', quotes:'📝', invoices:'🧾', calendar:'📅',
+  dashboard:'🏠', targets:'🏁', 'do-better':'💪', services:'🔁', 'price-book':'📒', tasks:'✅', goals:'🎯', budget:'🧮', 'sw-dashboard':'📊', 'sf-dashboard':'📊', 'sf-acquisition':'🎯', 'sf-leads':'🧭', 'sw-desk':'🏢', 'sf-clients':'💻', 'sf-quotes':'📝', 'sf-invoices':'🧾', 'sf-expenses':'💷', 'sf-compliance':'🛡️', leads:'📥', followups:'📞', jobs:'🛠️', 'job-sources':'📍', quotes:'📝', invoices:'🧾', calendar:'📅',
   customers:'👥', team:'👷', timesheets:'🕒', subcontractors:'🦺', expenses:'💷', compliance:'🛡️', reports:'📈', activity:'🕐', bugs:'🐞', settings:'⚙️', pipeline:'📝',
   accounting:'💰', forecast:'📈', 'balance-sheet':'⚖️', 'assets-liabilities':'🏦'
 };
@@ -718,7 +719,7 @@ function toggleNavSection(section){
 }
 // Pages used day to day. Everything else is one click away under "Show all pages",
 // and any hidden page that needs attention (has a badge) still shows.
-const NAV_CORE = new Set(['dashboard','targets','tasks','calendar','sw-dashboard','leads','quotes','followups','jobs','pipeline','invoices','customers','services','expenses',
+const NAV_CORE = new Set(['dashboard','targets','tasks','do-better','calendar','sw-dashboard','leads','quotes','followups','jobs','pipeline','invoices','customers','services','expenses',
   'sf-dashboard','sf-acquisition','sf-clients','sf-quotes','sf-invoices','sf-expenses','accounting','settings']);
 let NAV_SIMPLE = true;
 try{ NAV_SIMPLE = localStorage.getItem('steadyworks_nav_simple')!=='0'; }catch(e){}
@@ -815,6 +816,7 @@ function jobMissingDocs(j){
 const PAGE_META = {
   dashboard:['Dashboard','Steady Inc — combined performance across every business'],
   targets:['Targets','Target → actions → cash → reinvestment → capacity → next level'],
+  'do-better':['Do Better','Do what you say, or don\'t say it.'],
   tasks:['Tasks','Day-by-day checklist across SteadyWorks, SteadyFlow, Cookbook & Animation'],
   goals:['Goals & Roadmap','Long-term goals and revenue targets, month by month'],
   budget:['Budget','Plan spend by category and track it against your income targets'],
@@ -887,6 +889,7 @@ function afterRender(route){
     'sf-acquisition': afterRender_sf_acquisition,
     'sf-leads': typeof afterRender_sf_leads==='function' ? afterRender_sf_leads : null,
     'sw-desk': typeof afterRender_sw_desk==='function' ? afterRender_sw_desk : null,
+    'do-better': typeof afterRender_do_better==='function' ? afterRender_do_better : null,
     targets: afterRender_targets
   };
   if(hooks[route]) hooks[route]();
