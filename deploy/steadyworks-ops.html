@@ -677,14 +677,15 @@ td.empty-cell .btn{margin-top:10px;}
 @property --fxa{syntax:'<angle>';inherits:false;initial-value:0deg;}
 @keyframes fxIn{from{opacity:0;transform:translateY(14px) scale(.985);}to{opacity:1;transform:none;}}
 @keyframes fxSpin{to{--fxa:360deg;}}
+@keyframes fxBreathe{0%,100%{opacity:.45;}50%{opacity:.8;}}
 @keyframes fxPulse{0%,100%{box-shadow:0 0 0 1px rgba(239,68,68,.45),0 0 18px rgba(239,68,68,.18);}50%{box-shadow:0 0 0 1px rgba(239,68,68,.8),0 0 30px rgba(239,68,68,.38);}}
 @keyframes fxShine{from{transform:translateX(-120%) skewX(-18deg);}to{transform:translateX(220%) skewX(-18deg);}}
 .dash-fx .fx-card{animation:fxIn .6s cubic-bezier(.2,.8,.2,1) both;animation-delay:calc(var(--i,0) * 70ms);}
 .dash-fx .fx-glow{position:relative;isolation:isolate;transition:box-shadow .25s,transform .2s;}
 .dash-fx .fx-glow::after{content:'';position:absolute;inset:0;border-radius:inherit;padding:1px;pointer-events:none;z-index:2;
-  background:conic-gradient(from var(--fxa), transparent 0 55%, var(--fx-c, #00E5CC) 72%, transparent 88%);
+  background:linear-gradient(135deg, var(--fx-c, #00E5CC) 0%, transparent 38%, transparent 62%, color-mix(in srgb, var(--fx-c, #00E5CC) 55%, transparent) 100%);
   -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;
-  animation:fxSpin 7s linear infinite;opacity:.85;}
+  animation:fxBreathe 4s ease-in-out infinite;opacity:.6;}
 .dash-fx .fx-red{--fx-c:#E11D2A;}
 .dash-fx .kpi-card:nth-child(3n+2){--fx-c:#E11D2A;} .dash-fx .kpi-card:nth-child(3n){--fx-c:#F59E0B;}
 .dash-fx .fx-glow:hover{box-shadow:0 18px 40px rgba(0,0,0,.35),0 0 34px color-mix(in srgb, var(--fx-c, #00E5CC) 28%, transparent);}
@@ -724,9 +725,9 @@ td.empty-cell .btn{margin-top:10px;}
   box-shadow:0 20px 50px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.06);}
 .hero-bg{position:absolute;inset:0;z-index:-1;pointer-events:none;
   background-image:radial-gradient(rgba(255,255,255,.10) 1px, transparent 1.4px), linear-gradient(115deg, transparent 0 48%, rgba(225,29,42,.07) 49% 51%, transparent 52%);
-  background-size:28px 28px, 28px 28px;animation:heroGrid 6s linear infinite;
+  background-size:28px 28px, 28px 28px;
   -webkit-mask:radial-gradient(120% 100% at 30% 0%, #000 30%, transparent 85%);mask:radial-gradient(120% 100% at 30% 0%, #000 30%, transparent 85%);}
-.hero-bg .orb{position:absolute;border-radius:50%;filter:blur(40px);animation:heroOrb 9s ease-in-out infinite;}
+.hero-bg .orb{position:absolute;border-radius:50%;filter:blur(40px);animation:heroGlow 5s ease-in-out infinite;}
 .hero-bg .o1{width:260px;height:260px;left:-60px;top:-90px;background:rgba(225,29,42,.35);}
 .hero-bg .o2{width:220px;height:220px;right:10%;bottom:-120px;background:rgba(0,229,204,.22);animation-delay:-3s;}
 .hero-bg .o3{width:160px;height:160px;left:40%;top:-70px;background:rgba(245,158,11,.18);animation-delay:-6s;}
@@ -843,10 +844,10 @@ td.empty-cell .btn{margin-top:10px;}
 
 <script src="lead-core.js?v=2026-10-05sw"></script>
 <script src="works-core.js?v=2026-10-05sw"></script>
-<script src="steadyworks-ops.js?v=2026-10-12hero"></script>
+<script src="steadyworks-ops.js?v=2026-10-12bank"></script>
 <script src="steadyflow-leads.js?v=2026-10-05sw"></script>
 <script src="steadyworks-desk.js?v=2026-10-05sw"></script>
 <script src="do-better.js?v=2026-10-12fx"></script>
-<script src="sw-finance.js?v=2026-10-12fin"></script>
+<script src="sw-finance.js?v=2026-10-12match"></script>
 </body>
 </html>

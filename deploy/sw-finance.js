@@ -108,7 +108,7 @@ async function finLoad(){
     FIN.rows = all.map(r=>Object.assign(r, {money_out:+r.money_out||0, money_in:+r.money_in||0, balance: r.balance==null?null:+r.balance}));
     FIN.rules = rr.data || []; FIN.loaded = true;
   }catch(e){ FIN.error = e.message || String(e); console.warn('Finance load failed', e); }
-  FIN.loading = false; if(currentRoute==='sw-finance') renderPage();
+  FIN.loading = false; if(['sw-finance','dashboard','sw-dashboard'].includes(currentRoute)) renderPage();
 }
 function finCanEdit(){ return CURRENT_PROFILE.role!=='accountant' && CURRENT_PROFILE.role!=='partner'; }
 
@@ -287,6 +287,7 @@ function view_sw_finance(){
       <table class="table fin-mini"><tbody>${persRows||'<tr><td class="muted">None in this period</td></tr>'}<tr><td><b>Total</b></td><td class="r"><b>${g(S.persTotal)}</b></td></tr></tbody></table>
       <p class="muted small" style="margin-top:8px;">This label only changes the wording. Decide salary vs loan with your accountant.</p></div>
   </div>
+  ${finMatchHtml()}
   <div class="card" style="margin-bottom:16px;"><div class="card-title">TO CONFIRM <span class="muted small">${S.conf.n} in this period · −${g(S.conf.out)} / +${g(S.conf.in)} · excluded from totals until decided</span></div>
     <div class="fin-queue">${queue}</div>${groups.length>40?`<div class="muted small" style="margin-top:8px;">Showing the 40 biggest payees of ${groups.length}.</div>`:''}</div>
   <div class="card"><div class="card-title">Transactions <span class="muted small">${TR.length} shown</span></div>${table}</div>`;
@@ -324,9 +325,214 @@ function finInjectStyle(){
   .b-SteadyWorks{background:rgba(225,29,42,.15);color:#FF8A92;} .b-SteadyFlow{background:rgba(0,229,204,.12);color:var(--teal);} .b-Personal{background:rgba(167,139,250,.15);color:#C4B5FD;}
   .b-Internal{background:rgba(255,255,255,.06);color:var(--text-soft);} .b-TOCONFIRM{background:rgba(245,158,11,.15);color:var(--warning);}
   .fin-tc td{background:rgba(245,158,11,.04);}
+  .fin-m{border:1px solid var(--border);border-radius:12px;background:var(--card-alt);padding:10px 12px;border-left:3px solid var(--border);}
+  .fin-m.sure{border-left-color:var(--success);} .fin-m.maybe{border-left-color:var(--warning);} .fin-m.none{border-left-color:#A78BFA;}
+  .fin-m-top{display:flex;justify-content:space-between;gap:10px;} .fin-m-amt{font-weight:800;white-space:nowrap;}
+  .fin-m-sug{font-size:12.5px;margin-top:6px;} .fin-m-act{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:8px;} .fin-m-act .fin-sel{flex:1 1 220px;min-width:0;}
+  .fin-m-tabs{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:10px;}
+  .fin-m-tabs > button{background:var(--input-bg);border:1px solid var(--border);color:var(--text-soft);border-radius:9px;padding:6px 10px;font-weight:700;font-size:12px;}
+  .fin-m-tabs > button.on{background:var(--gold);color:#fff;border-color:transparent;} .fin-m-tabs > button span{opacity:.8;margin-left:4px;}
+  .fin-m-bulk{margin-left:auto;display:inline-flex;gap:6px;flex-wrap:wrap;}
+  .fin-m-ledger{margin-top:10px;font-size:12.5px;} .fin-m-ledger summary{cursor:pointer;font-weight:700;color:var(--warning);margin-bottom:6px;}
+  .fin-bank{cursor:pointer;margin-bottom:20px;padding:16px;}
+  .fin-bank-head{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:12px;font-weight:800;letter-spacing:1.3px;color:#C4B5FD;margin-bottom:12px;}
+  .fin-bank-go{letter-spacing:0;font-weight:700;color:var(--text-soft);}
+  .fin-bank-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;}
+  .fin-bank-cell{background:var(--card-alt);border:1px solid var(--border);border-radius:12px;padding:10px 12px;}
+  .fin-bank-cell .l{font-size:11px;color:var(--text-soft);font-weight:700;} .fin-bank-cell .v{font-size:19px;font-weight:900;margin-top:2px;font-variant-numeric:tabular-nums;}
+  .fin-bank-cell .s{font-size:10.5px;color:var(--text-soft);margin-top:2px;}
+  .fin-bank-cell.neg .v{color:var(--danger);} .fin-bank-cell.warn .v{color:var(--warning);}
+  .fin-bank-check{margin-top:10px;font-size:12px;padding:8px 10px;border-radius:10px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);}
+  .fin-bank-check.ok{background:rgba(34,197,94,.08);border-color:rgba(34,197,94,.3);}
+  @media (max-width:1000px){ .fin-bank-grid{grid-template-columns:repeat(3,minmax(0,1fr));} }
+  @media (max-width:520px){ .fin-bank-grid{grid-template-columns:repeat(2,minmax(0,1fr));} }
   .fin-empty{text-align:center;padding:40px 20px;} .fin-big{font-size:46px;margin-bottom:10px;}
   @media (max-width:640px){ .fin-q-row{grid-template-columns:1fr auto;} .fin-q-row span:nth-child(2){grid-column:1 / -1;} .fin-rem{margin-left:0;} }`;
   document.head.appendChild(s);
+}
+
+/* ---------- BANK CARD — real bank figures shown on the dashboards, next to the invoice figures ----------
+   Not added to the invoice numbers: a paid invoice also arrives in the bank, so adding them would double count. */
+function finBankCardHtml(){
+  if(typeof CURRENT_USER_ID==='undefined' || !CURRENT_USER_ID || CURRENT_PROFILE.role==='partner') return '';
+  if(!FIN.loaded){ if(!FIN.loading && !FIN.error) setTimeout(finLoad, 0); return ''; }
+  if(!FIN.rows.length) return `<div class="card fin-bank" onclick="navigate('sw-finance')"><div class="fin-bank-head"><span>🏦 FROM YOUR BANK</span><span class="fin-bank-go">Import statement →</span></div>
+    <div class="muted small">Import your Revolut statement to see real money in, costs, profit and a tax estimate here.</div></div>`;
+  const today = localDateStr(new Date()), ty = finTaxYear(today), tyStart = (+ty.slice(0,4))+'-04-06';
+  const rows = FIN.rows.filter(r=>finTaxYear(r.date)===ty), S = finSummary(rows);
+  const last = FIN.rows.reduce((m,r)=>r.date>m?r.date:m, '');
+  let invoiced = null; try{ invoiced = receivedSum('sw', tyStart, last||today).gross; }catch(e){}
+  const diff = invoiced==null ? null : S.inc.SteadyWorks - invoiced;
+  const conf = FIN.rows.filter(r=>finBiz(r)==='TO CONFIRM').length;
+  const cell = (l,v,sub,cls='') => `<div class="fin-bank-cell ${cls}"><div class="l">${l}</div><div class="v">${v}</div>${sub?`<div class="s">${sub}</div>`:''}</div>`;
+  return `<div class="card fin-bank fx-card fx-glow" style="--i:1;--fx-c:#A78BFA" onclick="navigate('sw-finance')">
+    <div class="fin-bank-head"><span>🏦 FROM YOUR BANK · TAX YEAR ${ty}</span><span class="fin-bank-go">Statement to ${last ? fmtDate(last) : '—'} · Finance →</span></div>
+    <div class="fin-bank-grid">
+      ${cell('Money in', fmt(S.inc.SteadyWorks), 'SteadyWorks, received in bank')}
+      ${cell('Business costs', fmt(S.swCostTotal), 'Materials, subbies, fuel…')}
+      ${cell('Paid to you', fmt(S.netSal), 'Net of repayments')}
+      ${cell('Profit <span class="fin-est">est.</span>', fmt(S.profit), 'In − costs − pay', S.profit<0?'neg':'')}
+      ${cell('Tax to save <span class="fin-est">est.</span>', fmt(S.ct), 'Corporation tax 19%')}
+      ${(()=>{ const q = finMatchQueue(), n = q.in.length + q.out.length; return cell('To match', n, n ? q.in.length+' in · '+q.out.length+' costs' : 'All matched ✅', n ? 'warn' : ''); })()}
+    </div>
+    ${diff==null ? '' : `<div class="fin-bank-check ${Math.abs(diff)<1?'ok':''}">${Math.abs(diff)<1 ? '✅ Bank matches the invoices marked paid in SteadyInk this tax year.'
+      : `🔎 Bank says <b>${fmt(S.inc.SteadyWorks)}</b> came in, invoices marked paid say <b>${fmt(invoiced)}</b> (${diff>0?'+':'−'}${fmt(Math.abs(diff))}). ${diff>0 ? 'Some payments may not be marked paid in Invoices yet.' : 'Some invoices marked paid may not have reached the bank.'}`}</div>`}
+  </div>`;
+}
+
+/* ---------- MATCH WITH STEADYINK — bank lines ↔ invoices, payments and expenses ----------
+   The bank is the proof. Each SteadyWorks / SteadyFlow bank line is linked to one SteadyInk record, so nothing is
+   counted twice; anything with no record can be added after you confirm. Links live in the main DB:
+   tgPayments[].bankTxId · expenses[].bankTxId · sfExpenses[].bankTxId · DB.bankSkips {txId: reason}. */
+FIN.mtab = 'in';
+const FIN_EXP_MAP = {sw:{'Materials & supplies':'Materials','Subcontractors':'Subcontractors','Fuel':'Fuel','Vehicle':'Vehicles','Travel':'Vehicles','Lead generation (MyJobQuote)':'Advertising','Software (Google Workspace)':'Software'},
+  sf:{'Software & AI tools':'Software & Subscriptions','Travel':'Travel'}};
+const finKind = r => finBiz(r)==='SteadyFlow' ? 'sf' : 'sw';
+const finDays = (a,b) => Math.abs((new Date(a) - new Date(b)) / 86400000);
+const finEq = (a,b) => Math.abs((+a||0) - (+b||0)) < 0.01;
+function finPayer(d){ return String(d||'').replace(/^Money added from /i,'').replace(/^(From|To) /,'').split(' • ')[0].trim(); }
+function finNameScore(a, b){
+  const t = x => new Set(String(x||'').toLowerCase().replace(/[^a-z ]/g,' ').split(/\s+/).filter(w=>w.length>=3 && !['ltd','limited','the','and','services','building','ser'].includes(w)));
+  const A = t(a), B = t(b); let n = 0; A.forEach(w=>{ if(B.has(w)) n++; }); return n;
+}
+function finLinkedIds(){
+  const ids = new Set();
+  (typeof tgLivePayments==='function' ? tgLivePayments(DB) : []).forEach(p=>{ if(p.bankTxId) ids.add(p.bankTxId); });
+  (DB.expenses||[]).concat(DB.sfExpenses||[]).forEach(e=>{ if(e.bankTxId) ids.add(e.bankTxId); });
+  return ids;
+}
+function finMatchQueue(){
+  const linked = finLinkedIds(), skips = DB.bankSkips || {};
+  const out = {in:[], out:[]};
+  FIN.rows.forEach(r=>{
+    const b = finBiz(r), c = finCat(r);
+    if((b!=='SteadyWorks' && b!=='SteadyFlow') || linked.has(r.id) || skips[r.id]) return;
+    if(c==='Salary' || c==='Salary repayment') return;
+    if(r.money_in>0 && r.money_out===0) out.in.push(r); else if(r.money_out>0) out.out.push(r);
+  });
+  out.in.sort((a,b)=>b.date.localeCompare(a.date)); out.out.sort((a,b)=>b.date.localeCompare(a.date));
+  return out;
+}
+// Candidate SteadyInk records for one bank line, best first. sure = safe to confirm in bulk.
+function finCandidates(r){
+  const kind = finKind(r), C = [];
+  if(r.money_in>0){
+    const amt = r.money_in, payer = finPayer(r.description);
+    tgLivePayments(DB).forEach(p=>{
+      if(p.biz!==kind || p.bankTxId || !finEq(p.amount, amt) || finDays(p.date, r.date)>30) return;
+      C.push({t:'pay', id:p.id, name:finNameScore(payer, p.customer), days:finDays(p.date, r.date), label:`Already recorded: ${p.customer||'payment'} · ${fmt(p.amount)} on ${fmtDate(p.date)}`});
+    });
+    (kind==='sf' ? DB.sfInvoices||[] : DB.invoices||[]).forEach(inv=>{
+      if(['draft','cancelled'].includes(inv.status)) return;
+      const who = kind==='sf' ? inv.clientName : inv.customerName, key = (kind==='sf'?'sfinv:':'inv:')+inv.id, name = finNameScore(payer, who);
+      const days = inv.createdAt ? finDays(inv.createdAt, r.date) : 99;
+      if(inv.status!=='paid'){
+        const owed = invoiceOutstanding(inv);
+        if(finEq(owed, amt)) C.push({t:'inv', id:inv.id, name, days, label:`Invoice ${inv.invoiceNumber||''} · ${who||''} · ${fmt(owed)} owed → mark paid`});
+        else if(amt < owed && name>0) C.push({t:'inv', id:inv.id, name, days:days+60, part:true, label:`Part payment on ${inv.invoiceNumber||''} · ${who||''} (${fmt(owed)} owed)`});
+      } else {
+        const missing = tgInvoiceReceived(inv) - tgLinkedTotal(DB, key);
+        if(finEq(missing, amt)) C.push({t:'legacy', id:inv.id, name, days, label:`Paid invoice ${inv.invoiceNumber||''} · ${who||''} · ${fmt(missing)}`});
+      }
+    });
+    C.sort((a,b)=>b.name-a.name || (a.part?1:0)-(b.part?1:0) || a.days-b.days);
+    const top = C[0], sure = !!top && !top.part && (top.name>0 || C.length===1) && !(C[1] && C[1].name===top.name && !C[1].part);
+    return {C, sure, add:{t:'add-in', label:'➕ Add as revenue'}};
+  }
+  const amt = r.money_out, list = kind==='sf' ? DB.sfExpenses||[] : DB.expenses||[];
+  list.forEach(e=>{ if(!e.bankTxId && finEq(e.amount, amt) && finDays(e.date, r.date)<=10) C.push({t:'exp', id:e.id, name:finNameScore(r.description, e.desc), days:finDays(e.date, r.date), label:`Already in Expenses: ${e.desc||e.category} · ${fmt(e.amount)} on ${fmtDate(e.date)}`}); });
+  C.sort((a,b)=>b.name-a.name || a.days-b.days);
+  const cat = (FIN_EXP_MAP[kind]||{})[finCat(r)] || 'Miscellaneous';
+  return {C, sure: C.length===1 || (C.length>1 && C[0].name>C[1].name), add:{t:'add-out', cat, label:`➕ Add to Expenses (${cat})`}};
+}
+function finApply(r, pick){
+  const kind = finKind(r), now = new Date(), note = 'Matched to bank '+r.date;
+  if(pick.t==='pay'){ const p = tgLivePayments(DB).find(x=>x.id===pick.id); if(!p) return false; p.bankTxId = r.id; tgAudit('Payment', p.id, 'matched to bank', null, {bankTxId:r.id, date:r.date}, note); return true; }
+  if(pick.t==='inv' || pick.t==='legacy'){
+    const inv = (kind==='sf' ? DB.sfInvoices||[] : DB.invoices||[]).find(i=>i.id===pick.id); if(!inv) return false;
+    let pay;
+    if(pick.t==='inv'){
+      const prevReceived = tgInvoiceReceived(inv), total = calcInvoiceTotal(inv).total;
+      inv.amountPaid = Math.round(((+inv.amountPaid||0) + r.money_in)*100)/100;
+      if(inv.amountPaid >= total - 0.01){ inv.status = 'paid'; inv.paidAt = r.date; } else inv.status = 'partial';
+      pay = tgSyncInvoicePayment(DB, kind, inv, now, {prevReceived, date:r.date, note});
+    } else pay = tgSyncInvoicePayment(DB, kind, inv, now, {date:r.date, note});
+    if(pay) pay.bankTxId = r.id; else (DB.bankSkips = DB.bankSkips || {})[r.id] = 'linked:'+inv.id;
+    logActivity && logActivity('Bank payment matched', (inv.invoiceNumber||'')+' — '+fmt(r.money_in));
+    return true;
+  }
+  if(pick.t==='add-in'){
+    const p = {id:'pay-bank-'+r.id, biz:kind, amount:r.money_in, date:r.date, type:'other', customer:finPayer(r.description), job:'', sourceKey:'', sourceLabel:'', sourceType:'Bank statement',
+      manual:true, estimated:false, channel:'', notes:'Added from bank statement: '+r.description, bankTxId:r.id, createdAt:now.toISOString()};
+    if(tgArr(DB,'tgPayments').some(x=>x.id===p.id)) return false;
+    tgArr(DB,'tgPayments').push(p); tgAudit('Payment', p.id, 'created (from bank)', null, Object.assign({}, p)); return true;
+  }
+  if(pick.t==='exp'){ const e = (kind==='sf' ? DB.sfExpenses||[] : DB.expenses||[]).find(x=>x.id===pick.id); if(!e) return false; e.bankTxId = r.id; return true; }
+  if(pick.t==='add-out'){
+    const key = kind==='sf' ? 'sfExpenses' : 'expenses'; DB[key] = DB[key] || [];
+    if(DB[key].some(e=>e.id==='exp-bank-'+r.id)) return false;
+    DB[key].push({id:'exp-bank-'+r.id, category:pick.cat, amount:r.money_out, desc:r.description, date:r.date, bankTxId:r.id}); return true;
+  }
+  if(pick.t==='skip'){ (DB.bankSkips = DB.bankSkips || {})[r.id] = 'not needed'; return true; }
+  return false;
+}
+function finMatchOne(id, how){
+  if(!finCanEdit()) return;
+  const r = FIN.rows.find(x=>x.id===id); if(!r) return;
+  const M = finCandidates(r), sel = document.getElementById('fin-m-'+id);
+  let pick;
+  if(how==='add') pick = M.add; else if(how==='skip') pick = {t:'skip'};
+  else { const i = sel ? +sel.value : 0; pick = M.C[i]; }
+  if(!pick || !finApply(r, pick)){ toast('Couldn\'t match that one. Try another option.','⚠️'); return; }
+  save(); finRefresh(); toast(how==='skip' ? 'Marked as not needed' : 'Matched ✅','🔗');
+}
+function finMatchBulk(kind){
+  if(!finCanEdit()) return;
+  const Q = finMatchQueue()[FIN.mtab]; let n = 0;
+  Q.forEach(r=>{ const M = finCandidates(r);
+    if(kind==='sure' && M.C.length && M.sure && finApply(r, M.C[0])) n++;
+    if(kind==='add' && !M.C.length && finApply(r, M.add)) n++;
+  });
+  if(!n){ toast('Nothing to do there','ℹ️'); return; }
+  save(); finRefresh(); toast(`${n} ${kind==='sure'?'matched':'added'} ✅`,'🔗');
+}
+function finUnmatchedLedger(){
+  if(!FIN.rows.length) return [];
+  const first = FIN.rows.reduce((m,r)=>r.date<m?r.date:m, '9999'), last = FIN.rows.reduce((m,r)=>r.date>m?r.date:m, '');
+  return tgLivePayments(DB).filter(p=>(p.biz==='sw'||p.biz==='sf') && !p.bankTxId && p.amount>0 && p.date>=first && p.date<=last).sort((a,b)=>b.date.localeCompare(a.date));
+}
+function finMatchHtml(){
+  if(typeof tgLivePayments!=='function') return '';
+  const Q = finMatchQueue(), list = Q[FIN.mtab], edit = finCanEdit();
+  const items = list.map(r=>({r, M:finCandidates(r)}));
+  const nSure = items.filter(x=>x.M.C.length && x.M.sure).length, nNew = items.filter(x=>!x.M.C.length).length;
+  const row = ({r, M})=>{
+    const amt = r.money_in>0 ? '+'+fmt(r.money_in) : '−'+fmt(r.money_out);
+    const opts = M.C.map((c,i)=>`<option value="${i}">${esc(c.label)}${i===0&&M.sure?' ✓':''}</option>`).join('');
+    return `<div class="fin-m ${M.C.length?(M.sure?'sure':'maybe'):'none'}">
+      <div class="fin-m-top"><div><b>${esc(finPayer(r.description)||r.description)}</b><div class="muted small">${fmtDate(r.date)} · ${esc(finBiz(r))} · ${esc(finCat(r)||'')}</div></div><div class="fin-m-amt">${amt}</div></div>
+      <div class="fin-m-sug">${M.C.length ? (M.sure ? '✅ Looks like: ' : '🤔 Could be: ')+esc(M.C[0].label) + (M.C.length>1?` <span class="muted">(+${M.C.length-1} other${M.C.length>2?'s':''})</span>`:'') : '➕ Not in SteadyInk yet'}</div>
+      ${edit ? `<div class="fin-m-act">
+        ${M.C.length ? `${M.C.length>1?`<select class="fin-sel" id="fin-m-${r.id}">${opts}</select>`:''}<button class="btn btn-gold btn-sm" onclick="finMatchOne('${r.id}','pick')">${M.C.length>1?'Match selected':'Confirm match'}</button>` : ''}
+        <button class="btn ${M.C.length?'btn-ghost':'btn-gold'} btn-sm" onclick="finMatchOne('${r.id}','add')">${esc(M.add.label)}</button>
+        <button class="btn btn-ghost btn-sm" onclick="finMatchOne('${r.id}','skip')" title="Already counted somewhere else, or not needed">Skip</button></div>` : ''}
+    </div>`;
+  };
+  const ledger = finUnmatchedLedger();
+  return `<div class="card" style="margin-bottom:16px;" id="fin-match">
+    <div class="card-title">🔗 Match with SteadyInk <span class="muted small">bank lines linked to invoices, payments and expenses, so nothing counts twice</span></div>
+    <div class="fin-m-tabs">
+      <button class="${FIN.mtab==='in'?'on':''}" onclick="FIN.mtab='in';finRefresh()">Money in <span>${Q.in.length}</span></button>
+      <button class="${FIN.mtab==='out'?'on':''}" onclick="FIN.mtab='out';finRefresh()">Costs <span>${Q.out.length}</span></button>
+      ${edit && list.length ? `<span class="fin-m-bulk">${nSure?`<button class="btn btn-gold btn-sm" onclick="finMatchBulk('sure')">✅ Confirm ${nSure} sure match${nSure>1?'es':''}</button>`:''}
+        ${nNew?`<button class="btn btn-ghost btn-sm" onclick="if(confirm('Add ${nNew} bank line${nNew>1?'s':''} to SteadyInk as new ${FIN.mtab==='in'?'revenue':'expenses'}?')) finMatchBulk('add')">➕ Add ${nNew} missing</button>`:''}</span>` : ''}
+    </div>
+    <div class="fin-queue">${list.length ? items.slice(0,40).map(row).join('') : `<div class="prio-clear">✅ Every ${FIN.mtab==='in'?'payment in':'cost'} is matched.</div>`}</div>
+    ${list.length>40?`<div class="muted small" style="margin-top:8px;">Showing the newest 40 of ${list.length}.</div>`:''}
+    ${FIN.mtab==='in' && ledger.length ? `<details class="fin-m-ledger"><summary>⚠️ ${ledger.length} payment${ledger.length>1?'s':''} recorded in SteadyInk with no matching bank line (cash, another account, or wrong amount?)</summary>
+      ${ledger.slice(0,30).map(p=>`<div class="fin-q-row"><span>${p.date}</span><span>${esc(p.customer||p.sourceLabel||'Payment')} · ${esc(p.sourceType||'')}</span><span class="r">${fmt(p.amount)}</span><span></span></div>`).join('')}</details>` : ''}
+    <p class="muted small" style="margin-top:8px;">"Confirm" links the bank line to the record (marks invoices paid on the bank date). "Add" creates the missing revenue or expense. "Skip" leaves it out. Personal and "to confirm" lines appear here once you've decided they're business.</p>
+  </div>`;
 }
 
 window.FIN_LOGIC = {finAutoTag, finSummary, finTaxYear, finRowId, finPayeeKey, finParseCsv, finNormalise, finScrub};

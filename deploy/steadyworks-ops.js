@@ -2483,6 +2483,7 @@ function view_dashboard(){
     ${dashPrioritiesHtml()}
     ${typeof dobMiniHtml==='function' ? dobMiniHtml() : ''}
   </div>
+  ${typeof finBankCardHtml==='function' ? (finInjectStyle(), finBankCardHtml()) : ''}
   <div class="fx-card" style="--i:1">${motdBanner()}</div>
   <div class="grid grid-3" style="margin-bottom:20px;">${kpiHtml}</div>
 
@@ -2727,6 +2728,7 @@ function view_sw_dashboard(){
   const monthLabel = now.toLocaleDateString('en-GB',{month:'long'});
 
   return `
+  ${typeof finBankCardHtml==='function' ? (finInjectStyle(), finBankCardHtml()) : ''}
   <div class="grid grid-4" style="margin-bottom:20px;">${kpiHtml}</div>
   ${swMoneyWaitingHtml()}
 
