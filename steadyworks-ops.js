@@ -657,6 +657,7 @@ const ROUTES = [
   {id:'forecast', label:'Forecast', section:'accounting'},
   {id:'balance-sheet', label:'Balance Sheet', section:'accounting'},
   {id:'assets-liabilities', label:'Assets & Liabilities', section:'accounting'},
+  {id:'sw-finance', label:'SteadyWorks Finance', section:'accounting'},
   {id:'activity', label:'Activity Log', section:'system'},
   {id:'bugs', label:'Bugs', section:'system'},
   {id:'settings', label:'Settings', section:'system'}
@@ -671,7 +672,7 @@ const SECTION_LABELS = {
 };
 const SECTION_ACCENT = { overview:'var(--gold-light)', steadyworks:'var(--gold-light)', steadyflow:'var(--teal)', collaborations:'#A78BFA', accounting:'#22C55E', system:'#999' };
 const ICONS = {
-  dashboard:'🏠', targets:'🏁', 'do-better':'💪', services:'🔁', 'price-book':'📒', tasks:'✅', goals:'🎯', budget:'🧮', 'sw-dashboard':'📊', 'sf-dashboard':'📊', 'sf-acquisition':'🎯', 'sf-leads':'🧭', 'sw-desk':'🏢', 'sf-clients':'💻', 'sf-quotes':'📝', 'sf-invoices':'🧾', 'sf-expenses':'💷', 'sf-compliance':'🛡️', leads:'📥', followups:'📞', jobs:'🛠️', 'job-sources':'📍', quotes:'📝', invoices:'🧾', calendar:'📅',
+  dashboard:'🏠', targets:'🏁', 'do-better':'💪', 'sw-finance':'💳', services:'🔁', 'price-book':'📒', tasks:'✅', goals:'🎯', budget:'🧮', 'sw-dashboard':'📊', 'sf-dashboard':'📊', 'sf-acquisition':'🎯', 'sf-leads':'🧭', 'sw-desk':'🏢', 'sf-clients':'💻', 'sf-quotes':'📝', 'sf-invoices':'🧾', 'sf-expenses':'💷', 'sf-compliance':'🛡️', leads:'📥', followups:'📞', jobs:'🛠️', 'job-sources':'📍', quotes:'📝', invoices:'🧾', calendar:'📅',
   customers:'👥', team:'👷', timesheets:'🕒', subcontractors:'🦺', expenses:'💷', compliance:'🛡️', reports:'📈', activity:'🕐', bugs:'🐞', settings:'⚙️', pipeline:'📝',
   accounting:'💰', forecast:'📈', 'balance-sheet':'⚖️', 'assets-liabilities':'🏦'
 };
@@ -720,7 +721,7 @@ function toggleNavSection(section){
 // Pages used day to day. Everything else is one click away under "Show all pages",
 // and any hidden page that needs attention (has a badge) still shows.
 const NAV_CORE = new Set(['dashboard','targets','tasks','do-better','calendar','sw-dashboard','leads','quotes','followups','jobs','pipeline','invoices','customers','services','expenses',
-  'sf-dashboard','sf-acquisition','sf-clients','sf-quotes','sf-invoices','sf-expenses','accounting','settings']);
+  'sf-dashboard','sf-acquisition','sf-clients','sf-quotes','sf-invoices','sf-expenses','accounting','sw-finance','settings']);
 let NAV_SIMPLE = true;
 try{ NAV_SIMPLE = localStorage.getItem('steadyworks_nav_simple')!=='0'; }catch(e){}
 function toggleNavSimple(){ NAV_SIMPLE = !NAV_SIMPLE; try{ localStorage.setItem('steadyworks_nav_simple', NAV_SIMPLE?'1':'0'); }catch(e){} renderNav(); }
@@ -817,6 +818,7 @@ const PAGE_META = {
   dashboard:['Dashboard','Steady Inc — combined performance across every business'],
   targets:['Targets','Target → actions → cash → reinvestment → capacity → next level'],
   'do-better':['Do Better','Do what you say, or don\'t say it.'],
+  'sw-finance':['SteadyWorks Finance','Bank statement → income, costs, salary and profit (estimates)'],
   tasks:['Tasks','Day-by-day checklist across SteadyWorks, SteadyFlow, Cookbook & Animation'],
   goals:['Goals & Roadmap','Long-term goals and revenue targets, month by month'],
   budget:['Budget','Plan spend by category and track it against your income targets'],
@@ -890,6 +892,7 @@ function afterRender(route){
     'sf-leads': typeof afterRender_sf_leads==='function' ? afterRender_sf_leads : null,
     'sw-desk': typeof afterRender_sw_desk==='function' ? afterRender_sw_desk : null,
     'do-better': typeof afterRender_do_better==='function' ? afterRender_do_better : null,
+    'sw-finance': typeof afterRender_sw_finance==='function' ? afterRender_sw_finance : null,
     targets: afterRender_targets
   };
   if(hooks[route]) hooks[route]();
@@ -912,6 +915,7 @@ function afterRender(route){
     'sf-invoices': `<button class="btn btn-gold" onclick="openSfInvoiceModal()">+ New Invoice</button>`,
     'sf-expenses': `<button class="btn btn-ghost" onclick="openImportExpensesModal('sf')">📥 Import CSV</button> <button class="btn btn-gold" onclick="openSfExpenseModal()">+ New Expense</button>`,
     'sf-compliance': `<button class="btn btn-gold" onclick="openSfComplianceModal()">+ Add Document</button>`,
+    'sw-finance': `<button class="btn btn-ghost" onclick="finExport()">⬇️ Export CSV</button><button class="btn btn-gold" onclick="finOpenImport()">📥 Import statement</button>`,
     accounting: `<button class="btn btn-gold" onclick="printAccountingReport('snapshot')">🖨️ Export PDF</button>`,
     forecast: `<button class="btn btn-gold" onclick="printAccountingReport('forecast')">🖨️ Export PDF</button>`,
     'balance-sheet': `<button class="btn btn-gold" onclick="printAccountingReport('balance-sheet')">🖨️ Export PDF</button>`,
@@ -2473,10 +2477,13 @@ function view_dashboard(){
     </div>`).join('');
 
   return `<div class="dash-fx">
+  ${dashHeroHtml()}
+  ${dashLaunchHtml()}
   <div class="dash-top">
     ${dashPrioritiesHtml()}
     ${typeof dobMiniHtml==='function' ? dobMiniHtml() : ''}
   </div>
+  ${typeof finBankCardHtml==='function' ? (finInjectStyle(), finBankCardHtml()) : ''}
   <div class="fx-card" style="--i:1">${motdBanner()}</div>
   <div class="grid grid-3" style="margin-bottom:20px;">${kpiHtml}</div>
 
@@ -2548,6 +2555,55 @@ function dashPrioritiesHtml(){
   return `<div class="card prio-card fx-card fx-glow" style="--i:0">
     <div class="prio-head"><span>⚡ PRIORITIES</span><span class="muted small">${P.length ? P.length+' need you · most urgent first' : 'All clear'}</span></div>
     <div class="prio-grid">${tiles}</div></div>`;
+}
+
+/* ---------- FOCUS HERO — the one task and the one priority that matter most right now ---------- */
+function dashHeroHtml(){
+  const now = new Date(), h = now.getHours();
+  const hi = h<12 ? 'Good morning' : h<18 ? 'Good afternoon' : 'Good evening';
+  const name = ((CURRENT_PROFILE && CURRENT_PROFILE.name) || '').split(' ')[0];
+  if(TASKS_CACHE===null && !window._tasksLoading && typeof loadTasks==='function'){
+    window._tasksLoading = true;
+    loadTasks().then(()=>{ window._tasksLoading = false; refreshIfCurrent('dashboard'); }).catch(()=>{ window._tasksLoading = false; });
+  }
+  let task = null;
+  try{ task = (TASKS_CACHE||[]).filter(t=>t.status!=='done').map(t=>Object.assign({}, t, {_s:taskScore(t)})).sort((a,b)=>b._s-a._s)[0] || null; }catch(e){}
+  const P = dashPriorities(), top = P[0];
+  const taskHtml = task
+    ? `<button type="button" class="hero-focus fx-tilt" onclick="navigate('tasks')"><span class="hero-tag">🎯 #1 TASK</span>
+        <b>${esc(task.title||'Untitled task')}</b><small>${task.due_date ? 'Due '+esc(fmtDate(task.due_date)) : 'Top of your plan'} · open Tasks →</small></button>`
+    : `<button type="button" class="hero-focus fx-tilt" onclick="navigate('tasks')"><span class="hero-tag">🎯 #1 TASK</span>
+        <b>${TASKS_CACHE===null ? 'Loading your plan…' : 'Nothing on the list'}</b><small>Open Tasks →</small></button>`;
+  const prioHtml = top
+    ? `<button type="button" class="hero-focus hero-urgent lvl${top.lvl} fx-tilt" onclick="navigate('${top.route}')"><span class="hero-tag">⚡ MOST URGENT</span>
+        <b>${top.n} × ${esc(top.label)}</b><small>${esc(top.sub)} · fix it →</small></button>`
+    : `<div class="hero-focus hero-clear"><span class="hero-tag">⚡ MOST URGENT</span><b>All clear ✅</b><small>Nothing overdue. Go win work.</small></div>`;
+  return `<div class="dash-hero fx-card" style="--i:0">
+    <div class="hero-bg" aria-hidden="true"><i class="orb o1"></i><i class="orb o2"></i><i class="orb o3"></i></div>
+    <div class="hero-left">
+      <div class="hero-date">${now.toLocaleDateString('en-GB',{weekday:'long', day:'numeric', month:'long'})}</div>
+      <h2 class="hero-hi">${hi}${name ? ', '+esc(name) : ''}.</h2>
+      <div class="hero-sub">${P.length ? `<b>${P.length}</b> things need you. Start with the first one.` : 'Everything is under control.'}</div>
+    </div>
+    <div class="hero-right">${taskHtml}${prioHtml}</div>
+  </div>`;
+}
+
+/* ---------- QUICK LAUNCH — 3D tiles to the pages used most ---------- */
+function dashLaunchHtml(){
+  const n = f=>{ try{ return f()||0; }catch(e){ return 0; } };
+  const T = [
+    ['leads','📥','Leads', n(()=>(DB.leads||[]).filter(l=>!['won','lost'].includes(String(l.stage||'').toLowerCase())).length), '#00E5CC'],
+    ['quotes','📝','Quotes', n(()=>DB.quotes.filter(swQuoteNeedsChase).length), '#F59E0B'],
+    ['jobs','🛠️','Jobs', n(()=>DB.jobs.filter(j=>!['completed','invoiced','cancelled'].includes(j.status)).length), '#E11D2A'],
+    ['invoices','🧾','Invoices', n(()=>DB.invoices.filter(i=>invoiceStatus(i)==='overdue').length), '#EF4444'],
+    ['calendar','📅','Calendar', 0, '#60A5FA'],
+    ['do-better','💪','Do Better', 0, '#22C55E'],
+    ['sw-finance','💳','Finance', 0, '#A78BFA'],
+    ['targets','🏁','Targets', 0, '#E8C468']
+  ].filter(t=>PAGE_META[t[0]]);
+  return `<div class="dash-launch">${T.map(([r,ic,l,c,col],i)=>`<button type="button" class="launch-tile fx-tilt" style="--i:${i};--lc:${col}" onclick="navigate('${r}')">
+      <span class="launch-ic">${ic}</span><span class="launch-l">${l}</span>${c?`<span class="launch-n">${c}</span>`:''}</button>`).join('')}</div>`;
 }
 
 /* ---------- DASHBOARD FX — count-up numbers + 3D tilt (skipped for reduced motion / touch) ---------- */
@@ -2672,6 +2728,7 @@ function view_sw_dashboard(){
   const monthLabel = now.toLocaleDateString('en-GB',{month:'long'});
 
   return `
+  ${typeof finBankCardHtml==='function' ? (finInjectStyle(), finBankCardHtml()) : ''}
   <div class="grid grid-4" style="margin-bottom:20px;">${kpiHtml}</div>
   ${swMoneyWaitingHtml()}
 
