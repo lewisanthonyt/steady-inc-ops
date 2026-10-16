@@ -708,7 +708,7 @@ function outreach(lead, r, settings, sender){
   ].join('\n');
   const call = (fn?'Hi, is that '+fn+'? ':'Hi, could I speak to whoever looks after marketing? ')+'It\'s '+sender.name+' from '+sender.company+' — I\'ll be quick. I was looking at '+lead.name+' online and noticed '+obs1+'. '+pitch.replace(/^I /,'I ')+'. Is that something you\'d be open to looking at?';
   const wa = hi+' — '+sender.name+' from '+sender.company+' here. I noticed '+obs1+'. '+pitch+'. Would that be useful? (No worries if not — just say and I won\'t message again.)';
-  const dmMsg = hi+'! Came across '+lead.name+' '+looking+'. Noticed '+obs1+' — '+pitch.split(' — ')[0].toLowerCase()+'. Happy to show you an example if useful.';
+  const dmMsg = hi+'! Came across '+lead.name+' '+looking+'. Noticed '+obs1+' — '+pitch.split(' — ')[0].replace(/^(\S+)/, w=>w==='I'||/^I'/.test(w) ? w : w.toLowerCase())+'. Happy to show you an example if useful.';
   const obj = OBJECTIONS[r.primaryService] || OBJECTIONS.website;
   return {ok:true, opener, email:{subject, body}, call, whatsapp: r.channels.whatsapp ? wa : null, dm: dmMsg,
     objection: obj[0], objectionResponse: obj[1], bestApproach: bestApproach(lead, r), bestTime: bestTime(ind.id),

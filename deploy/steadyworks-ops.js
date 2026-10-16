@@ -621,6 +621,7 @@ function seedData(){
 /* ---------- ROUTER ---------- */
 const ROUTES = [
   {id:'dashboard', label:'Dashboard', section:'overview'},
+  {id:'claudius', label:'Claudius', section:'overview'},
   {id:'targets', label:'Targets', section:'overview'},
   {id:'tasks', label:'Tasks', section:'overview'},
   {id:'do-better', label:'Do Better', section:'overview'},
@@ -672,7 +673,7 @@ const SECTION_LABELS = {
 };
 const SECTION_ACCENT = { overview:'var(--gold-light)', steadyworks:'var(--gold-light)', steadyflow:'var(--teal)', collaborations:'#A78BFA', accounting:'#22C55E', system:'#999' };
 const ICONS = {
-  dashboard:'🏠', targets:'🏁', 'do-better':'💪', 'sw-finance':'💳', services:'🔁', 'price-book':'📒', tasks:'✅', goals:'🎯', budget:'🧮', 'sw-dashboard':'📊', 'sf-dashboard':'📊', 'sf-acquisition':'🎯', 'sf-leads':'🧭', 'sw-desk':'🏢', 'sf-clients':'💻', 'sf-quotes':'📝', 'sf-invoices':'🧾', 'sf-expenses':'💷', 'sf-compliance':'🛡️', leads:'📥', followups:'📞', jobs:'🛠️', 'job-sources':'📍', quotes:'📝', invoices:'🧾', calendar:'📅',
+  dashboard:'🏠', claudius:'🤖', targets:'🏁', 'do-better':'💪', 'sw-finance':'💳', services:'🔁', 'price-book':'📒', tasks:'✅', goals:'🎯', budget:'🧮', 'sw-dashboard':'📊', 'sf-dashboard':'📊', 'sf-acquisition':'🎯', 'sf-leads':'🧭', 'sw-desk':'🏢', 'sf-clients':'💻', 'sf-quotes':'📝', 'sf-invoices':'🧾', 'sf-expenses':'💷', 'sf-compliance':'🛡️', leads:'📥', followups:'📞', jobs:'🛠️', 'job-sources':'📍', quotes:'📝', invoices:'🧾', calendar:'📅',
   customers:'👥', team:'👷', timesheets:'🕒', subcontractors:'🦺', expenses:'💷', compliance:'🛡️', reports:'📈', activity:'🕐', bugs:'🐞', settings:'⚙️', pipeline:'📝',
   accounting:'💰', forecast:'📈', 'balance-sheet':'⚖️', 'assets-liabilities':'🏦'
 };
@@ -720,7 +721,7 @@ function toggleNavSection(section){
 }
 // Pages used day to day. Everything else is one click away under "Show all pages",
 // and any hidden page that needs attention (has a badge) still shows.
-const NAV_CORE = new Set(['dashboard','targets','tasks','do-better','calendar','sw-dashboard','leads','quotes','followups','jobs','pipeline','invoices','customers','services','expenses',
+const NAV_CORE = new Set(['dashboard','claudius','targets','tasks','do-better','calendar','sw-dashboard','leads','quotes','followups','jobs','pipeline','invoices','customers','services','expenses',
   'sf-dashboard','sf-acquisition','sf-clients','sf-quotes','sf-invoices','sf-expenses','accounting','sw-finance','settings']);
 let NAV_SIMPLE = true;
 try{ NAV_SIMPLE = localStorage.getItem('steadyworks_nav_simple')!=='0'; }catch(e){}
@@ -817,6 +818,7 @@ function jobMissingDocs(j){
 const PAGE_META = {
   dashboard:['Dashboard','Steady Inc — combined performance across every business'],
   targets:['Targets','Target → actions → cash → reinvestment → capacity → next level'],
+  claudius:['Claudius','Today, decisions and the scoreboard — shared with your AI manager'],
   'do-better':['Do Better','Do what you say, or don\'t say it.'],
   'sw-finance':['SteadyWorks Finance','Bank statement → income, costs, salary and profit (estimates)'],
   tasks:['Tasks','Day-by-day checklist across SteadyWorks, SteadyFlow, Cookbook & Animation'],
@@ -892,6 +894,7 @@ function afterRender(route){
     'sf-leads': typeof afterRender_sf_leads==='function' ? afterRender_sf_leads : null,
     'sw-desk': typeof afterRender_sw_desk==='function' ? afterRender_sw_desk : null,
     'do-better': typeof afterRender_do_better==='function' ? afterRender_do_better : null,
+    claudius: typeof afterRender_claudius==='function' ? afterRender_claudius : null,
     'sw-finance': typeof afterRender_sw_finance==='function' ? afterRender_sw_finance : null,
     targets: afterRender_targets
   };
@@ -908,6 +911,7 @@ function afterRender(route){
     invoices: `<button class="btn btn-ghost" onclick="openTemplatesModal('invoice')">Templates</button><button class="btn btn-gold" onclick="openInvoiceModal()">+ New Invoice</button>`,
     'sf-dashboard': `<button class="btn btn-gold" onclick="openSfActivityModal()">+ Log Today's Activity</button>`,
     'sf-quotes': `<button class="btn btn-gold" onclick="openSfQuoteModal()">+ New Quote</button>`,
+    claudius: `<button class="btn btn-ghost" onclick="clReload()">↻ Refresh</button>`,
     targets: `<button class="btn btn-ghost" onclick="tgOpenAcq()">+ Acquisition spend</button><button class="btn btn-gold" onclick="tgOpenPayment()">+ Money received</button>`,
     'sf-leads': `<button class="btn btn-ghost" onclick="leReload()">↻ Refresh</button><button class="btn btn-gold" onclick="openLeLeadModal()">+ Add Lead</button>`,
     'sw-desk': `<button class="btn btn-ghost" onclick="leReload()">↻ Refresh</button><button class="btn btn-gold" onclick="openSwOrgModal()">+ Add Organisation</button>`,
@@ -1112,7 +1116,8 @@ function view_tasks(){
   if(window._tasksLoadError){
     return `${tasksExampleBlock()}<div class="empty-state">Couldn't load your tasks: ${esc(window._tasksLoadError)}<br><button class="btn btn-ghost mt-10" onclick="TASKS_CACHE=null; window._tasksLoadError=null; renderPage();">Try again</button></div>`;
   }
-  const filtered = TASKS_FILTER==='all' ? TASKS_CACHE : TASKS_CACHE.filter(t=>t.business===TASKS_FILTER);
+  const live = TASKS_CACHE.filter(t=>!t.archived_at); // archived = parked by the 13 Oct clean-up, never deleted
+  const filtered = TASKS_FILTER==='all' ? live : live.filter(t=>t.business===TASKS_FILTER);
   const todoSorted = filtered.filter(t=>t.status!=='done').map(t=>Object.assign({}, t, {_score:taskScore(t)})).sort((a,b)=>b._score-a._score);
   const done = filtered.filter(t=>t.status==='done').sort((a,b)=>new Date(b.due_date||b.created_at||0)-new Date(a.due_date||a.created_at||0));
 
