@@ -622,6 +622,8 @@ function seedData(){
 const ROUTES = [
   {id:'dashboard', label:'Dashboard', section:'overview'},
   {id:'claudius', label:'Claudius', section:'overview'},
+  {id:'approvals', label:'Approvals', section:'overview'},
+  {id:'outbox', label:'Outbox', section:'overview'},
   {id:'targets', label:'Targets', section:'overview'},
   {id:'tasks', label:'Tasks', section:'overview'},
   {id:'do-better', label:'Do Better', section:'overview'},
@@ -673,7 +675,7 @@ const SECTION_LABELS = {
 };
 const SECTION_ACCENT = { overview:'var(--gold-light)', steadyworks:'var(--gold-light)', steadyflow:'var(--teal)', collaborations:'#A78BFA', accounting:'#22C55E', system:'#999' };
 const ICONS = {
-  dashboard:'🏠', claudius:'🤖', targets:'🏁', 'do-better':'💪', 'sw-finance':'💳', services:'🔁', 'price-book':'📒', tasks:'✅', goals:'🎯', budget:'🧮', 'sw-dashboard':'📊', 'sf-dashboard':'📊', 'sf-acquisition':'🎯', 'sf-leads':'🧭', 'sw-desk':'🏢', 'sf-clients':'💻', 'sf-quotes':'📝', 'sf-invoices':'🧾', 'sf-expenses':'💷', 'sf-compliance':'🛡️', leads:'📥', followups:'📞', jobs:'🛠️', 'job-sources':'📍', quotes:'📝', invoices:'🧾', calendar:'📅',
+  dashboard:'🏠', claudius:'🤖', approvals:'🎬', outbox:'📤', targets:'🏁', 'do-better':'💪', 'sw-finance':'💳', services:'🔁', 'price-book':'📒', tasks:'✅', goals:'🎯', budget:'🧮', 'sw-dashboard':'📊', 'sf-dashboard':'📊', 'sf-acquisition':'🎯', 'sf-leads':'🧭', 'sw-desk':'🏢', 'sf-clients':'💻', 'sf-quotes':'📝', 'sf-invoices':'🧾', 'sf-expenses':'💷', 'sf-compliance':'🛡️', leads:'📥', followups:'📞', jobs:'🛠️', 'job-sources':'📍', quotes:'📝', invoices:'🧾', calendar:'📅',
   customers:'👥', team:'👷', timesheets:'🕒', subcontractors:'🦺', expenses:'💷', compliance:'🛡️', reports:'📈', activity:'🕐', bugs:'🐞', settings:'⚙️', pipeline:'📝',
   accounting:'💰', forecast:'📈', 'balance-sheet':'⚖️', 'assets-liabilities':'🏦'
 };
@@ -721,7 +723,7 @@ function toggleNavSection(section){
 }
 // Pages used day to day. Everything else is one click away under "Show all pages",
 // and any hidden page that needs attention (has a badge) still shows.
-const NAV_CORE = new Set(['dashboard','claudius','targets','tasks','do-better','calendar','sw-dashboard','leads','quotes','followups','jobs','pipeline','invoices','customers','services','expenses',
+const NAV_CORE = new Set(['dashboard','claudius','approvals','outbox','targets','tasks','do-better','calendar','sw-dashboard','leads','quotes','followups','jobs','pipeline','invoices','customers','services','expenses',
   'sf-dashboard','sf-acquisition','sf-clients','sf-quotes','sf-invoices','sf-expenses','accounting','sw-finance','settings']);
 let NAV_SIMPLE = true;
 try{ NAV_SIMPLE = localStorage.getItem('steadyworks_nav_simple')!=='0'; }catch(e){}
@@ -782,6 +784,10 @@ function renderNav(){
       const stale = (DB.sfProspects||[]).filter(acqIsStale).length;
       if(stale) badge = `<span class="nav-badge" style="background:var(--warning);color:#1a1200;" title="Prospects with no update for 7+ days">${stale}</span>`;
     }
+    if(r.id==='approvals' && typeof apWaitingCount==='function'){
+      const waiting = apWaitingCount();
+      if(waiting) badge = `<span class="nav-badge" style="background:var(--warning);color:#1a1200;" title="Videos waiting for your approval">${waiting}</span>`;
+    }
     if(r.id==='sw-desk' && typeof swNavBadge==='function'){
       const due = swNavBadge();
       if(due) badge = `<span class="nav-badge" title="Commercial follow-ups due">${due}</span>`;
@@ -818,7 +824,9 @@ function jobMissingDocs(j){
 const PAGE_META = {
   dashboard:['Dashboard','Steady Inc — combined performance across every business'],
   targets:['Targets','Target → actions → cash → reinvestment → capacity → next level'],
+  outbox:['Outbox','Emails drafted for you: approve or edit, then send from the right business account'],
   claudius:['Claudius','Today, decisions and the scoreboard — shared with your AI manager'],
+  approvals:['Approvals','Videos and reels for both brands. Nothing goes out until you approve it'],
   'do-better':['Do Better','Do what you say, or don\'t say it.'],
   'sw-finance':['SteadyWorks Finance','Bank statement → income, costs, salary and profit (estimates)'],
   tasks:['Tasks','Day-by-day checklist across SteadyWorks, SteadyFlow, Cookbook & Animation'],
@@ -895,6 +903,7 @@ function afterRender(route){
     'sw-desk': typeof afterRender_sw_desk==='function' ? afterRender_sw_desk : null,
     'do-better': typeof afterRender_do_better==='function' ? afterRender_do_better : null,
     claudius: typeof afterRender_claudius==='function' ? afterRender_claudius : null,
+    approvals: typeof afterRender_approvals==='function' ? afterRender_approvals : null,
     'sw-finance': typeof afterRender_sw_finance==='function' ? afterRender_sw_finance : null,
     targets: afterRender_targets
   };
@@ -912,6 +921,7 @@ function afterRender(route){
     'sf-dashboard': `<button class="btn btn-gold" onclick="openSfActivityModal()">+ Log Today's Activity</button>`,
     'sf-quotes': `<button class="btn btn-gold" onclick="openSfQuoteModal()">+ New Quote</button>`,
     claudius: `<button class="btn btn-ghost" onclick="clReload()">↻ Refresh</button>`,
+    approvals: `<button class="btn btn-ghost" onclick="apReload()">↻ Refresh</button><button class="btn btn-gold" onclick="apOpenUpload()">⬆️ Upload previews</button>`,
     targets: `<button class="btn btn-ghost" onclick="tgOpenAcq()">+ Acquisition spend</button><button class="btn btn-gold" onclick="tgOpenPayment()">+ Money received</button>`,
     'sf-leads': `<button class="btn btn-ghost" onclick="leReload()">↻ Refresh</button><button class="btn btn-gold" onclick="openLeLeadModal()">+ Add Lead</button>`,
     'sw-desk': `<button class="btn btn-ghost" onclick="leReload()">↻ Refresh</button><button class="btn btn-gold" onclick="openSwOrgModal()">+ Add Organisation</button>`,
@@ -2531,6 +2541,8 @@ function dashPriorities(){
   if(sfOver.length) P.push({lvl:3, icon:'🧾', n:sfOver.length, label:'Overdue invoices', sub:fmt(sum(sfOver))+' · SteadyFlow', route:'sf-invoices'});
   const chase = safe(()=>DB.quotes.filter(swQuoteNeedsChase)) || [];
   if(chase.length) P.push({lvl:2, icon:'📣', n:chase.length, label:'Quotes to chase', sub:(safe(()=>fmt(chase.reduce((s,q)=>s+calcQuoteTotal(q).total,0))) || '')+' waiting', route:'quotes'});
+  const vids = safe(()=>typeof apWaitingCount==='function' ? apWaitingCount() : 0);
+  if(vids) P.push({lvl:2, icon:'🎬', n:vids, label:`${vids===1?'Video':'Videos'} waiting for approval`, sub:'Watch, then approve or request changes', route:'approvals'});
   const fu = (DB.followUps||[]).filter(f=>f.status!=='done');
   if(fu.length) P.push({lvl:2, icon:'📞', n:fu.length, label:'Follow-ups open', sub:'Calls & messages to return', route:'followups'});
   const svc = safe(()=>(DB.swServices||[]).filter(sv=>swServiceStatus(sv).due)) || [];
@@ -2547,6 +2559,8 @@ function dashPriorities(){
   if(stale) P.push({lvl:1, icon:'🎯', n:stale, label:'Stale prospects', sub:'No update for 7+ days', route:'sf-acquisition'});
   const docs = safe(()=>DB.jobs.filter(j=>!['completed','invoiced','cancelled'].includes(j.status) && jobMissingDocs(j)).length);
   if(docs) P.push({lvl:1, icon:'🛠️', n:docs, label:'Jobs missing paperwork', sub:'RAMS, certs or photos', route:'jobs'});
+  const obN = safe(()=>typeof obPendingCount==='function' ? obPendingCount() : 0);
+  if(obN) P.push({lvl:2, icon:'📤', n:obN, label:'Emails to approve', sub:'Drafted outreach waiting for you', route:'outbox'});
   const lvlUp = new Set((DB.tgCycles||[]).filter(c=>c.achieved && !c.ack).map(c=>c.biz)).size;
   if(lvlUp) P.push({lvl:0, icon:'🏆', n:lvlUp, label:'Level complete', sub:'See what changes next', route:'targets'});
   return P.sort((a,b)=>b.lvl-a.lvl || b.n-a.n);

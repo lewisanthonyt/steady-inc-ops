@@ -663,7 +663,7 @@ const OBJECTIONS = {
   'marketing':['We\'ve tried marketing before and it didn\'t work.','That\'s common — usually because it wasn\'t tied to a measurable goal. I\'d start with one channel and clear numbers.'],
   'management':['Nobody really looks at the website.','That\'s often why small issues build up. A light care plan keeps it working without you thinking about it.']
 };
-function firstName(n){ const p = String(n||'').trim().split(/\s+/); return p[0] && !/^(mr|mrs|ms|dr|miss)\.?$/i.test(p[0]) ? p[0].replace(/,$/,'') : (p[1]||''); }
+function firstName(n){ const p = String(n||'').trim().split(/\s+/); const f = p[0] && !/^(mr|mrs|ms|dr|miss)\.?$/i.test(p[0]) ? p[0].replace(/,$/,'') : (p[1]||''); return /^(limited|ltd\.?|llp|plc|partnership|company|co\.?|the|&|and|team|info|sales|lettings|admin|office)$/i.test(f) || /\d/.test(f) ? '' : f; }
 function bestTime(ind){
   return ({'estate-agent':'Tue–Thu, 9:30–11:00 (before viewings) — rule of thumb', 'letting-agent':'Tue–Thu, 9:30–11:00 — rule of thumb', 'hotel':'Mid-morning, 10:00–11:30 — rule of thumb',
     'venue':'Weekdays 10:00–12:00, avoid Mon after event weekends — rule of thumb', 'restaurant':'14:30–16:30 between services — rule of thumb', 'salon':'Tue–Wed mornings — rule of thumb',
