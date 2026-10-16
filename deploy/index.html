@@ -759,6 +759,33 @@ td.empty-cell .btn{margin-top:10px;}
 @media (max-width:1000px){ .dash-hero{grid-template-columns:1fr;} .dash-launch{grid-template-columns:repeat(4,minmax(0,1fr));} }
 @media (max-width:560px){ .hero-right{grid-template-columns:1fr;} .hero-hi{font-size:24px;} .dash-hero{padding:18px;} }
 @media (prefers-reduced-motion: reduce){ .hero-bg,.hero-bg .orb,.hero-urgent.lvl3,.launch-tile{animation:none!important;} }
+
+/* ===== CLIENT PINBOARD ===== */
+@keyframes pinIn{from{opacity:0;transform:translateY(-14px) rotate(calc(var(--rot) * 3)) scale(.9);}to{opacity:1;transform:rotate(var(--rot));}}
+@keyframes pinWiggle{0%,100%{transform:rotate(var(--rot)) scale(1.06);}30%{transform:rotate(calc(var(--rot) - 3deg)) scale(1.06);}60%{transform:rotate(calc(var(--rot) + 2deg)) scale(1.06);}}
+.pin-board{margin-bottom:20px;padding:16px;}
+.pin-head{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:12px;font-weight:800;letter-spacing:1.5px;color:#E8C468;}
+.pin-count{letter-spacing:0;font-weight:600;color:var(--text-soft);}
+.pin-sub{font-size:12.5px;color:var(--text-soft);margin:2px 0 12px;}
+.pin-cork{display:grid;grid-template-columns:repeat(auto-fill,minmax(128px,1fr));gap:18px 14px;padding:18px 16px 20px;border-radius:14px;
+  background:radial-gradient(circle at 20% 30%,rgba(255,255,255,.06) 0 1px,transparent 2px) 0 0/9px 9px,radial-gradient(circle at 70% 60%,rgba(0,0,0,.18) 0 1px,transparent 2px) 0 0/7px 7px,linear-gradient(135deg,#9c6b3f,#7d5230 55%,#6b4527);
+  box-shadow:inset 0 0 0 6px #4a2f1a,inset 0 0 22px rgba(0,0,0,.45);}
+.pin-note{position:relative;display:flex;flex-direction:column;gap:3px;min-height:96px;padding:18px 10px 10px;border:0;border-radius:3px;cursor:pointer;text-align:left;
+  background:var(--bg);color:#1b1b1b;box-shadow:0 8px 14px rgba(0,0,0,.35),inset 0 -14px 18px rgba(0,0,0,.05);transform:rotate(var(--rot));
+  animation:pinIn .5s cubic-bezier(.2,.8,.2,1) both;animation-delay:var(--d,0ms);transition:box-shadow .2s;}
+.pin-note:hover{animation:pinWiggle .5s ease;transform:rotate(var(--rot)) scale(1.06);box-shadow:0 14px 24px rgba(0,0,0,.45);z-index:2;}
+.pin-note b{font-size:13.5px;line-height:1.2;font-weight:800;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;}
+.pin-note small{font-size:11.5px;color:#4b4b4b;}
+.pin-note.owed small{color:#b3121f;font-weight:800;}
+.pin-tag{margin-top:auto;font-size:9.5px;font-weight:800;letter-spacing:.8px;text-transform:uppercase;color:rgba(0,0,0,.45);}
+.pin-note .pin{position:absolute;top:-6px;left:50%;width:14px;height:14px;margin-left:-7px;border-radius:50%;
+  background:radial-gradient(circle at 35% 35%,#ff8a92,#E11D2A 55%,#7a0710);box-shadow:0 3px 4px rgba(0,0,0,.5);}
+.pin-note.sf .pin{background:radial-gradient(circle at 35% 35%,#b8fff6,#00ACB5 55%,#005f64);}
+.pin-note.more{background:#fffdf5;} .pin-note.more .pin{background:radial-gradient(circle at 35% 35%,#fff3b0,#E8C468 55%,#8a6a14);}
+.pin-note.add{background:transparent;border:2px dashed rgba(255,255,255,.55);box-shadow:none;color:#fff;align-items:center;justify-content:center;}
+.pin-note.add b{font-size:26px;} .pin-note.add small{color:rgba(255,255,255,.85);}
+@media (max-width:560px){ .pin-cork{grid-template-columns:repeat(2,minmax(0,1fr));padding:16px 12px;} }
+@media (prefers-reduced-motion: reduce){ .pin-note,.pin-note:hover{animation:none;} }
 /* ===== CALM DASHBOARD + GLOWING NAV ALERTS ===== */
 @keyframes navGlow{0%,100%{box-shadow:0 0 0 1px rgba(245,158,11,.25),0 0 10px rgba(245,158,11,.10);}50%{box-shadow:0 0 0 1px rgba(245,158,11,.55),0 0 18px rgba(245,158,11,.30);}}
 .nav-item.nav-alert{background:linear-gradient(90deg,rgba(245,158,11,.10),transparent 80%);color:#fff;animation:navGlow 3s ease-in-out infinite;}
@@ -842,7 +869,7 @@ td.empty-cell .btn{margin-top:10px;}
       <div id="session-email" style="color:#ccc;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11.5px;"></div>
       <button class="icon-btn" style="font-size:10.5px;color:#999;padding:2px 0;flex-shrink:0;" onclick="doSignOut()">Sign out</button>
     </div>
-    <div style="margin-top:8px;color:#666;font-size:10px;">v1.1 · Steady Inc Operations · <span style="color:#22C55E;">build 16 Oct · calm</span></div>
+    <div style="margin-top:8px;color:#666;font-size:10px;">v1.1 · Steady Inc Operations · <span style="color:#22C55E;">build 16 Oct · pinboard</span></div>
   </div>
 </div>
 
@@ -867,13 +894,13 @@ td.empty-cell .btn{margin-top:10px;}
 
 <script src="lead-core.js?v=2026-10-16ob"></script>
 <script src="works-core.js?v=2026-10-05sw"></script>
-<script src="steadyworks-ops.js?v=2026-10-16calm"></script>
+<script src="steadyworks-ops.js?v=2026-10-16pin"></script>
 <script src="steadyflow-leads.js?v=2026-10-05sw"></script>
 <script src="steadyworks-desk.js?v=2026-10-05sw"></script>
 <script src="do-better.js?v=2026-10-12fx"></script>
 <script src="sw-finance.js?v=2026-10-12match"></script>
 <script src="claudius.js?v=2026-10-13cl"></script>
-<script src="approvals.js?v=2026-10-16ap"></script>
+<script src="approvals.js?v=2026-10-16ap2"></script>
 <script src="outbox.js?v=2026-10-16calm"></script>
 </body>
 </html>

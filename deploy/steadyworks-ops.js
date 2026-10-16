@@ -2506,6 +2506,7 @@ function view_dashboard(){
     ${typeof dobMiniHtml==='function' ? dobMiniHtml() : ''}
   </div>
   <div class="grid grid-3 dash-key" style="margin-bottom:20px;">${keyKpis}</div>
+  ${dashClientBoardHtml()}
   <details class="dash-more" ${moreOpen?'open':''} ontoggle="dashMoreToggle(this)">
   <summary><span>More</span><small>Shortcuts · bank · stats · targets · chart · goals</small></summary>
   ${dashLaunchHtml()}
@@ -2543,6 +2544,37 @@ function view_dashboard(){
   </div>`;
 }
 
+/* ---------- CLIENT PINBOARD — every client as a sticky note pinned to cork ---------- */
+function dashClientBoardHtml(){
+  const notes = [], hash = str => { let h = 0; for(const ch of String(str)) h = (h*31 + ch.charCodeAt(0))|0; return Math.abs(h); };
+  (DB.customers||[]).forEach(c=>{
+    if(!c || !c.name) return;
+    let st = {spend:0, owed:0, jobs:[], last:''}; try{ st = swCustomerStats(c); }catch(e){}
+    const sub = st.owed > 0 ? fmt(st.owed)+' owed' : st.jobs.length ? st.jobs.length+' job'+(st.jobs.length===1?'':'s')+(st.spend?' · '+fmt(st.spend):'') : 'New on the board';
+    notes.push({biz:'sw', id:c.id, name:c.name, sub, owed:st.owed>0, rank:(st.last||'')+'|'+String(Math.round(st.spend)).padStart(9,'0')});
+  });
+  (DB.sfClients||[]).forEach(c=>{
+    if(!c || !c.name) return;
+    const sub = c.status==='active' ? (Number(c.mrr) ? fmt(Number(c.mrr))+'/mo' : 'Active') : (c.status||'Client');
+    notes.push({biz:'sf', id:c.id, name:c.name, sub, owed:false, rank:(c.status==='active'?'9':'0')+(c.createdAt||'')});
+  });
+  if(!notes.length) return '';
+  notes.sort((a,b)=>b.rank.localeCompare(a.rank));
+  const SHOW = 14, shown = notes.slice(0, SHOW), extra = notes.length - shown.length;
+  const swCols = ['#FFE58A','#FFC9A8','#FFB3C1','#FFF1B8'], sfCols = ['#9FF0E6','#B9F5C9','#A8E3FF'];
+  const card = n => { const h = hash(n.name), rot = ((h % 9) - 4) * 1.3, bg = n.biz==='sf' ? sfCols[h % sfCols.length] : swCols[h % swCols.length];
+    const go = n.biz==='sf' ? `navigate('sf-clients');setTimeout(()=>openSfClientModal('${n.id}'),60)` : `navigate('customers','${n.id}')`;
+    return `<button type="button" class="pin-note ${n.biz}${n.owed?' owed':''}" style="--rot:${rot}deg;--bg:${bg};--d:${(h%7)*60}ms" onclick="${go}" title="${esc(n.name)}">
+      <i class="pin"></i><b>${esc(n.name)}</b><small>${esc(n.sub)}</small><span class="pin-tag">${n.biz==='sf'?'Steady Flow':'SteadyWorks'}</span></button>`; };
+  const swN = notes.filter(n=>n.biz==='sw').length, sfN = notes.length - swN;
+  return `<div class="card pin-board fx-card" style="--i:3">
+    <div class="pin-head"><span>📌 THE CLIENT BOARD</span><span class="pin-count">${notes.length} names · ${swN} SteadyWorks · ${sfN} Steady Flow</span></div>
+    <div class="pin-sub">Every name up here trusted us once. Let's fill the wall. 😏</div>
+    <div class="pin-cork">${shown.map(card).join('')}
+      ${extra>0 ? `<button type="button" class="pin-note more" style="--rot:3deg;--bg:#fff" onclick="navigate('customers')"><i class="pin"></i><b>+${extra} more</b><small>See them all</small></button>` : ''}
+      <button type="button" class="pin-note add" style="--rot:-3deg;--bg:transparent" onclick="navigate('customers');setTimeout(()=>typeof openCustomerModal==='function'&&openCustomerModal(),60)"><b>＋</b><small>Pin a new one</small></button>
+    </div></div>`;
+}
 function dashMoreToggle(el){
   try{ localStorage.setItem('dash_more_open', el.open ? '1' : '0'); }catch(e){}
   if(el.open && typeof afterRender_dashboard==='function') setTimeout(afterRender_dashboard, 30);
