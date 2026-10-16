@@ -72,6 +72,7 @@ async function obLoad(){
     OB.rows = data || []; OB.loaded = true;
   }catch(e){ OB.error = e.message || String(e); }
   OB.loading = false;
+  if(typeof renderNav==='function') renderNav();
   if(['outbox','dashboard'].includes(currentRoute)) renderPage();
 }
 function obPendingCount(){
@@ -86,6 +87,7 @@ async function obUpdate(id, patch, msg){
   const {error} = await sb.from('outbound_emails').update(Object.assign({}, patch, {updated_at:r.updated_at})).eq('owner_id', CURRENT_USER_ID).eq('id', id);
   if(error){ Object.assign(r, before); obRefresh(); toast('Not saved: '+error.message,'⚠️'); return false; }
   if(msg) toast(msg,'✅');
+  if(typeof renderNav==='function') renderNav();
   return true;
 }
 function obEdits(id){
@@ -120,7 +122,7 @@ async function obApproveAll(){
   list.forEach(r=>{ r.status = 'approved'; r.approved_at = now; }); obRefresh();
   const {error} = await sb.from('outbound_emails').update({status:'approved', approved_at:now, updated_at:now}).eq('owner_id', CURRENT_USER_ID).in('id', ids);
   if(error){ toast('Not saved: '+error.message,'⚠️'); OB.loaded = false; obLoad(); return; }
-  toast(ids.length+' approved','✅');
+  toast(ids.length+' approved','✅'); if(typeof renderNav==='function') renderNav();
 }
 
 /* ---------- view ---------- */

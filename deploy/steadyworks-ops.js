@@ -808,9 +808,13 @@ function renderNav(){
       const open = BUGS_CACHE.filter(b=>b.status!=='fixed').length;
       if(open) badge = `<span class="nav-badge">${open}</span>`;
     }
+    if(r.id==='outbox' && typeof obPendingCount==='function'){
+      const waiting = obPendingCount();
+      if(waiting) badge = `<span class="nav-badge" style="background:var(--warning);color:#1a1200;" title="Emails waiting for your approval">${waiting}</span>`;
+    }
     if(simple && !NAV_CORE.has(r.id) && !badge && currentRoute!==r.id){ hiddenCt++; return sectionHeader; }
     const sectionClass = r.section==='steadyflow' ? 'nav-item-teal' : r.section==='collaborations' ? 'nav-item-purple' : '';
-    return `${sectionHeader}<div class="nav-item ${currentRoute===r.id?'active':''} ${sectionClass}" onclick="navigate('${r.id}')">
+    return `${sectionHeader}<div class="nav-item ${currentRoute===r.id?'active':''} ${sectionClass}${badge?' nav-alert':''}" onclick="navigate('${r.id}')">
       <span class="nav-icon">${ICONS[r.id]}</span>${r.label}${badge}
     </div>`;
   }).join('') + (CURRENT_PROFILE.role==='owner' ? `<div class="nav-more" onclick="toggleNavSimple()">${NAV_SIMPLE ? '＋ Show all pages <span>'+hiddenCt+' more</span>' : '－ Show everyday pages only'}</div>` : '');
@@ -2491,16 +2495,23 @@ function view_dashboard(){
       <span class="kpi-delta ${k.up?'up':'down'}">${k.up?'▲':'▼'} ${k.delta}</span>
     </div>`).join('');
 
-  return `<div class="dash-fx">
+  // Calm layout: the few things that matter up top, everything else one tap away in "More".
+  const kpiCards = kpiHtml.split('<div class="card kpi-card').slice(1).map(h=>'<div class="card kpi-card'+h);
+  const keyKpis = [kpiCards[0], kpiCards[2], kpiCards[5]].join(''), otherKpis = [kpiCards[1], kpiCards[3], kpiCards[4]].join('');
+  let moreOpen = false; try{ moreOpen = localStorage.getItem('dash_more_open')==='1'; }catch(e){}
+  return `<div class="dash-fx dash-calm">
   ${dashHeroHtml()}
-  ${dashLaunchHtml()}
   <div class="dash-top">
     ${dashPrioritiesHtml()}
     ${typeof dobMiniHtml==='function' ? dobMiniHtml() : ''}
   </div>
+  <div class="grid grid-3 dash-key" style="margin-bottom:20px;">${keyKpis}</div>
+  <details class="dash-more" ${moreOpen?'open':''} ontoggle="dashMoreToggle(this)">
+  <summary><span>More</span><small>Shortcuts · bank · stats · targets · chart · goals</small></summary>
+  ${dashLaunchHtml()}
   ${typeof finBankCardHtml==='function' ? (finInjectStyle(), finBankCardHtml()) : ''}
   <div class="fx-card" style="--i:1">${motdBanner()}</div>
-  <div class="grid grid-3" style="margin-bottom:20px;">${kpiHtml}</div>
+  <div class="grid grid-3" style="margin-bottom:20px;">${otherKpis}</div>
 
   <div class="grid grid-2" style="margin-bottom:20px;align-items:start;">
     <div class="card fx-card fx-tilt fx-glow fx-red" style="cursor:pointer;--i:8" onclick="navigate('sw-dashboard')">
@@ -2528,9 +2539,14 @@ function view_dashboard(){
   <div class="grid grid-3" style="margin-bottom:20px;align-items:start;">
     ${dashboardGoalsHtml('all','dashboard')}
   </div>
+  </details>
   </div>`;
 }
 
+function dashMoreToggle(el){
+  try{ localStorage.setItem('dash_more_open', el.open ? '1' : '0'); }catch(e){}
+  if(el.open && typeof afterRender_dashboard==='function') setTimeout(afterRender_dashboard, 30);
+}
 /* ---------- PRIORITY STRIP — what needs you today, most urgent first, each a link ---------- */
 function dashPriorities(){
   const P = [], safe = f=>{ try{ return f(); }catch(e){ return null; } };
@@ -2567,13 +2583,13 @@ function dashPriorities(){
 }
 function dashPrioritiesHtml(){
   const P = dashPriorities();
-  const tiles = P.length ? P.slice(0,8).map((p,i)=>`<button type="button" class="prio-tile lvl${p.lvl} fx-tilt" style="--i:${i}" onclick="navigate('${p.route}')">
+  const tiles = P.length ? P.slice(0,10).map((p,i)=>`<button type="button" class="prio-tile lvl${p.lvl} fx-tilt${i>=4?' prio-extra':''}" style="--i:${i}" onclick="navigate('${p.route}')">
       <span class="prio-ic">${p.icon}</span><span class="prio-n">${p.n}</span>
       <span class="prio-txt"><b>${esc(p.label)}</b><small>${esc(p.sub)}</small></span><span class="prio-go">→</span></button>`).join('')
     : `<div class="prio-clear">✅ Nothing urgent — every list is clear. Go build something.</div>`;
   return `<div class="card prio-card fx-card fx-glow" style="--i:0">
     <div class="prio-head"><span>⚡ PRIORITIES</span><span class="muted small">${P.length ? P.length+' need you · most urgent first' : 'All clear'}</span></div>
-    <div class="prio-grid">${tiles}</div></div>`;
+    <div class="prio-grid">${tiles}</div>${P.length>4 ? `<button type="button" class="prio-more" onclick="this.closest('.prio-card').classList.toggle('show-all');this.textContent=this.closest('.prio-card').classList.contains('show-all')?'Show less':'+${Math.min(P.length,10)-4} more'">+${Math.min(P.length,10)-4} more</button>` : ''}</div>`;
 }
 
 /* ---------- FOCUS HERO — the one task and the one priority that matter most right now ---------- */
