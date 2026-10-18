@@ -2558,7 +2558,6 @@ function dashClientBoardHtml(){
     const sub = c.status==='active' ? (Number(c.mrr) ? fmt(Number(c.mrr))+'/mo' : 'Active') : (c.status||'Client');
     notes.push({biz:'sf', id:c.id, name:c.name, sub, owed:false, rank:(c.status==='active'?'9':'0')+(c.createdAt||'')});
   });
-  if(!notes.length) return '';
   notes.sort((a,b)=>b.rank.localeCompare(a.rank));
   const SHOW = 14, shown = notes.slice(0, SHOW), extra = notes.length - shown.length;
   const swCols = ['#FFE58A','#FFC9A8','#FFB3C1','#FFF1B8'], sfCols = ['#9FF0E6','#B9F5C9','#A8E3FF'];
@@ -2569,7 +2568,7 @@ function dashClientBoardHtml(){
   const swN = notes.filter(n=>n.biz==='sw').length, sfN = notes.length - swN;
   return `<div class="card pin-board fx-card" style="--i:3">
     <div class="pin-head"><span>📌 THE CLIENT BOARD</span><span class="pin-count">${notes.length} names · ${swN} SteadyWorks · ${sfN} Steady Flow</span></div>
-    <div class="pin-sub">Every name up here trusted us once. Let's fill the wall. 😏</div>
+    <div class="pin-sub">${notes.length ? 'Every name up here trusted us once. Let\'s fill the wall. 😏' : 'Empty wall. Not for long. Pin your first client. 😏'}</div>
     <div class="pin-cork">${shown.map(card).join('')}
       ${extra>0 ? `<button type="button" class="pin-note more" style="--rot:3deg;--bg:#fff" onclick="navigate('customers')"><i class="pin"></i><b>+${extra} more</b><small>See them all</small></button>` : ''}
       <button type="button" class="pin-note add" style="--rot:-3deg;--bg:transparent" onclick="navigate('customers');setTimeout(()=>typeof openCustomerModal==='function'&&openCustomerModal(),60)"><b>＋</b><small>Pin a new one</small></button>
