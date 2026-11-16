@@ -133,9 +133,11 @@ function splitContext(payments,subscriptionRows,businessRows,potRows,p,s){const 
  return {tax_pct:s.tax_pct,start_date:s.start_date,vat_enabled:!!s.vat_enabled,overheads_needed:round(Math.max(0,over.weekly-own.allocations.Overheads)),owner_needed:round(Math.max(0,Number(b.owner_pay_target)-own.paid_out)),owner_total_needed:round(Math.max(0,250-all.paid_out)),growth_needed:round(Math.max(0,target-own.growth_extra))};
 }
 function effectiveWeeks(rows,payments){const out=rows.map(r=>Object.assign({},r));const map=new Map(out.map(r=>[r.channel_id+'|'+r.week_start,r]));
+ const topups=new Map(out.filter(r=>r.ticks&&r.ticks.lead_topups).map(r=>[r.channel_id+'|'+r.week_start,{baseline:Number(r.spend||0),receipts:0}]));
  for(const p of activePayments(payments)){payment(p);const w=monday(p.payment_date),key=p.channel_id+'|'+w;let r=map.get(key);if(!r){r={channel_id:p.channel_id,week_start:w};map.set(key,r);out.push(r);}const net=round(Number(p.amount)-Number((p.allocations||{}).VAT||0));
- for(const [k,v] of Object.entries({revenue:net,cash_received:net,materials:Number(p.materials),labour:Number(p.labour),spend:Number(p.lead_cost)}))r[k]=round(Number(r[k]||0)+v);
- }return out.map(week);
+ const topup=topups.get(key);if(topup)topup.receipts=round(topup.receipts+Number(p.lead_cost));
+ for(const [k,v] of Object.entries({revenue:net,cash_received:net,materials:Number(p.materials),labour:Number(p.labour),spend:topup?0:Number(p.lead_cost)}))r[k]=round(Number(r[k]||0)+v);
+ }for(const [key,t] of topups)map.get(key).spend=round(Math.max(t.baseline,t.receipts));return out.map(week);
 }
 function scoreboard(rows,input,now){const s=settings(input),today=day(now),byWeek=new Map();for(const r of rows.filter(r=>r.week_start>=s.start_date&&r.week_start<=monday(today)).map(week))byWeek.set(r.week_start,round((byWeek.get(r.week_start)||0)+r.profit));
  let targetTotal=0,actualTotal=0;const targets=[];for(let i=0;targetTotal<s.target_profit&&i<30;i++){const target=round(Math.min(350*2**i,s.target_profit-targetTotal)),w=shift(s.start_date,i*7);targetTotal=round(targetTotal+target);actualTotal=round(actualTotal+(byWeek.get(w)||0));targets.push({week:i+1,week_start:w,target,running_target:targetTotal,actual:byWeek.get(w)||0,running_actual:actualTotal,warning:i===5||i===6?'Christmas / New Year: plan delivery and sales ahead.':''});}
@@ -157,7 +159,7 @@ function fundedPlan(channelRows,manualRows,payments,subscriptionRows,businessRow
  // Saved receipt allocations are authoritative. Extra/unpaid weekly entries are
  // evaluated separately, with only their received cash available for this split.
  for(const c of channelRows){const saved=payments.filter(p=>p.channel_id===c.id&&monday(p.payment_date)===weekStart);budgets.set(c.id,round(saved.reduce((n,p)=>n+Number((p.allocations||{}).Growth||0),0)));}
- for(const c of channelRows.slice().sort((a,b)=>a.ladder_order-b.ladder_order)){const raw=manualRows.find(r=>r.channel_id===c.id&&r.week_start===weekStart);if(!raw)continue;const r=week(raw);if(r.cash_received<=0)continue;const b=c.business||(c.id==='steadyflow'?'sf':'sw'),state=result.channels.find(r=>r.channel.id===c.id),p={business:b,channel_id:c.id,payment_type:b==='sf'?'website':'job',payment_date:weekStart,amount:r.cash_received,materials:r.materials,labour:r.labour,lead_cost:r.spend};const ctx=splitContext(simulated,subscriptionRows,businessRows,potRows,p,s);
+ for(const c of channelRows.slice().sort((a,b)=>a.ladder_order-b.ladder_order)){const raw=manualRows.find(r=>r.channel_id===c.id&&r.week_start===weekStart);if(!raw)continue;const manual=Object.assign({},raw);if(raw.ticks&&raw.ticks.lead_topups)manual.spend=Math.max(0,Number(raw.spend)-payments.filter(p=>p.channel_id===c.id&&monday(p.payment_date)===weekStart).reduce((n,p)=>n+Number(p.lead_cost),0));const r=week(manual);if(r.cash_received<=0)continue;const b=c.business||(c.id==='steadyflow'?'sf':'sw'),state=result.channels.find(r=>r.channel.id===c.id),p={business:b,channel_id:c.id,payment_type:b==='sf'?'website':'job',payment_date:weekStart,amount:r.cash_received,materials:r.materials,labour:r.labour,lead_cost:r.spend};const ctx=splitContext(simulated,subscriptionRows,businessRows,potRows,p,s);
  // Apply the rule when no explicit extra-Growth target is set for manual rows.
  ctx.growth_needed=Math.max(ctx.growth_needed,Math.max(0,state.base_spend-state.spend_recovered));const split=splitPayment(p,ctx);budgets.set(c.id,round((budgets.get(c.id)||0)+split.allocations.Growth));simulated.push({...p,allocations:split.allocations,growth_extra:split.growth_extra});}
  const ownerFilled=paymentTotals(simulated,weekStart).paid_out>=250;let overflow=0;
@@ -177,6 +179,40 @@ function voidPreview(rows,payouts,id,reason,owner){
  return {receipt,reason:note,week_start:w,remaining_owner_pay:remaining,recorded_payouts:paid,already_voided:false};
 }
 
-const api={activePayments,voidPreview,automaticGrowthTarget,fundedPlan,businesses,subscriptionNames,pots,subscription,subscriptions,payment,splitPayment,paymentTotals,splitContext,effectiveWeeks,scoreboard,forecast,flowMilestones,defaults,channels,checklist,round,date,day,shift,monday,settings,week,multiple,light,cash,capacity,contractor,channelState,plan,progress};
+// Presentation-only summaries. Existing saved allocations and spending rules stay authoritative.
+const potColours={'Main':'#CBD5E1','Job Costs':'#94A3B8','Growth':'#2DD4BF','Overheads':'#A78BFA','Tax':'#FBBF24','Owner Pay':'#60A5FA','Buffer':'#4ADE80','VAT':'#F472B6'};
+function budget(rows,biz,period,weekStart,today){const selected=activePayments(rows).filter(p=>(biz==='combined'||p.business===biz)&&p.payment_date<=today&&(period==='all'||monday(p.payment_date)===weekStart));
+ return pots.filter(p=>p!=='Main').map(p=>({pot:p,colour:potColours[p],amount:round(selected.reduce((n,r)=>n+Number((r.allocations||{})[p]||0),0))}));
+}
+function friday(rows,payouts,biz,now){const today=day(now),w=monday(today),allPaid=round(payouts.filter(p=>monday(p.paid_date)===w&&p.paid_date<=today).reduce((n,p)=>n+Number(p.amount),0));
+ const parts=businesses.filter(b=>biz==='combined'||biz===b.business).map(b=>{const allocated=paymentTotals(rows.filter(p=>p.payment_date<=today),w,b.business).paid_out,paid=round(payouts.filter(p=>p.business===b.business&&monday(p.paid_date)===w&&p.paid_date<=today).reduce((n,p)=>n+Number(p.amount),0));return {business:b.business,allocated,paid,available:round(Math.max(0,Math.min(allocated-paid,250-allPaid)))};});
+ return {week_start:w,date:shift(w,4),parts,paid:round(parts.reduce((n,p)=>n+p.paid,0)),available:round(Math.min(Math.max(0,250-allPaid),parts.reduce((n,p)=>n+p.available,0)))};
+}
+function displayMoney(v){return new Intl.NumberFormat('en-GB',{style:'currency',currency:'GBP',minimumFractionDigits:Number(v)%1===0?0:2,maximumFractionDigits:2}).format(v);}
+function overview(channelRows,manualRows,payments,subscriptionsRows,businessRows,potRows,input,biz,now){const s=settings(input),today=day(now),w=monday(today),effective=effectiveWeeks(manualRows,payments.filter(p=>p.payment_date<=today)),channelIds=new Set(channelRows.filter(c=>biz==='combined'||c.business===biz||(c.business==null&&(c.id==='steadyflow'?'sf':'sw')===biz)).map(c=>c.id)),scoped=effective.filter(r=>channelIds.has(r.channel_id)&&r.week_start===w),combined=effective.filter(r=>r.week_start===w),score=scoreboard(effective,s,now),target=score.targets.find(t=>t.week_start===w),funded=fundedPlan(channelRows,manualRows,payments.filter(p=>p.payment_date<=today),subscriptionsRows,businessRows,potRows,s,w),visible=funded.channels.filter(c=>channelIds.has(c.channel.id));
+ const spend=round(scoped.reduce((n,r)=>n+r.spend,0)),profit=round(scoped.reduce((n,r)=>n+r.profit,0)),combinedProfit=round(combined.reduce((n,r)=>n+r.profit,0)),days=Math.min(7,Math.max(0,Math.floor((new Date(today)-new Date(w))/86400000)+1)),paceTarget=target?round(target.target*days/7):null,hasData=combined.some(r=>r.spend||r.revenue||r.cash_received),reached=forecast(effective,s,now).remaining===0;
+ const warning=funded.channels.some(c=>c.paused||c.row&&c.light==='red'),hold=funded.channels.some(c=>c.row&&c.light==='amber'),onPace=reached||target&&combinedProfit>=paceTarget;
+ const status=warning?'red':!hasData?'neutral':hold?'amber':onPace?'green':combinedProfit<0?'red':'amber';
+ const label=status==='neutral'?'Ready to start':status==='green'?'On track':status==='red'?'Needs attention':onPace?'Check lead spend':'Below pace';
+ const paused=visible.find(c=>c.paused),next=visible.find(c=>c.next_spend>0);let action;
+ if(funded.capacity.contractor_needed)action='Book a contractor before taking on more work.';
+ else if(paused)action='Keep '+paused.channel.name+' paused'+(next?'; put '+displayMoney(next.next_spend)+' into '+next.channel.name+' next week.':' and review its last two weeks.');
+ else if(next)action='Put '+displayMoney(next.next_spend)+' into '+next.channel.name+' next week.';
+ else if(!hasData)action='Add a payment or lead top-up to start this week.';
+ else if(visible.some(c=>c.row&&!c.owner_pay_filled))action='Fill this week’s Owner Pay before raising lead spend.';
+ else if(funded.unallocated>0)action='Choose where to use '+displayMoney(funded.unallocated)+' left in Growth.';
+ else action='Check payments and channel figures before adding more lead money.';
+ return {week_start:w,spend,profit,target:target?target.target:null,pace_target:paceTarget,combined_profit:combinedProfit,status,label,action,plan:funded,has_data:hasData};
+}
+function chartSeries(rows,input,biz,channelRows,now){const s=settings(input),today=day(now),w=monday(today),ids=new Set(channelRows.filter(c=>biz==='combined'||c.business===biz||(c.business==null&&(c.id==='steadyflow'?'sf':'sw')===biz)).map(c=>c.id)),valid=rows.filter(r=>ids.has(r.channel_id)&&r.week_start>=s.start_date&&r.week_start<=w).map(week),score=scoreboard([],s,now),weeksSince=Math.max(0,Math.floor((new Date(w)-new Date(s.start_date))/604800000)),last=Math.max(score.targets.length-1,weeksSince),first=Math.max(0,last-51);let running=round(valid.filter(r=>r.week_start<shift(s.start_date,first*7)).reduce((n,r)=>n+r.profit,0));const points=[];
+ for(let i=first;i<=last;i++){const start=shift(s.start_date,i*7),profit=round(valid.filter(r=>r.week_start===start).reduce((n,r)=>n+r.profit,0));if(start<=w)running=round(running+profit);const t=score.targets[i];points.push({week:i+1,week_start:start,label:'W'+(i+1),profit:start<=w?profit:null,cumulative:start<=w?running:null,target:t?t.running_target:s.target_profit,goal:s.target_profit});}
+ return {points,has_data:valid.some(r=>r.revenue||r.spend||r.cash_received),trimmed:first>0};
+}
+function leadTopup(rawRows,payments,channelId,amount,weekStart){const n=nonnegative(amount,'Top-up');if(n<=0)throw Error('Enter a top-up above £0.');const old=rawRows.find(r=>r.channel_id===channelId&&r.week_start===weekStart),r=week(Object.assign({channel_id:channelId,week_start:weekStart},old));
+ const receipts=round(activePayments(payments).filter(p=>p.channel_id===channelId&&monday(p.payment_date)===weekStart).reduce((v,p)=>v+Number(p.lead_cost),0));
+ r.spend=round((r.ticks.lead_topups?r.spend:r.spend+receipts)+n);r.ticks.lead_topups=true;return week(r);
+}
+
+const api={potColours,budget,friday,overview,chartSeries,leadTopup,activePayments,voidPreview,automaticGrowthTarget,fundedPlan,businesses,subscriptionNames,pots,subscription,subscriptions,payment,splitPayment,paymentTotals,splitContext,effectiveWeeks,scoreboard,forecast,flowMilestones,defaults,channels,checklist,round,date,day,shift,monday,settings,week,multiple,light,cash,capacity,contractor,channelState,plan,progress};
 if(typeof module!=='undefined'&&module.exports)module.exports=api;else root.GrowthCore=api;
 })(typeof globalThis!=='undefined'?globalThis:this);
