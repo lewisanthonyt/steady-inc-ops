@@ -5,7 +5,8 @@
    Data: Supabase table outbound_emails (owner_id = auth.uid()).
    ============================================================================ */
 
-const OB = {loaded:false, loading:false, error:null, rows:[], tab:'pending', biz:'all', open:null, owner:null, channel:'all', suppression:[], report:[], busy:false};
+const OB = {loaded:false, loading:false, error:null, rows:[], tab:'pending', biz:'all', open:null, owner:null, channel:'all', suppression:[], report:[], busy:false, companyDrafts:new Map(), companyResults:[]};
+const OB_STYLE_URL=typeof document!=='undefined'&&document.currentScript&&document.currentScript.src?new URL('outbox.css?v=2026-11-16-company',document.currentScript.src).href:'outbox.css?v=2026-11-16-company';
 const OB_SITE = 'https://steadyink-os.netlify.app';
 const OB_BIZ = {
   sw:{name:'SteadyWorks', color:'#E11D2A', defaultFrom:'steadyworksltd@gmail.com'},
@@ -78,7 +79,7 @@ async function obFreshSuppression(owner){ return new Set((await obAll('le_suppre
 async function obLoad(){
   if(OB.loading) return; OB.loading=true; OB.error=null;
   try{
-    const owner=obOwner(); if(OB.owner!==owner){ OB.rows=[]; OB.loaded=false; }
+    const owner=obOwner(); if(OB.owner!==owner){ OB.rows=[]; OB.loaded=false; OB.companyDrafts.clear(); OB.companyResults=[]; }
     const [rows,hashes]=await Promise.all([obAll('outbound_emails',owner),obFreshSuppression(owner)]);
     if(obOwner()!==owner) return;
     OB.owner=owner; OB.rows=rows.sort((a,b)=>String(a.created_at).localeCompare(String(b.created_at))||String(a.id).localeCompare(String(b.id))).map(r=>Object.assign({channel:'email',step:1,legal_type:'unknown'},r)); OB.suppression=hashes;
@@ -115,7 +116,7 @@ async function obCheck(r,completion){
     if(!data || data.status!=='approved' || data.updated_at!==r.updated_at) throw Error('This approval changed. Reload the desk first.');
   }
   const hashes=await obFreshSuppression(obOwner()); const blocked=await obSuppressed(r,hashes);
-  const errors=completion?OC.completionErrors(r,blocked):OC.approvalErrors(r,blocked);
+  const errors=obApprovalErrors(r,blocked,completion);
   if(errors.length) throw Error(errors.join(' '));
 }
 /* Editing an approved draft always removes its approval. No save/open race. */
@@ -177,28 +178,29 @@ function obImportFile(file){ if(!file) return; return obRun(async()=>{
 }); }
 /* ---------- view ---------- */
 function obArg(v){ return esc(JSON.stringify(v)); }
-function obVisible(){ return OB.rows.filter(r=>r.status===OB.tab&&(OB.biz==='all'||r.biz===OB.biz)&&(OB.channel==='all'||r.channel===OB.channel)); }
+function obVisible(){ return OB.rows.filter(r=>(OB.tab==='needs-company'?obCompanyReasons(r).length>0:r.status===OB.tab)&&(OB.biz==='all'||r.biz===OB.biz)&&(OB.channel==='all'||(r.channel||'email')===OB.channel)); }
 function obRefresh(){ if(currentRoute==='outbox'){const c=document.getElementById('content');if(c)c.innerHTML=view_outbox();} }
 function obField(r,key,label,options){
   const edit=r.status==='pending', value=r[key]==null?'':r[key];
-  return `<label class="ob-l" for="ob-${key}-${esc(r.id)}">${label}</label>`+(edit?(options?`<select class="input" id="ob-${key}-${esc(r.id)}">${options.map(v=>`<option ${String(value)===String(v)?'selected':''}>${esc(v)}</option>`).join('')}</select>`:`<${['body','note','why_prospect'].includes(key)?'textarea':'input'} class="input ob-body" id="ob-${key}-${esc(r.id)}" ${['body','note','why_prospect'].includes(key)?'rows="4"':'value="'+esc(value)+'"'}>${['body','note','why_prospect'].includes(key)?esc(value):''}${['body','note','why_prospect'].includes(key)?'</textarea>':''}`):`<div class="ob-pre">${esc(value)||'—'}</div>`);
+  return `<label class="ob-l" for="ob-${key}-${esc(r.id)}">${label}</label>`+(edit?(options?`<select class="input" id="ob-${key}-${esc(r.id)}" ${['legal_type','channel'].includes(key)?'onchange="obLegalPreview('+obArg(r.id)+')"':''}>${options.map(v=>`<option ${String(value)===String(v)?'selected':''}>${esc(v)}</option>`).join('')}</select>`:`<${['body','note','why_prospect'].includes(key)?'textarea':'input'} class="input ob-body" id="ob-${key}-${esc(r.id)}" ${['body','note','why_prospect'].includes(key)?'rows="4"':'value="'+esc(value)+'"'}>${['body','note','why_prospect'].includes(key)?esc(value):''}${['body','note','why_prospect'].includes(key)?'</textarea>':''}`):`<div class="ob-pre">${esc(value)||'—'}</div>`);
 }
 function obCharacterCount(id){const r=obRow(id),el=document.getElementById('ob-body-'+id),kind=document.getElementById('ob-message_kind-'+id),out=document.getElementById('ob-count-'+id);if(out)out.textContent=Array.from(el?el.value:r.body||'').length+' characters'+(r.channel==='linkedin'?' · '+((kind?kind.value:r.message_kind)==='connection'?'connection note limit 300':'message guide about 1,000'):'');}
 function obCard(r,i){
   const B=OB_BIZ[r.biz]||OB_BIZ.sf, a=obArg(r.id), pending=r.status==='pending', ready=r.status==='approved';
-  const errors=OC.approvalErrors(r,r._blocked);
-  return `<div class="card ob-card" style="--obc:${B.color}"><div class="ob-top"><span class="ob-n">${i+1}</span><div class="ob-who"><b>${esc(r.to_name||r.organisation||r.to_email)}</b><small>${esc(B.name)} · ${esc(r.channel)} · step ${r.step||1} · ${esc(r.batch_week||r.batch||'')}</small></div></div>
+  const errors=obApprovalErrors(r,r._blocked,false);
+  return `<div id="ob-item-${esc(r.id)}" class="card ob-card" style="--obc:${B.color}"><div class="ob-top"><span class="ob-n">${i+1}</span><div class="ob-who"><b>${esc(r.to_name||r.organisation||r.to_email)}</b><small>${esc(B.name)} · ${esc(r.channel)} · step ${r.step||1} · ${esc(r.batch_week||r.batch||'')}</small></div></div>
+    <p id="ob-pecr-${esc(r.id)}" class="ob-company-pecr" ${obEmailTypeBlocked(r)?'':'hidden'}>${obEmailTypeBlocked(r)?'Do not email (PECR)':''}</p>
     ${errors.length?`<div class="ob-note">${errors.map(esc).join('<br>')}</div>`:''}
     <div class="ob-setup-grid">${[['biz','Business',['sf','sw']],['channel','Channel',OC.channels],['to_name','Prospect name'],['organisation','Organisation'],['legal_type','Legal type',OC.legalTypes],['contact_name','Role or contact name'],['to_email','Email'],['phone','Phone'],['profile_url','Profile URL'],['step','Step',[1,2,3]],['batch_week','Batch week (Monday)'],['source_url','Source URL']].map(f=>'<div>'+obField(r,...f)+'</div>').join('')}</div>
     ${obField(r,'why_prospect','Why this prospect')}${r.channel==='email'?obField(r,'subject','Draft subject'):''}
     ${r.channel==='linkedin'?obField(r,'message_kind','LinkedIn format',['connection','message']):''}
     ${obField(r,'body',r.channel==='call'?'Call script':'Draft body')}
     ${['linkedin','instagram'].includes(r.channel)?`<div id="ob-count-${esc(r.id)}" class="small muted">${Array.from(r.body||'').length} characters${r.channel==='linkedin'?' · connection note limit 300; message guide about 1,000':''}</div>`:''}
-    ${obField(r,'note','Notes')}${r.channel==='email'?obField(r,'override_note','Manual legal-type override reason (optional)'):''}
+    ${obField(r,'note','Notes')}${r.channel==='email'?obField(r,'override_note','Override note (does not permit PECR-blocked email)'):''}
     ${r.due_date?`<p>Follow-up due ${esc(r.due_date)}</p>`:''}
     ${r.outcome?`<p>Outcome: ${esc(r.outcome)}</p>`:''}
     <div class="ob-act">
-      ${pending?`<button class="btn btn-gold" onclick="obApprove(${a})">Approve</button><button class="btn btn-ghost" onclick="obSaveEdits(${a})">Save edits</button><button class="btn btn-ghost" onclick="obReject(${a})">Reject</button>`:''}
+      ${pending?`<button id="ob-approve-${esc(r.id)}" class="btn btn-gold" ${obEmailTypeBlocked(r)?'disabled':''} onclick="obApprove(${a})">Approve</button><button class="btn btn-ghost" onclick="obSaveEdits(${a})">Save edits</button><button class="btn btn-ghost" onclick="obReject(${a})">Reject</button>`:''}
       ${ready?`<button class="btn btn-ghost" onclick="obBack(${a})">Edit / back to approval</button>`:''}
       ${ready&&r.channel==='email'?`<button class="btn btn-gold" onclick="obOpenGmail(${a})">Send in Gmail</button><button class="btn btn-ghost" onclick="obMarkSent(${a})">Mark sent</button>`:''}
       ${ready&&['linkedin','instagram'].includes(r.channel)?`<button class="btn btn-gold" onclick="obCopy(${a})">Copy</button><a class="btn btn-ghost" href="${esc(OC.profile(r.profile_url,r.channel))}" target="_blank" rel="noopener noreferrer" onclick="event.preventDefault();obOpenProfile(${a})">Open profile</a><button class="btn btn-ghost" onclick="obMarkSent(${a})">Mark sent</button>`:''}
@@ -219,30 +221,50 @@ function view_outbox(){
   const list=obVisible();
   const settings=`<details class="card ob-setup"><summary>Outreach settings</summary><div class="ob-setup-grid">${['sf','sw'].map(b=>`<div><h3>${OB_BIZ[b].name}</h3><label>Gmail account<input class="input" value="${esc(obFrom(b))}" onchange="obSetFrom('${b}',this.value)"></label>${OC.channels.map(c=>`<label class="ob-l">Weekly ${c} target<input class="input" type="number" min="0" value="${OC.targets(DB.settings.outreachTargets,b)[c]}" onchange="obTargets('${b}','${c}',this.value)"></label>`).join('')}<button class="btn btn-ghost" onclick="obCopySignature('${b}')">Copy ${OB_BIZ[b].name} signature</button></div>`).join('')}</div></details>`;
   setTimeout(()=>{document.querySelectorAll('.ob-card textarea').forEach(el=>{if(el.id.startsWith('ob-body-'))el.oninput=()=>obCharacterCount(el.id.slice(8));});},0);
-  return `${obDashboard()}${settings}<div class="ob-bar"><button class="btn btn-ghost" onclick="obLoad()">Reload</button><label class="btn btn-ghost">Import batch JSON<input type="file" accept="application/json,.json" onchange="obImportFile(this.files[0]);this.value=''" style="max-width:210px"></label><button class="btn btn-gold" onclick="obOpenNext()">Open next approved email</button></div>
-  <p class="muted small">Review each draft before approval. Gmail and social profiles open for you to send manually. Calls require TPS/CTPS screening. Nothing is sent automatically.</p>
+  const overview=OB.tab==='needs-company'?`<details class="card ob-company-overview"><summary>Weekly totals and settings</summary>${obDashboard()}${settings}</details>`:obDashboard()+settings;
+  return `${overview}<div class="ob-bar"><button class="btn btn-ghost" onclick="obLoad()">Reload</button>${OB.tab==='needs-company'?'':`<label class="btn btn-ghost">Import batch JSON<input type="file" accept="application/json,.json" onchange="obImportFile(this.files[0]);this.value=''" style="max-width:210px"></label><button class="btn btn-gold" onclick="obOpenNext()">Open next approved email</button>`}</div>
+  ${OB.tab==='needs-company'?'':'<p class="muted small">Review each draft before approval. Gmail and social profiles open for you to send manually. Calls require TPS/CTPS screening. Nothing is sent automatically.</p>'}
   ${OB.report.length?`<details class="card" open><summary>Import skipped ${OB.report.length} items</summary>${OB.report.map(r=>`<div>${esc(r.id||'Item '+r.index)}: ${esc(r.reason)}</div>`).join('')}</details>`:''}
-  <div class="ob-bar"><div class="ob-tabs">${OB_TABS.map(([k,l])=>`<button class="${OB.tab===k?'on':''}" onclick="OB.tab='${k}';obRefresh()">${l} (${OB.rows.filter(r=>r.status===k).length})</button>`).join('')}</div><select class="input ob-bizsel" onchange="OB.biz=this.value;obRefresh()">${[['all','Both businesses'],['sf','Steady Flow'],['sw','SteadyWorks']].map(([v,l])=>`<option value="${v}" ${OB.biz===v?'selected':''}>${l}</option>`).join('')}</select><select class="input ob-bizsel" onchange="OB.channel=this.value;obRefresh()">${['all',...OC.channels].map(c=>`<option ${OB.channel===c?'selected':''}>${c}</option>`).join('')}</select></div>
-  ${list.length?list.map(obCard).join(''):'<div class="card empty-state">Nothing in this queue.</div>'}`;
+  <div class="ob-bar"><div class="ob-tabs">${[...OB_TABS,['needs-company','Needs company type']].map(([k,l])=>`<button class="${OB.tab===k?'on':''}" onclick="obSetTab('${k}')">${l} (${OB.rows.filter(r=>k==='needs-company'?obCompanyReasons(r).length>0:r.status===k).length})</button>`).join('')}</div><select class="input ob-bizsel" onchange="OB.biz=this.value;obRefresh()">${[['all','Both businesses'],['sf','Steady Flow'],['sw','SteadyWorks']].map(([v,l])=>`<option value="${v}" ${OB.biz===v?'selected':''}>${l}</option>`).join('')}</select><select class="input ob-bizsel" ${OB.tab==='needs-company'?'disabled':''} onchange="OB.channel=this.value;obRefresh()">${['all',...OC.channels].map(c=>`<option ${OB.channel===c?'selected':''}>${c}</option>`).join('')}</select></div>
+  ${OB.tab==='needs-company'?obCompanyList(list):list.length?list.map(obCard).join(''):'<div class="card empty-state">Nothing in this queue.</div>'}`;
 }
+/* Pending email review. Suggestions are local drafts, never inferred facts. */
+const OB_CORPORATE_TYPES=['ltd','llp','plc','public body'];
+const OB_TYPE_LABELS={ltd:'Ltd',llp:'LLP',plc:'PLC','public body':'Public body','sole trader':'Sole trader',partnership:'Partnership',unknown:'Unknown'};
+function obEmailTypeBlocked(r){return (r.channel||'email')==='email'&&!OB_CORPORATE_TYPES.includes(r.legal_type);}
+function obApprovalErrors(r,blocked,completion){const errors=completion?OC.completionErrors(r,blocked):OC.approvalErrors(r,blocked);if(obEmailTypeBlocked(r))return errors.filter(e=>!e.startsWith('Email blocked:')).concat('Do not email (PECR): confirm a company or public body type first.');return errors;}
+function obCompanyReasons(r){if(r.status!=='pending'||(r.channel||'email')!=='email')return [];const errors=OC.approvalErrors(r,false),reasons=[];
+ if(!OB_CORPORATE_TYPES.includes(r.legal_type))reasons.push(['sole trader','partnership'].includes(r.legal_type)?'Company type: '+OB_TYPE_LABELS[r.legal_type]:'Missing company type');
+ if(errors.some(e=>e.startsWith('Email body must identify ')))reasons.push('Business name not in body ('+(OB_BIZ[r.biz]||OB_BIZ.sf).name+')');
+ if(errors.some(e=>e==='Email body needs an opt-out line.'))reasons.push('No opt-out line');return reasons;
+}
+function obCompanySuggestion(name){const match=String(name||'').trim().match(/(?:^|\s)(ltd|limited|llp|plc)\.?$/i);return match?({limited:'ltd',ltd:'ltd',llp:'llp',plc:'plc'})[match[1].toLowerCase()]:'';}
+function obEmailDomain(email){const match=String(email||'').trim().match(/^[^@\s]+@([^@\s]+\.[^@\s]+)$/);return match?match[1].toLowerCase():'Email needs checking';}
+function obCompanyCandidate(r){const draft=OB.companyDrafts.get(r.id);return draft&&draft.owner_id===CURRENT_USER_ID?Object.assign({},r,{legal_type:draft.legal_type,override_note:draft.override_note}):r;}
+function obCompanyDirty(r,draft){return draft&&(String(r.legal_type||'unknown')!==draft.legal_type||String(r.override_note||'')!==draft.override_note);}
+function obCompanyChanges(){if(OB.owner!==CURRENT_USER_ID)return [];return [...OB.companyDrafts].filter(([id,d])=>d.owner_id===CURRENT_USER_ID&&(!obRow(id)||obCompanyDirty(obRow(id),d)));}
+function obCompanyEdit(id,key,value){try{const owner=obOwner(),r=obRow(id);if(OB.busy||!r||r.status!=='pending'||(r.channel||'email')!=='email')return;if(!['legal_type','override_note'].includes(key))return;if(key==='legal_type'&&!OC.legalTypes.includes(value))throw Error('Choose a listed company type.');
+ const draft=OB.companyDrafts.get(id)||{owner_id:owner,updated_at:r.updated_at,legal_type:r.legal_type||'unknown',override_note:String(r.override_note||''),name:r.organisation||r.to_name||id};draft[key]=String(value);OB.companyDrafts.set(id,draft);const field=document.getElementById('ob-company-'+key+'-'+id);if(field)field.value=draft[key];obCompanyRowState(id);obCompanySaveButton();}catch(e){toast(e.message,'⚠️');}}
+function obCompanyRowState(id){const r=obRow(id);if(!r)return;const candidate=obCompanyCandidate(r),reasons=obCompanyReasons(candidate),reasonEl=document.getElementById('ob-company-reasons-'+id),pecr=document.getElementById('ob-company-pecr-'+id),discard=document.getElementById('ob-company-discard-'+id),dirty=document.getElementById('ob-company-dirty-'+id);if(dirty)dirty.textContent=obCompanyDirty(r,OB.companyDrafts.get(id))?'Unsaved':'';if(discard)discard.hidden=!obCompanyDirty(r,OB.companyDrafts.get(id));if(reasonEl)reasonEl.textContent=reasons.join(' · ')||'These three checks pass. Review the full draft before approval.';if(pecr){pecr.textContent=obEmailTypeBlocked(candidate)?'Do not email (PECR)':'';pecr.hidden=!obEmailTypeBlocked(candidate);}}
+function obCompanySaveButton(){const button=document.getElementById('ob-company-save');if(!button)return;const count=obCompanyChanges().length;button.textContent=count?'Save all ('+count+')':'Save all';button.disabled=OB.busy||count===0;}
+function obSetTab(tab){if(![...OB_TABS.map(r=>r[0]),'needs-company'].includes(tab))return;OB.tab=tab;if(tab==='needs-company')OB.channel='email';obRefresh();}
+function obCompanyRow(r){const id=esc(r.id),a=obArg(r.id),draft=obCompanyCandidate(r),name=r.organisation||r.to_name||'Unnamed business',suggestion=obCompanySuggestion(name),reasons=obCompanyReasons(draft);return `<article class="ob-company-row" aria-label="${esc(name)}"><div class="ob-company-name"><strong>${esc(name)}</strong><span>${esc(obEmailDomain(r.to_email))}</span><small>${esc((OB_BIZ[r.biz]||OB_BIZ.sf).name)} <span id="ob-company-dirty-${id}" class="ob-company-unsaved">${obCompanyDirty(r,OB.companyDrafts.get(r.id))?'Unsaved':''}</span></small><p id="ob-company-reasons-${id}" class="ob-company-reasons">${esc(reasons.join(' · ')||'These three checks pass. Review the full draft before approval.')}</p>${r._blocked?'<span class="ob-company-pecr">On the do-not-contact list</span>':''}<span id="ob-company-pecr-${id}" class="ob-company-pecr" ${obEmailTypeBlocked(draft)?'':'hidden'}>${obEmailTypeBlocked(draft)?'Do not email (PECR)':''}</span></div><div><label for="ob-company-legal_type-${id}">Company type</label><select class="input" id="ob-company-legal_type-${id}" aria-label="Company type for ${esc(name)}" onchange="obCompanyEdit(${a},'legal_type',this.value)" ${OB.busy?'disabled':''}>${OC.legalTypes.map(t=>`<option value="${esc(t)}" ${(OC.legalTypes.includes(draft.legal_type)?draft.legal_type:'unknown')===t?'selected':''}>${OB_TYPE_LABELS[t]}</option>`).join('')}</select>${suggestion&&suggestion!==r.legal_type?`<div class="ob-company-suggestion">Name suggests ${OB_TYPE_LABELS[suggestion]}. Check before saving.<button type="button" class="btn btn-ghost" onclick="obCompanyEdit(${a},'legal_type','${suggestion}')" ${OB.busy?'disabled':''}>Use ${OB_TYPE_LABELS[suggestion]} suggestion</button></div>`:''}</div><div><label for="ob-company-override_note-${id}">Override note (optional)</label><input class="input" id="ob-company-override_note-${id}" value="${esc(draft.override_note||'')}" aria-label="Override note for ${esc(name)}" oninput="obCompanyEdit(${a},'override_note',this.value)" ${OB.busy?'disabled':''}><small>A note does not permit PECR-blocked email.</small><button type="button" class="btn btn-ghost ob-company-open" onclick="obCompanyOpenDraft(${a})" ${OB.busy?'disabled':''}>Open draft</button><button type="button" id="ob-company-discard-${id}" class="btn btn-ghost ob-company-open" onclick="obCompanyDiscard(${a})" ${obCompanyDirty(r,OB.companyDrafts.get(r.id))?'':'hidden'} ${OB.busy?'disabled':''}>Discard edits</button></div></article>`;}
+function obCompanyDiscard(id){return obRun(async()=>{const owner=obOwner();if(OB.owner!==owner)throw Error('Reload the desk first.');const {data,error}=await sb.from('outbound_emails').select('*').eq('owner_id',owner).eq('id',id).maybeSingle();if(error)throw error;if(obOwner()!==owner||OB.owner!==owner)return;const row=obRow(id);if(data&&row)Object.assign(row,data);else if(!data)OB.rows=OB.rows.filter(r=>r.id!==id);OB.companyDrafts.delete(id);OB.companyResults=OB.companyResults.filter(r=>r.id!==id);toast('Latest row loaded; local edits discarded');});}
+function obCompanyOpenDraft(id){if(OB.busy)return;OB.tab='pending';OB.channel='email';obRefresh();setTimeout(()=>{const el=document.getElementById('ob-item-'+id);if(el&&typeof el.scrollIntoView==='function')el.scrollIntoView({block:'start'});},0);}
+function obCompanyList(rows){const count=obCompanyChanges().length;return `<section class="card ob-company-list"><div class="ob-company-toolbar"><div><h2>Needs company type</h2><p>${rows.length} pending emails need a type, business name or opt-out fix.</p><small>Suggestions need checking. Save all includes edits in other filters; nothing is approved.</small></div><button id="ob-company-save" class="btn btn-gold" onclick="obCompanySaveAll()" ${OB.busy||!count?'disabled':''}>${OB.busy?'Saving…':count?'Save all ('+count+')':'Save all'}</button></div><div class="ob-company-results" role="status" aria-live="polite">${OB.companyResults.length?`<p>${OB.companyResults.filter(r=>r.ok).length} saved; ${OB.companyResults.filter(r=>!r.ok).length} need attention. Statuses unchanged.</p>`+OB.companyResults.filter(r=>!r.ok).map(r=>`<p class="ob-company-error">${esc(r.name)}: ${esc(r.error)}</p>`).join(''):''}</div>${rows.length?rows.map(obCompanyRow).join(''):'<p>No pending emails fail these three checks.</p>'}</section>`;}
+async function obCompanySaveRow(owner,id,draft){if(obOwner()!==owner||OB.owner!==owner)throw Error('Account changed. Reload before saving.');if(!OC.legalTypes.includes(draft.legal_type))throw Error('Choose a listed company type.');const r=obRow(id);if(!r||r.status!=='pending'||(r.channel||'email')!=='email')throw Error('No longer a pending email. Reload before editing.');
+ const patch={legal_type:draft.legal_type,override_note:draft.override_note.trim(),updated_at:new Date(Math.max(new Date().getTime(),(Date.parse(draft.updated_at)||0)+1)).toISOString()};let query=sb.from('outbound_emails').update(patch).eq('owner_id',owner).eq('id',id).eq('status','pending').eq('channel','email');query=draft.updated_at==null?query.is('updated_at',null):query.eq('updated_at',draft.updated_at);
+ const {data,error}=await query.select('*').maybeSingle();if(error||!data)throw error||Error('Changed in another tab. Discard edits to load the latest row.');if(obOwner()!==owner||OB.owner!==owner)throw Error('Account changed. Reload before saving.');Object.assign(r,data);OB.companyDrafts.delete(id);return true;
+}
+function obCompanySaveAll(){return obRun(async()=>{const owner=obOwner();if(OB.owner!==owner||!OB.loaded)throw Error('Reload the desk first.');const changes=obCompanyChanges().map(([id,draft])=>({id,draft:Object.assign({},draft),name:draft.name||(obRow(id)||{}).organisation||(obRow(id)||{}).to_name||'Unnamed business'}));if(!changes.length){toast('No company changes to save');return;}OB.companyResults=[];
+ // One click; bounded PATCH requests, never UPSERT or a status write. Partial
+ // failures keep their draft values and versions so retries cannot erase races.
+ let next=0;const results=new Array(changes.length);async function worker(){while(next<changes.length){const index=next++,item=changes[index];try{await obCompanySaveRow(owner,item.id,item.draft);results[index]={id:item.id,name:item.name,ok:true};}catch(e){results[index]={id:item.id,name:item.name,ok:false,error:e.message||'Not saved'};}}}
+ if(typeof document.querySelectorAll==='function')document.querySelectorAll('.ob-company-list input,.ob-company-list select,.ob-company-list button').forEach(el=>{el.disabled=true;});const button=document.getElementById('ob-company-save');if(button){button.disabled=true;button.textContent='Saving…';}await Promise.all(Array.from({length:Math.min(4,changes.length)},worker));if(CURRENT_USER_ID!==owner||OB.owner!==owner)return;OB.companyResults=results;const saved=results.filter(r=>r.ok).length;toast(saved+' saved; '+(results.length-saved)+' need attention. Statuses unchanged.');});}
+function obLegalPreview(id){const r=obRow(id);if(!r)return;const candidate=Object.assign({},r,obEdits(id)),button=document.getElementById('ob-approve-'+id),label=document.getElementById('ob-pecr-'+id);if(button)button.disabled=obEmailTypeBlocked(candidate);if(label){label.textContent=obEmailTypeBlocked(candidate)?'Do not email (PECR)':'';label.hidden=!obEmailTypeBlocked(candidate);}}
+
 function obInjectStyle(){
   if(document.getElementById('ob-style')) return;
-  const s = document.createElement('style'); s.id = 'ob-style';
-  s.textContent = `
-  .ob-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;} .ob-bizsel{width:auto;min-width:160px;}
-  .ob-tabs{display:flex;flex-wrap:wrap;gap:6px;} .ob-tabs button{background:var(--input-bg);border:1px solid var(--border);color:var(--text-soft);border-radius:9px;padding:7px 12px;font-weight:700;font-size:12.5px;}
-  .ob-tabs button.on{background:var(--gold);color:#fff;border-color:transparent;} .ob-tabs button span{opacity:.8;margin-left:4px;}
-  .ob-card{border-left:4px solid var(--obc);margin-bottom:14px;}
-  .ob-top{display:flex;gap:10px;align-items:center;margin-bottom:8px;} .ob-who{flex:1;min-width:0;} .ob-who small{display:block;color:var(--text-soft);font-size:12px;}
-  .ob-n{width:28px;height:28px;border-radius:50%;background:var(--obc);color:#fff;display:grid;place-items:center;font-weight:800;flex:none;}
-  .ob-biz{font-size:11px;font-weight:800;color:var(--obc);border:1px solid var(--obc);border-radius:6px;padding:2px 7px;white-space:nowrap;}
-  .ob-l{display:block;font-size:11px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;color:var(--text-soft);margin:10px 0 4px;}
-  .ob-body{width:100%;font-family:inherit;line-height:1.5;resize:vertical;} .ob-pre{white-space:pre-wrap;font-family:inherit;margin:0;}
-  .ob-note{font-size:12.5px;background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);border-radius:8px;padding:6px 10px;}
-  .ob-sig-box{background:#fff;border-radius:10px;padding:12px;overflow-x:auto;max-width:100%;}
-  .ob-act{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:12px;}
-  .ob-setup summary{cursor:pointer;font-weight:800;} .ob-setup{margin-bottom:14px;}
-  .ob-setup-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-top:12px;} .ob-steps{margin:14px 0 0;padding-left:18px;line-height:1.6;}
-  @media (max-width:800px){ .ob-setup-grid{grid-template-columns:1fr;} }`;
-  document.head.appendChild(s);
+  const link=document.createElement('link');link.id='ob-style';link.rel='stylesheet';link.href=OB_STYLE_URL;document.head.appendChild(link);
 }
+if(sb.auth&&typeof sb.auth.onAuthStateChange==='function')sb.auth.onAuthStateChange((event,session)=>{if(!session||OB.owner&&session.user.id!==OB.owner){OB.companyDrafts.clear();OB.companyResults=[];}});
