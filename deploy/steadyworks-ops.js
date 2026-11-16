@@ -623,7 +623,8 @@ const ROUTES = [
   {id:'dashboard', label:'Dashboard', section:'overview'},
   {id:'claudius', label:'Claudius', section:'overview'},
   {id:'approvals', label:'Approvals', section:'overview'},
-  {id:'outbox', label:'Outbox', section:'overview'},
+  {id:'outbox', label:'Outreach', section:'overview'},
+  {id:'growth', label:'Growth', section:'overview'},
   {id:'targets', label:'Targets', section:'overview'},
   {id:'tasks', label:'Tasks', section:'overview'},
   {id:'do-better', label:'Do Better', section:'overview'},
@@ -675,12 +676,12 @@ const SECTION_LABELS = {
 };
 const SECTION_ACCENT = { overview:'var(--gold-light)', steadyworks:'var(--gold-light)', steadyflow:'var(--teal)', collaborations:'#A78BFA', accounting:'#22C55E', system:'#999' };
 const ICONS = {
-  dashboard:'🏠', claudius:'🤖', approvals:'🎬', outbox:'📤', targets:'🏁', 'do-better':'💪', 'sw-finance':'💳', services:'🔁', 'price-book':'📒', tasks:'✅', goals:'🎯', budget:'🧮', 'sw-dashboard':'📊', 'sf-dashboard':'📊', 'sf-acquisition':'🎯', 'sf-leads':'🧭', 'sw-desk':'🏢', 'sf-clients':'💻', 'sf-quotes':'📝', 'sf-invoices':'🧾', 'sf-expenses':'💷', 'sf-compliance':'🛡️', leads:'📥', followups:'📞', jobs:'🛠️', 'job-sources':'📍', quotes:'📝', invoices:'🧾', calendar:'📅',
+  growth:'↗', dashboard:'🏠', claudius:'🤖', approvals:'🎬', outbox:'📤', targets:'🏁', 'do-better':'💪', 'sw-finance':'💳', services:'🔁', 'price-book':'📒', tasks:'✅', goals:'🎯', budget:'🧮', 'sw-dashboard':'📊', 'sf-dashboard':'📊', 'sf-acquisition':'🎯', 'sf-leads':'🧭', 'sw-desk':'🏢', 'sf-clients':'💻', 'sf-quotes':'📝', 'sf-invoices':'🧾', 'sf-expenses':'💷', 'sf-compliance':'🛡️', leads:'📥', followups:'📞', jobs:'🛠️', 'job-sources':'📍', quotes:'📝', invoices:'🧾', calendar:'📅',
   customers:'👥', team:'👷', timesheets:'🕒', subcontractors:'🦺', expenses:'💷', compliance:'🛡️', reports:'📈', activity:'🕐', bugs:'🐞', settings:'⚙️', pipeline:'📝',
   accounting:'💰', forecast:'📈', 'balance-sheet':'⚖️', 'assets-liabilities':'🏦'
 };
 
-let currentRoute = 'dashboard';
+let currentRoute = new URLSearchParams(window.location.search).get('view')==='growth'||window.location.pathname.endsWith('/growth.html') ? 'growth' : 'dashboard';
 let currentParam = null;
 
 let _navFadeTimer = null;
@@ -723,7 +724,7 @@ function toggleNavSection(section){
 }
 // Pages used day to day. Everything else is one click away under "Show all pages",
 // and any hidden page that needs attention (has a badge) still shows.
-const NAV_CORE = new Set(['dashboard','claudius','approvals','outbox','targets','tasks','do-better','calendar','sw-dashboard','leads','quotes','followups','jobs','pipeline','invoices','customers','services','expenses',
+const NAV_CORE = new Set(['dashboard','claudius','approvals','outbox','growth','targets','tasks','do-better','calendar','sw-dashboard','leads','quotes','followups','jobs','pipeline','invoices','customers','services','expenses',
   'sf-dashboard','sf-acquisition','sf-clients','sf-quotes','sf-invoices','sf-expenses','accounting','sw-finance','settings']);
 let NAV_SIMPLE = true;
 try{ NAV_SIMPLE = localStorage.getItem('steadyworks_nav_simple')!=='0'; }catch(e){}
@@ -828,7 +829,8 @@ function jobMissingDocs(j){
 const PAGE_META = {
   dashboard:['Dashboard','Steady Inc — combined performance across every business'],
   targets:['Targets','Target → actions → cash → reinvestment → capacity → next level'],
-  outbox:['Outbox','Emails drafted for you: approve or edit, then send from the right business account'],
+  outbox:['Outreach','Review and record email, calls, LinkedIn and Instagram for each business'],
+  growth:['Growth','Double Money: profit, cash, capacity and the next week’s spend'],
   claudius:['Claudius','Today, decisions and the scoreboard — shared with your AI manager'],
   approvals:['Approvals','Videos and reels for both brands. Nothing goes out until you approve it'],
   'do-better':['Do Better','Do what you say, or don\'t say it.'],
@@ -2607,7 +2609,7 @@ function dashPriorities(){
   const docs = safe(()=>DB.jobs.filter(j=>!['completed','invoiced','cancelled'].includes(j.status) && jobMissingDocs(j)).length);
   if(docs) P.push({lvl:1, icon:'🛠️', n:docs, label:'Jobs missing paperwork', sub:'RAMS, certs or photos', route:'jobs'});
   const obN = safe(()=>typeof obPendingCount==='function' ? obPendingCount() : 0);
-  if(obN) P.push({lvl:2, icon:'📤', n:obN, label:'Emails to approve', sub:'Drafted outreach waiting for you', route:'outbox'});
+  if(obN) P.push({lvl:2, icon:'📤', n:obN, label:'Outreach to approve', sub:'Drafted outreach waiting for you', route:'outbox'});
   const lvlUp = new Set((DB.tgCycles||[]).filter(c=>c.achieved && !c.ack).map(c=>c.biz)).size;
   if(lvlUp) P.push({lvl:0, icon:'🏆', n:lvlUp, label:'Level complete', sub:'See what changes next', route:'targets'});
   return P.sort((a,b)=>b.lvl-a.lvl || b.n-a.n);

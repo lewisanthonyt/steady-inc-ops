@@ -5,16 +5,18 @@
    Data: Supabase table outbound_emails (owner_id = auth.uid()).
    ============================================================================ */
 
-const OB = {loaded:false, loading:false, error:null, rows:[], tab:'pending', biz:'all', open:null};
+const OB = {loaded:false, loading:false, error:null, rows:[], tab:'pending', biz:'all', open:null, owner:null, channel:'all', suppression:[], report:[], busy:false};
 const OB_SITE = 'https://steadyink-os.netlify.app';
 const OB_BIZ = {
   sw:{name:'SteadyWorks', color:'#E11D2A', defaultFrom:'steadyworksltd@gmail.com'},
   sf:{name:'Steady Flow', color:'#00ACB5', defaultFrom:'steadyflow.ma@gmail.com'}
 };
-const OB_TABS = [['pending','To approve'],['approved','Ready to send'],['sent','Sent'],['rejected','Rejected']];
+const OC = OutreachCore;
+const OB_TABS = [['pending','To approve'],['approved','Ready to send'],['sent','Sent'],['done','Done'],['rejected','Rejected']];
 
 function obFrom(biz){ const s = (DB.settings && DB.settings.outboxSenders) || {}; return s[biz] || OB_BIZ[biz].defaultFrom; }
 function obSetFrom(biz, v){
+  obOwner();
   v = String(v||'').trim();
   if(v && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v)){ toast('That doesn\'t look like an email address','⚠️'); return; }
   DB.settings.outboxSenders = Object.assign({}, DB.settings.outboxSenders||{}, {[biz]: v || OB_BIZ[biz].defaultFrom});
@@ -62,115 +64,166 @@ async function obCopySignature(biz){
   }
 }
 
-/* ---------- data ---------- */
+/* ---------- owner-scoped data and suppression ---------- */
+function obOwner(){ if(!CURRENT_USER_ID || CURRENT_PROFILE.role!=='owner') throw Error('Owner access is required.'); return CURRENT_USER_ID; }
+async function obAll(table,owner){
+  const rows=[]; for(let from=0;;from+=1000){
+    const {data,error}=await sb.from(table).select('*').eq('owner_id',owner).order(table==='le_suppression'?'key_hash':'id').range(from,from+999);
+    if(error) throw error; rows.push(...(data||[])); if(!data || data.length<1000) return rows;
+  }
+}
+async function obHash(k){ const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(k)); return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join(''); }
+async function obSuppressed(r,hashes){ return (await Promise.all(OC.keys(r).map(obHash))).some(k=>hashes.has(k)); }
+async function obFreshSuppression(owner){ return new Set((await obAll('le_suppression',owner)).map(r=>r.key_hash)); }
 async function obLoad(){
-  if(OB.loading) return; OB.loading = true; OB.error = null;
+  if(OB.loading) return; OB.loading=true; OB.error=null;
   try{
-    if(!CURRENT_USER_ID) throw new Error('Sign in to see the Outbox.');
-    const {data, error} = await sb.from('outbound_emails').select('*').eq('owner_id', CURRENT_USER_ID).order('created_at', {ascending:true}).limit(2000);
-    if(error) throw error;
-    OB.rows = data || []; OB.loaded = true;
-  }catch(e){ OB.error = e.message || String(e); }
-  OB.loading = false;
-  if(typeof renderNav==='function') renderNav();
-  if(['outbox','dashboard'].includes(currentRoute)) renderPage();
+    const owner=obOwner(); if(OB.owner!==owner){ OB.rows=[]; OB.loaded=false; }
+    const [rows,hashes]=await Promise.all([obAll('outbound_emails',owner),obFreshSuppression(owner)]);
+    if(obOwner()!==owner) return;
+    OB.owner=owner; OB.rows=rows.sort((a,b)=>String(a.created_at).localeCompare(String(b.created_at))||String(a.id).localeCompare(String(b.id))).map(r=>Object.assign({channel:'email',step:1,legal_type:'unknown'},r)); OB.suppression=hashes;
+    await Promise.all(OB.rows.map(async r=>{r._blocked=await obSuppressed(r,hashes);})); OB.loaded=true;
+  }catch(e){ OB.error=e.message||String(e); OB.loaded=false; }
+  finally{ OB.loading=false; }
+  obRefresh(); if(typeof renderNav==='function') renderNav();
 }
 function obPendingCount(){
-  if(!OB.loaded){ if(!OB.loading && !OB.error && typeof CURRENT_USER_ID!=='undefined' && CURRENT_USER_ID) setTimeout(obLoad, 0); return 0; }
+  if(!CURRENT_USER_ID || CURRENT_PROFILE.role!=='owner') return 0;
+  if(OB.owner!==CURRENT_USER_ID || !OB.loaded){ if(!OB.loading&&!OB.error) setTimeout(obLoad,0); return 0; }
   return OB.rows.filter(r=>r.status==='pending').length;
 }
-function obRow(id){ return OB.rows.find(r=>r.id===id); }
-async function obUpdate(id, patch, msg){
-  const r = obRow(id); if(!r) return false;
-  const before = Object.assign({}, r);
-  Object.assign(r, patch, {updated_at:new Date().toISOString()}); obRefresh();
-  const {error} = await sb.from('outbound_emails').update(Object.assign({}, patch, {updated_at:r.updated_at})).eq('owner_id', CURRENT_USER_ID).eq('id', id);
-  if(error){ Object.assign(r, before); obRefresh(); toast('Not saved: '+error.message,'⚠️'); return false; }
-  if(msg) toast(msg,'✅');
-  if(typeof renderNav==='function') renderNav();
-  return true;
+function obRow(id){ return OB.owner===CURRENT_USER_ID ? OB.rows.find(r=>r.id===id) : null; }
+async function obUpdate(id,patch,msg){
+  const owner=obOwner(),r=obRow(id); if(!r) throw Error('Reload the desk first.');
+  const {data,error}=await sb.from('outbound_emails').update(Object.assign({},patch,{updated_at:new Date().toISOString()})).eq('owner_id',owner).eq('id',id).eq('updated_at',r.updated_at).select('*').maybeSingle();
+  if(error||!data) throw error||Error('This item changed in another tab. Reload before editing.');
+  if(obOwner()!==owner) return false;
+  Object.assign(r,data); if(msg) toast(msg,'✅'); return true;
 }
+async function obRun(fn){ if(OB.busy) return; OB.busy=true; try{ await fn(); }catch(e){ toast(e.message||'Not saved','⚠️'); }finally{ OB.busy=false; obRefresh(); } }
 function obEdits(id){
-  const v = k => { const el = document.getElementById('ob-'+k+'-'+id); return el ? el.value.trim() : null; };
-  const p = {};
-  [['to','to_email'],['subject','subject'],['body','body']].forEach(([k,col])=>{ const x = v(k); if(x!==null && x!==obRow(id)[col]) p[col] = x; });
-  if(p.to_email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(p.to_email)){ toast('Check the "To" address','⚠️'); return null; }
-  return p;
+  const r=obRow(id),p={}; if(!r) throw Error('Reload the desk first.');
+  ['biz','channel','to_name','organisation','legal_type','contact_name','to_email','phone','profile_url','step','subject','body','why_prospect','source_url','batch_week','note','override_note','message_kind'].forEach(k=>{
+    const el=document.getElementById('ob-'+k+'-'+id); if(el) p[k]=k==='step'?Number(el.value):el.value.trim();
+  }); return p;
 }
-
-/* ---------- actions ---------- */
-function obSaveEdits(id){ const p = obEdits(id); if(p===null) return; if(!Object.keys(p).length){ toast('No changes to save','ℹ️'); return; } obUpdate(id, p, 'Changes saved'); }
-function obApprove(id){ const p = obEdits(id); if(p===null) return; obUpdate(id, Object.assign(p, {status:'approved', approved_at:new Date().toISOString()}), 'Approved, it\'s in "Ready to send"'); }
-function obReject(id){
-  const why = prompt('Why reject it? (helps the next drafts)', ''); if(why===null) return;
-  obUpdate(id, {status:'rejected', note:why || 'Rejected'}, 'Rejected');
+async function obCheck(r,completion){
+  if(!r) throw Error('Reload the desk first.');
+  if(completion){
+    const {data,error}=await sb.from('outbound_emails').select('*').eq('owner_id',obOwner()).eq('id',r.id).maybeSingle();
+    if(error) throw error;
+    if(!data || data.status!=='approved' || data.updated_at!==r.updated_at) throw Error('This approval changed. Reload the desk first.');
+  }
+  const hashes=await obFreshSuppression(obOwner()); const blocked=await obSuppressed(r,hashes);
+  const errors=completion?OC.completionErrors(r,blocked):OC.approvalErrors(r,blocked);
+  if(errors.length) throw Error(errors.join(' '));
 }
-function obBack(id){ obUpdate(id, {status:'pending', approved_at:null}, 'Moved back to "To approve"'); }
-function obGmailUrl(r){
-  return 'https://mail.google.com/mail/?authuser='+encodeURIComponent(obFrom(r.biz))+'&view=cm&fs=1&to='+encodeURIComponent(r.to_email)+'&su='+encodeURIComponent(r.subject)+'&body='+encodeURIComponent(r.body+'\n');
+/* Editing an approved draft always removes its approval. No save/open race. */
+function obSaveEdits(id){ return obRun(async()=>{ await obUpdate(id,Object.assign(obEdits(id),{status:'pending',approved_at:null}),'Saved for approval'); }); }
+function obApprove(id){ return obRun(async()=>{ const r=Object.assign({},obRow(id),obEdits(id)); await obCheck(r,false); await obUpdate(id,Object.assign(obEdits(id),{status:'approved',approved_at:new Date().toISOString()}),'Approved'); }); }
+function obReject(id){ const note=prompt('Why reject this draft?',''); if(note!==null) obRun(()=>obUpdate(id,{status:'rejected',note},'Rejected')); }
+function obBack(id){ return obRun(()=>obUpdate(id,{status:'pending',approved_at:null},'Back to approval')); }
+function obGmailUrl(r){ return 'https://mail.google.com/mail/?authuser='+encodeURIComponent(obFrom(r.biz))+'&view=cm&fs=1&to='+encodeURIComponent(r.to_email)+'&su='+encodeURIComponent(r.subject)+'&body='+encodeURIComponent(r.body+'\n'); }
+function obOpenGmail(id){
+  // Reserve a tab in the user gesture, then validate current suppression before navigating.
+  if(OB.busy) return;
+  const w=window.open('about:blank','_blank'); if(!w){ toast('Allow pop-ups to open Gmail','⚠️'); return; } w.opener=null;
+  return obRun(async()=>{ try{const r=obRow(id); if(!r||r.channel!=='email') throw Error('Choose an approved email.'); await obCheck(r,true); w.location.href=obGmailUrl(r); OB.open=id;}catch(e){w.close();throw e;} });
 }
-function obOpenGmail(id){ const r = obRow(id); if(!r) return; window.open(obGmailUrl(r), '_blank'); OB.open = id; obRefresh(); }
-async function obMarkSent(id){
-  const r = obRow(id); if(!r) return;
-  const ok = await obUpdate(id, {status:'sent', sent_at:new Date().toISOString()}, 'Marked sent');
-  if(ok && r.lead_id){ try{ await sb.from('le_leads').update({last_contacted_at:new Date().toISOString()}).eq('id', r.lead_id); }catch(e){} }
+function obOpenNext(){ const after=OB.open?OB.rows.findIndex(r=>r.id===OB.open):-1; const r=OB.rows.find((r,i)=>i>after&&r.status==='approved'&&r.channel==='email'&&(OB.biz==='all'||r.biz===OB.biz)&&r.id!==OB.open); if(r) obOpenGmail(r.id); else toast('No next approved email'); }
+function obMarkSent(id){ return obRun(async()=>{ const r=obRow(id); if(r.channel==='call') throw Error('Use a call outcome.'); await obCheck(r,true); await obUpdate(id,{status:'sent',sent_at:new Date().toISOString()},'Marked sent'); }); }
+function obCopy(id){ return obRun(async()=>{const r=obRow(id);await obCheck(r,true);await navigator.clipboard.writeText(r.body);toast('Copied');}); }
+function obOpenProfile(id){
+  if(OB.busy) return;
+  const w=window.open('about:blank','_blank'); if(!w) return; w.opener=null;
+  return obRun(async()=>{try{const r=obRow(id);await obCheck(r,true);w.location.href=OC.profile(r.profile_url,r.channel);}catch(e){w.close();throw e;}});
 }
-async function obApproveAll(){
-  const list = obVisible().filter(r=>r.status==='pending'); if(!list.length) return;
-  if(!confirm('Approve all '+list.length+' emails shown, as they are?')) return;
-  const now = new Date().toISOString(), ids = list.map(r=>r.id);
-  list.forEach(r=>{ r.status = 'approved'; r.approved_at = now; }); obRefresh();
-  const {error} = await sb.from('outbound_emails').update({status:'approved', approved_at:now, updated_at:now}).eq('owner_id', CURRENT_USER_ID).in('id', ids);
-  if(error){ toast('Not saved: '+error.message,'⚠️'); OB.loaded = false; obLoad(); return; }
-  toast(ids.length+' approved','✅'); if(typeof renderNav==='function') renderNav();
+function obCall(id){ return obRun(async()=>{ const r=obRow(id);const box=document.getElementById('ob-tps-'+id); const checked=!!(box&&box.checked)||r.tps_checked;
+  await obCheck(Object.assign({},r,{tps_checked:checked}),true);
+  if(!r.tps_checked) await obUpdate(id,{tps_checked:true,tps_checked_at:new Date().toISOString()});
+  window.location.href='tel:'+String(r.phone).replace(/[^\d+]/g,'');
+}); }
+function obCallOutcome(id,outcome){ return obRun(async()=>{
+  const r=obRow(id),box=document.getElementById('ob-tps-'+id),checked=!!(box&&box.checked)||r.tps_checked;
+  const row=Object.assign({},r,{tps_checked:checked}); await obCheck(row,true);
+  const callback=document.getElementById('ob-callback-'+id).value;
+  const next=OC.followup(row,outcome,callback,new Date());
+  const hashes=await Promise.all(OC.keys(row).map(obHash));
+  const {error}=await sb.rpc('outreach_complete_call',{p_id:id,p_outcome:outcome,p_callback:outcome==='call back'?callback:null,p_checked:checked,p_hashes:hashes});
+  if(error) throw error; await obLoad(); toast(next?'Call recorded; new draft awaits approval':'Call recorded');
+}); }
+function obOptOut(id){ return obRun(async()=>{
+  const r=obRow(id),hashes=await Promise.all(OC.keys(r).map(obHash));
+  const {error}=await sb.rpc('outreach_opt_out',{p_id:id,p_hashes:hashes}); if(error) throw error;
+  await obLoad(); toast('Added to the shared do-not-contact list');
+}); }
+function obReply(id){ if(obRow(id).replied_at){toast('Reply already recorded');return;} return obRun(()=>obUpdate(id,{replied_at:new Date().toISOString()},'Reply recorded')); }
+function obTargets(biz,channel,value){ obOwner(); const n=Number(value); if(!Number.isInteger(n)||n<0||n>100000){toast('Use a whole target between 0 and 100,000','⚠️');return;}
+  DB.settings.outreachTargets=Object.assign({},DB.settings.outreachTargets||{}); DB.settings.outreachTargets[biz]=Object.assign({},OC.targets(DB.settings.outreachTargets,biz),{[channel]:n});save();obRefresh();
 }
-
+function obImportFile(file){ if(!file) return; return obRun(async()=>{
+  if(file.size>5*1024*1024) throw Error('Batch files must be smaller than 5 MB.');
+  const input=JSON.parse(await file.text()),owner=obOwner(); const hashes=await obFreshSuppression(owner);
+  const blocked=new Set(); if(input&&Array.isArray(input.items)) for(const r of input.items){if(r&&typeof r==='object'&&await obSuppressed(r,hashes)) blocked.add(r.id);}
+  const existing=await obAll('outbound_emails',owner); const batch=OC.parseBatch(input,existing,r=>blocked.has(r.id),new Date());
+  OB.report=batch.skipped; let imported=0;
+  for(const row of batch.rows){
+    if(obOwner()!==owner) throw Error('Account changed; import stopped.');
+    if(await obSuppressed(row,await obFreshSuppression(owner))){OB.report.push({id:row.id,reason:'On the do-not-contact list.'});continue;}
+    const {error}=await sb.from('outbound_emails').insert(Object.assign({owner_id:owner,dedupe_key:OC.duplicateKey(row)},row));
+    if(error){OB.report.push({id:row.id,reason:error.code==='23505'?'Duplicate item.':error.message});}else imported++;
+  }
+  await obLoad();toast(imported+' imported; '+OB.report.length+' skipped');
+}); }
 /* ---------- view ---------- */
-function obVisible(){ return OB.rows.filter(r=>r.status===OB.tab && (OB.biz==='all' || r.biz===OB.biz)); }
-function obRefresh(){ if(currentRoute==='outbox'){ const c = document.getElementById('content'); if(c) c.innerHTML = view_outbox(); } }
-function obCard(r, i){
-  const B = OB_BIZ[r.biz], edit = r.status==='pending' || r.status==='approved';
-  const rows = Math.min(22, Math.max(8, String(r.body).split('\n').length + 2));
-  return `<div class="card ob-card" style="--obc:${B.color}">
-    <div class="ob-top"><span class="ob-n">${i+1}</span>
-      <div class="ob-who"><b>${esc(r.to_name || r.to_email)}</b><small>${esc(B.name)} · from ${esc(obFrom(r.biz))}${r.batch?' · '+esc(r.batch):''}</small></div>
-      <span class="ob-biz">${esc(B.name)}</span></div>
-    ${r.note ? `<div class="ob-note">📝 ${esc(r.note)}</div>` : ''}
-    <label class="ob-l">To</label>${edit ? `<input type="text" class="input" id="ob-to-${r.id}" value="${esc(r.to_email)}">` : `<div>${esc(r.to_email)}</div>`}
-    <label class="ob-l">Subject</label>${edit ? `<input type="text" class="input" id="ob-subject-${r.id}" value="${esc(r.subject)}">` : `<div><b>${esc(r.subject)}</b></div>`}
-    <label class="ob-l">Message</label>${edit ? `<textarea class="input ob-body" id="ob-body-${r.id}" rows="${rows}">${esc(r.body)}</textarea>` : `<pre class="ob-pre">${esc(r.body)}</pre>`}
-    <div class="ob-sig"><div class="ob-l">Signature (added by Gmail)</div><div class="ob-sig-box">${obSignature(r.biz)}</div></div>
+function obArg(v){ return esc(JSON.stringify(v)); }
+function obVisible(){ return OB.rows.filter(r=>r.status===OB.tab&&(OB.biz==='all'||r.biz===OB.biz)&&(OB.channel==='all'||r.channel===OB.channel)); }
+function obRefresh(){ if(currentRoute==='outbox'){const c=document.getElementById('content');if(c)c.innerHTML=view_outbox();} }
+function obField(r,key,label,options){
+  const edit=r.status==='pending', value=r[key]==null?'':r[key];
+  return `<label class="ob-l" for="ob-${key}-${esc(r.id)}">${label}</label>`+(edit?(options?`<select class="input" id="ob-${key}-${esc(r.id)}">${options.map(v=>`<option ${String(value)===String(v)?'selected':''}>${esc(v)}</option>`).join('')}</select>`:`<${['body','note','why_prospect'].includes(key)?'textarea':'input'} class="input ob-body" id="ob-${key}-${esc(r.id)}" ${['body','note','why_prospect'].includes(key)?'rows="4"':'value="'+esc(value)+'"'}>${['body','note','why_prospect'].includes(key)?esc(value):''}${['body','note','why_prospect'].includes(key)?'</textarea>':''}`):`<div class="ob-pre">${esc(value)||'—'}</div>`);
+}
+function obCharacterCount(id){const r=obRow(id),el=document.getElementById('ob-body-'+id),kind=document.getElementById('ob-message_kind-'+id),out=document.getElementById('ob-count-'+id);if(out)out.textContent=Array.from(el?el.value:r.body||'').length+' characters'+(r.channel==='linkedin'?' · '+((kind?kind.value:r.message_kind)==='connection'?'connection note limit 300':'message guide about 1,000'):'');}
+function obCard(r,i){
+  const B=OB_BIZ[r.biz]||OB_BIZ.sf, a=obArg(r.id), pending=r.status==='pending', ready=r.status==='approved';
+  const errors=OC.approvalErrors(r,r._blocked);
+  return `<div class="card ob-card" style="--obc:${B.color}"><div class="ob-top"><span class="ob-n">${i+1}</span><div class="ob-who"><b>${esc(r.to_name||r.organisation||r.to_email)}</b><small>${esc(B.name)} · ${esc(r.channel)} · step ${r.step||1} · ${esc(r.batch_week||r.batch||'')}</small></div></div>
+    ${errors.length?`<div class="ob-note">${errors.map(esc).join('<br>')}</div>`:''}
+    <div class="ob-setup-grid">${[['biz','Business',['sf','sw']],['channel','Channel',OC.channels],['to_name','Prospect name'],['organisation','Organisation'],['legal_type','Legal type',OC.legalTypes],['contact_name','Role or contact name'],['to_email','Email'],['phone','Phone'],['profile_url','Profile URL'],['step','Step',[1,2,3]],['batch_week','Batch week (Monday)'],['source_url','Source URL']].map(f=>'<div>'+obField(r,...f)+'</div>').join('')}</div>
+    ${obField(r,'why_prospect','Why this prospect')}${r.channel==='email'?obField(r,'subject','Draft subject'):''}
+    ${r.channel==='linkedin'?obField(r,'message_kind','LinkedIn format',['connection','message']):''}
+    ${obField(r,'body',r.channel==='call'?'Call script':'Draft body')}
+    ${['linkedin','instagram'].includes(r.channel)?`<div id="ob-count-${esc(r.id)}" class="small muted">${Array.from(r.body||'').length} characters${r.channel==='linkedin'?' · connection note limit 300; message guide about 1,000':''}</div>`:''}
+    ${obField(r,'note','Notes')}${r.channel==='email'?obField(r,'override_note','Manual legal-type override reason (optional)'):''}
+    ${r.due_date?`<p>Follow-up due ${esc(r.due_date)}</p>`:''}
+    ${r.outcome?`<p>Outcome: ${esc(r.outcome)}</p>`:''}
     <div class="ob-act">
-      ${r.status==='pending' ? `<button class="btn btn-gold" onclick="obApprove('${r.id}')">✅ Approve</button><button class="btn btn-ghost" onclick="obSaveEdits('${r.id}')">💾 Save edits</button><button class="btn btn-ghost" onclick="obReject('${r.id}')">❌ Reject</button>` : ''}
-      ${r.status==='approved' ? `<button class="btn btn-gold" onclick="obSaveEdits('${r.id}');obOpenGmail('${r.id}')">✉️ Send in Gmail</button><button class="btn ${OB.open===r.id?'btn-gold':'btn-ghost'}" onclick="obMarkSent('${r.id}')">✓ Mark sent</button><button class="btn btn-ghost" onclick="obBack('${r.id}')">↩ Back to approval</button>` : ''}
-      ${r.status==='sent' ? `<span class="muted small">Sent ${r.sent_at ? fmtDate(r.sent_at.slice(0,10)) : ''}</span>` : ''}
-      ${r.status==='rejected' ? `<button class="btn btn-ghost" onclick="obBack('${r.id}')">↩ Reconsider</button>` : ''}
-    </div>
-  </div>`;
+      ${pending?`<button class="btn btn-gold" onclick="obApprove(${a})">Approve</button><button class="btn btn-ghost" onclick="obSaveEdits(${a})">Save edits</button><button class="btn btn-ghost" onclick="obReject(${a})">Reject</button>`:''}
+      ${ready?`<button class="btn btn-ghost" onclick="obBack(${a})">Edit / back to approval</button>`:''}
+      ${ready&&r.channel==='email'?`<button class="btn btn-gold" onclick="obOpenGmail(${a})">Send in Gmail</button><button class="btn btn-ghost" onclick="obMarkSent(${a})">Mark sent</button>`:''}
+      ${ready&&['linkedin','instagram'].includes(r.channel)?`<button class="btn btn-gold" onclick="obCopy(${a})">Copy</button><a class="btn btn-ghost" href="${esc(OC.profile(r.profile_url,r.channel))}" target="_blank" rel="noopener noreferrer" onclick="event.preventDefault();obOpenProfile(${a})">Open profile</a><button class="btn btn-ghost" onclick="obMarkSent(${a})">Mark sent</button>`:''}
+      ${ready&&r.channel==='call'?`<label><input type="checkbox" id="ob-tps-${esc(r.id)}" ${r.tps_checked?'checked':''}> TPS/CTPS checked</label><a href="tel:${esc(String(r.phone||'').replace(/[^\d+]/g,''))}" onclick="event.preventDefault();obCall(${a})">Call ${esc(r.phone)}</a><label>Callback date <input class="input" type="date" id="ob-callback-${esc(r.id)}" min="${OC.day(new Date())}"></label>${OC.outcomes.map(o=>`<button class="btn btn-ghost" onclick="obCallOutcome(${a},${obArg(o)})">${esc(o)}</button>`).join('')}`:''}
+      ${['sent','done'].includes(r.status)?`<button class="btn btn-ghost" onclick="obReply(${a})">Record reply</button>`:''}
+      <button class="btn btn-ghost" onclick="obOptOut(${a})">Record opt-out</button>
+      ${r.status==='rejected'?`<button class="btn btn-ghost" onclick="obBack(${a})">Reconsider</button>`:''}
+    </div><small class="muted">Created ${esc(r.created_at||'')} · Updated ${esc(r.updated_at||'')}${r.replied_at?' · Reply '+esc(r.replied_at):''}</small></div>`;
+}
+function obDashboard(){
+  const summary=OC.weeklySummary(OB.rows,DB.settings.outreachTargets,new Date()),total=summary.combined;
+  const cards=['sf','sw'].map(b=>{const w=summary.businesses[b];return `<div class="card"><h3>${OB_BIZ[b].name} this week</h3><p>Week starting ${OC.weekStart(new Date())} · Replies ${w.replies}</p>${OC.channels.map(c=>`<div>${c}: <b>${w.counts[c]} / ${w.targets[c]}</b> ${c==='call'?'done':'sent'}</div>`).join('')}<details><summary>Call outcomes</summary>${Object.entries(w.outcomes).map(([k,v])=>`<div>${k}: ${v}</div>`).join('')}</details></div>`;}).join('');
+  return `<div class="card"><b>Combined this week</b> · ${OC.channels.map(c=>`${c}: <b>${total.counts[c]} / ${total.targets[c]}</b> ${c==='call'?'done':'sent'}`).join(' · ')} · Replies ${total.replies}</div><div class="ob-setup-grid">${cards}</div>`;
 }
 function view_outbox(){
-  obInjectStyle();
-  if(!OB.loaded){
-    if(!OB.loading && !OB.error) setTimeout(obLoad, 0);
-    return OB.error ? `<div class="card"><div class="empty-state">${esc(OB.error)}<br><br><button class="btn btn-gold" onclick="OB.error=null;obLoad()">Try again</button></div></div>` : `<div class="empty-state">Loading outbox…</div>`;
-  }
-  const count = s => OB.rows.filter(r=>r.status===s && (OB.biz==='all' || r.biz===OB.biz)).length;
-  const list = obVisible();
-  const tabs = OB_TABS.map(([k,l])=>`<button class="${OB.tab===k?'on':''}" onclick="OB.tab='${k}';OB.open=null;obRefresh()">${l} <span>${count(k)}</span></button>`).join('');
-  const bizSel = `<select class="input ob-bizsel" onchange="OB.biz=this.value;obRefresh()">${[['all','Both businesses'],['sw','SteadyWorks'],['sf','Steady Flow']].map(([v,l])=>`<option value="${v}" ${OB.biz===v?'selected':''}>${l}</option>`).join('')}</select>`;
-  const help = {pending:'Read each one. Edit anything, then Approve, or Reject with a reason.', approved:'"Send in Gmail" opens it ready to go in the right account, and Gmail adds that business\'s signature. Press Send there, then "Mark sent" here.',
-    sent:'Sent emails. Follow-ups are tracked in Lead Engine.', rejected:'Rejected drafts, with your reasons. These help the next batch.'}[OB.tab];
-  const setup = `<details class="card ob-setup"><summary>✍️ Signatures &amp; sending accounts <span class="muted small">set up once per Gmail account</span></summary>
-    <div class="ob-setup-grid">${['sw','sf'].map(b=>`<div><div class="ob-l">${OB_BIZ[b].name} sends from</div>
-      <input type="text" class="input" value="${esc(obFrom(b))}" onchange="obSetFrom('${b}', this.value)">
-      <div class="ob-sig-box" style="margin-top:8px;">${obSignature(b)}</div>
-      <button class="btn btn-ghost btn-sm" style="margin-top:8px;" onclick="obCopySignature('${b}')">📋 Copy ${OB_BIZ[b].name} signature</button></div>`).join('')}</div>
-    <ol class="small ob-steps"><li>Click <b>Copy … signature</b> above.</li><li>Open Gmail signed in as that business's address → ⚙️ <b>See all settings</b> → <b>General</b> → <b>Signature</b> → <b>Create new</b> → paste (Cmd+V). The logo comes with it.</li>
-      <li>Under <b>Signature defaults</b>, choose it for <b>new emails</b>, then <b>Save changes</b> at the bottom.</li><li>Repeat in the other account. Every email sent from here then carries the right signature.</li></ol></details>`;
-  return `${setup}
-  <div class="ob-bar"><div class="ob-tabs">${tabs}</div>${bizSel}${OB.tab==='pending' && list.length ? `<button class="btn btn-ghost btn-sm" onclick="obApproveAll()">✅ Approve all shown</button>` : ''}</div>
-  <div class="muted small" style="margin:0 0 12px;">${help}</div>
-  ${list.length ? list.map(obCard).join('') : `<div class="card"><div class="empty-state">${OB.tab==='pending' ? '✅ Nothing waiting for approval.' : 'Nothing here yet.'}</div></div>`}`;
+  obInjectStyle(); if(!CURRENT_USER_ID||CURRENT_PROFILE.role!=='owner') return '<div class="card">Owner access is required.</div>';
+  if(!OB.loaded||OB.owner!==CURRENT_USER_ID){if(!OB.loading&&!OB.error)setTimeout(obLoad,0);return `<div class="card">${OB.error?esc(OB.error):'Loading Outreach desk…'}<button class="btn btn-ghost" onclick="OB.error=null;obLoad()">Reload</button></div>`;}
+  const list=obVisible();
+  const settings=`<details class="card ob-setup"><summary>Outreach settings</summary><div class="ob-setup-grid">${['sf','sw'].map(b=>`<div><h3>${OB_BIZ[b].name}</h3><label>Gmail account<input class="input" value="${esc(obFrom(b))}" onchange="obSetFrom('${b}',this.value)"></label>${OC.channels.map(c=>`<label class="ob-l">Weekly ${c} target<input class="input" type="number" min="0" value="${OC.targets(DB.settings.outreachTargets,b)[c]}" onchange="obTargets('${b}','${c}',this.value)"></label>`).join('')}<button class="btn btn-ghost" onclick="obCopySignature('${b}')">Copy ${OB_BIZ[b].name} signature</button></div>`).join('')}</div></details>`;
+  setTimeout(()=>{document.querySelectorAll('.ob-card textarea').forEach(el=>{if(el.id.startsWith('ob-body-'))el.oninput=()=>obCharacterCount(el.id.slice(8));});},0);
+  return `${obDashboard()}${settings}<div class="ob-bar"><button class="btn btn-ghost" onclick="obLoad()">Reload</button><label class="btn btn-ghost">Import batch JSON<input type="file" accept="application/json,.json" onchange="obImportFile(this.files[0]);this.value=''" style="max-width:210px"></label><button class="btn btn-gold" onclick="obOpenNext()">Open next approved email</button></div>
+  <p class="muted small">Review each draft before approval. Gmail and social profiles open for you to send manually. Calls require TPS/CTPS screening. Nothing is sent automatically.</p>
+  ${OB.report.length?`<details class="card" open><summary>Import skipped ${OB.report.length} items</summary>${OB.report.map(r=>`<div>${esc(r.id||'Item '+r.index)}: ${esc(r.reason)}</div>`).join('')}</details>`:''}
+  <div class="ob-bar"><div class="ob-tabs">${OB_TABS.map(([k,l])=>`<button class="${OB.tab===k?'on':''}" onclick="OB.tab='${k}';obRefresh()">${l} (${OB.rows.filter(r=>r.status===k).length})</button>`).join('')}</div><select class="input ob-bizsel" onchange="OB.biz=this.value;obRefresh()">${[['all','Both businesses'],['sf','Steady Flow'],['sw','SteadyWorks']].map(([v,l])=>`<option value="${v}" ${OB.biz===v?'selected':''}>${l}</option>`).join('')}</select><select class="input ob-bizsel" onchange="OB.channel=this.value;obRefresh()">${['all',...OC.channels].map(c=>`<option ${OB.channel===c?'selected':''}>${c}</option>`).join('')}</select></div>
+  ${list.length?list.map(obCard).join(''):'<div class="card empty-state">Nothing in this queue.</div>'}`;
 }
 function obInjectStyle(){
   if(document.getElementById('ob-style')) return;

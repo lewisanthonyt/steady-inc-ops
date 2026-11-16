@@ -10,9 +10,9 @@
 const AP_BUCKET = 'content-previews';
 const AP_BIZ = {steadyworks:'SteadyWorks', steadyflow:'Steady Flow'};
 const AP_TABS = [
-  ['waiting','Waiting', s=>s==='awaiting approval'],
-  ['changes','Changes requested', s=>s==='changes requested'],
-  ['approved','Approved', s=>s==='approved'],
+  ['waiting','To review', s=>s==='awaiting approval'],
+  ['changes','Changes requested', s=>s==='changes requested'],   // with Claudius until a new version comes back
+  ['approved','Approved', s=>s==='approved' || s==='approved-music'],
   ['done','Edited / scheduled / posted', s=>['edited','scheduled','posted'].includes(s)],
   ['rejected','Rejected', s=>s==='rejected'],
   ['all','All', ()=>true]
@@ -88,7 +88,7 @@ async function apDecide(id, status){
   if(note) patch.lewis_note = note;
   try{
     await apUpdate(id, patch); AP.noteFor = null;
-    toast(status==='approved' ? `${id} approved` : status==='rejected' ? `${id} rejected` : `Changes requested on ${id}`, status==='approved' ? '✅' : '✓');
+    toast(status==='approved' ? `${id} approved → Uploads` : status==='approved-music' ? `${id} approved → Edits (add music)` : status==='rejected' ? `${id} rejected` : `Changes sent to Claudius for ${id}`, status.startsWith('approved') ? '✅' : '✓');
   }catch(e){ toast('Not saved — check your connection and try again.','⚠️'); }
   apRefresh(); renderNav();
 }
@@ -181,7 +181,7 @@ function apCardHtml(i){
     : `<div class="ap-video ap-novideo">${AP.signing || !AP.urlsExp ? 'Loading preview…' : `No preview uploaded yet.<br><small>Use “Upload previews” and pick ${esc(i.id)}.mp4 (and ${esc(i.id)}_cover.jpg)</small>`}</div>`;
   const waiting = i.status==='awaiting approval' || i.status==='changes requested';
   const noteOpen = AP.noteFor===i.id;
-  const stLabel = {'awaiting approval':'Waiting','changes requested':'Changes requested',approved:'Approved',rejected:'Rejected',edited:'Edited',scheduled:'Scheduled',posted:'Posted'}[i.status] || i.status;
+  const stLabel = {'awaiting approval':'To review','changes requested':'Changes requested',approved:'Approved','approved-music':'Approved · needs music',rejected:'Rejected',edited:'Edited',scheduled:'Scheduled',posted:'Posted'}[i.status] || i.status;
   return `<article class="card ap-card">
     <div class="ap-media">${media}</div>
     <div class="ap-body">
@@ -195,10 +195,11 @@ function apCardHtml(i){
       ${noteOpen ? `<textarea id="ap-note-${esc(i.id)}" class="ap-input" rows="2" placeholder="What needs changing? (also saved with Approve/Reject)">${esc(i.lewis_note||'')}</textarea>` : ''}
       ${waiting ? `<div class="ap-btns">
           <button class="btn ap-yes" onclick="apDecide('${esc(i.id)}','approved')">Approve</button>
-          ${noteOpen ? `<button class="btn ap-chg" onclick="apDecide('${esc(i.id)}','changes requested')">Send changes</button>` : `<button class="btn ap-chg" onclick="apToggleNote('${esc(i.id)}')">Request changes</button>`}
-          <button class="btn ap-no" onclick="apDecide('${esc(i.id)}','rejected')">Reject</button>
-        </div>`
-      : `<div class="ap-decided">${i.decided_at ? `Decided ${new Date(i.decided_at).toLocaleDateString('en-GB',{day:'numeric', month:'short'})}` : ''}${['approved','rejected'].includes(i.status) ? ` <button class="ap-link" onclick="apUndo('${esc(i.id)}')">Undo</button>` : ''}</div>`}
+          <button class="btn ap-music" onclick="apDecide('${esc(i.id)}','approved-music')">Approve, needs music</button>
+          ${noteOpen ? `<button class="btn ap-chg" onclick="apDecide('${esc(i.id)}','changes requested')">Send changes</button>` : `<button class="btn ap-chg" onclick="apToggleNote('${esc(i.id)}')">Changes</button>`}
+        </div>
+        <div class="ap-reject"><button class="ap-link" onclick="if(confirm('Reject ${esc(i.id)}? It won\\'t be posted.')) apDecide('${esc(i.id)}','rejected')">Reject instead</button></div>`
+      : `<div class="ap-decided">${i.decided_at ? `Decided ${new Date(i.decided_at).toLocaleDateString('en-GB',{day:'numeric', month:'short'})}` : ''}${['approved','approved-music','rejected'].includes(i.status) ? ` <button class="ap-link" onclick="apUndo('${esc(i.id)}')">Undo</button>` : ''}</div>`}
     </div>
   </article>`;
 }
@@ -222,7 +223,7 @@ function apInjectStyle(){
   .ap-top{display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
   .ap-id,.ap-biz,.ap-acct,.ap-st{font-size:11px;font-weight:800;padding:2px 8px;border-radius:20px;background:var(--card-alt);border:1px solid var(--border);color:var(--text-soft);}
   .ap-id{color:var(--text);} .ap-biz.steadyworks{color:var(--gold-light);} .ap-biz.steadyflow{color:var(--teal);}
-  .ap-st.s-awaiting-approval{color:#FCD34D;border-color:rgba(245,158,11,.5);} .ap-st.s-approved{color:#4ADE80;border-color:rgba(34,197,94,.5);}
+  .ap-st.s-awaiting-approval{color:#FCD34D;border-color:rgba(245,158,11,.5);} .ap-st.s-approved,.ap-st.s-approved-music{color:#4ADE80;border-color:rgba(34,197,94,.5);}
   .ap-st.s-rejected{color:#FCA5A5;border-color:rgba(239,68,68,.5);} .ap-st.s-changes-requested{color:#FDBA74;border-color:rgba(249,115,22,.5);}
   .ap-title{font-size:17px;font-weight:800;line-height:1.3;}
   .ap-slot{font-size:13px;font-weight:700;color:var(--text-soft);}
@@ -235,7 +236,8 @@ function apInjectStyle(){
   .ap-input{width:100%;box-sizing:border-box;background:var(--input-bg);border:1px solid var(--border);border-radius:10px;color:var(--text);padding:10px 12px;font-size:15px;}
   .ap-btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:auto;padding-top:6px;}
   .ap-btns .btn{flex:1;min-width:90px;min-height:44px;justify-content:center;font-weight:800;white-space:normal;line-height:1.15;padding-left:8px;padding-right:8px;}
-  .ap-yes{background:var(--success);color:#04130a;} .ap-chg{background:transparent;border:1px solid rgba(249,115,22,.6);color:#FDBA74;} .ap-no{background:transparent;border:1px solid rgba(239,68,68,.6);color:#FCA5A5;}
+  .ap-yes{background:var(--success);color:#04130a;} .ap-music{background:rgba(34,197,94,.14);border:1px solid rgba(34,197,94,.6);color:#4ADE80;}
+  .ap-reject{text-align:right;margin-top:-2px;} .ap-reject .ap-link{font-size:12px;color:var(--text-soft);} .ap-chg{background:transparent;border:1px solid rgba(249,115,22,.6);color:#FDBA74;} .ap-no{background:transparent;border:1px solid rgba(239,68,68,.6);color:#FCA5A5;}
   .ap-decided{font-size:13px;color:var(--text-soft);margin-top:auto;}
   @media(max-width:700px){
     .ap-card{grid-template-columns:1fr;padding:12px;gap:12px;}
